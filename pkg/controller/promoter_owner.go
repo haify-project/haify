@@ -18,6 +18,8 @@ import (
 //     is scheduled to;
 //   - a Cinder volume is made Primary by the OpenStack driver on the compute
 //     host Nova runs the instance on, and moved by Nova live migration;
+//   - an XCP-ng virtual disk is made Primary by the SR driver on the host the
+//     VM runs on, and moved by XAPI live migration;
 //   - a resource with diskless clients is used from nodes the promoter never
 //     runs on (the Proxmox plugin attaches one where a VM runs without a local
 //     replica).
@@ -35,6 +37,8 @@ const (
 	csiPVCLabel = "haify.csi/pvc"
 	// cinderManagedByLabel marks a resource the OpenStack Cinder driver created.
 	cinderManagedByLabel = "haify.openstack/managed-by"
+	// xcpManagedByLabel marks a resource the XCP-ng SR driver created.
+	xcpManagedByLabel = "haify.xcp/managed-by"
 )
 
 // pveDefaultNameRe matches what the Proxmox plugin names a volume under its
@@ -52,6 +56,8 @@ func externallyPromoted(name string, labels map[string]string) string {
 		return "the CSI driver"
 	case labels[cinderManagedByLabel] == "cinder":
 		return "OpenStack Cinder"
+	case labels[xcpManagedByLabel] == "xcp-ng":
+		return "XCP-ng"
 	}
 	return ""
 }
