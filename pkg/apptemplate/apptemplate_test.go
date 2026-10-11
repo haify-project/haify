@@ -267,7 +267,7 @@ func TestFreezeArmsTheWatchdogBeforeFreezing(t *testing.T) {
 			s := specFor(t, tc.engine)
 			b := binariesFor(tc.engine, tc.flavor)
 			script := FreezeForSnapshot(s, b)
-			arm := strings.Index(script, "systemd-run --unit=haify-app-thaw-orders --collect --quiet --on-active=60 /bin/bash /run/haify-app-orders-thaw.sh")
+			arm := strings.Index(script, "systemd-run --unit=haify-app-thaw-orders $(systemd-run --help 2>/dev/null | grep -q -e --collect && echo --collect) --quiet --on-active=60 /bin/bash /run/haify-app-orders-thaw.sh")
 			step := strings.Index(script, tc.step)
 			freeze := strings.Index(script, "fsfreeze -f /var/lib/haify-app/orders")
 			require.True(t, arm >= 0 && step >= 0 && freeze >= 0, script)

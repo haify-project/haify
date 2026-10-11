@@ -128,7 +128,7 @@ func (rm *ResourceManager) suspendForSnapshot(ctx context.Context, resource stri
 	}
 	unit := fmt.Sprintf("haify-snapshot-resume-%s-%d", resource, time.Now().UnixNano())
 	for i, host := range ordered {
-		cmd := fmt.Sprintf("sudo systemd-run --unit=%s --collect --on-active=%d drbdadm resume-io %s && sudo drbdadm suspend-io %s",
+		cmd := fmt.Sprintf("sudo systemd-run --unit=%s "+collectFlag+" --on-active=%d drbdadm resume-io %s && sudo drbdadm suspend-io %s",
 			unit, int(resourceSnapshotWatchdog.Seconds()), resource, resource)
 		if err := rm.execAllSuccess(ctx, []string{host}, cmd, "suspend I/O on "+host); err != nil {
 			rm.resumeAfterSnapshot(resource, ordered[:i+1], unit)

@@ -46,7 +46,7 @@ func (rm *ResourceManager) EvictHa(ctx context.Context, resource string) error {
 	// detached through systemd-run on the active node and return.
 	if resource == SelfHaResource {
 		evictCmd := fmt.Sprintf(
-			"sudo systemd-run --unit=haify-selfha-evict --collect drbd-reactorctl evict %s", configName)
+			"sudo systemd-run --unit=haify-selfha-evict "+collectFlag+" drbd-reactorctl evict %s", configName)
 		if activeNode == localHostname() {
 			// Usually the case: the controller runs where haify-meta is Primary.
 			// Its hostname need not be a name dispatch can reach.

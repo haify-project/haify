@@ -63,7 +63,7 @@ func freezeSteps(s Spec, b Binaries) string {
 `
 	case MySQL:
 		steps = `q="SELECT ID FROM information_schema.PROCESSLIST WHERE TRIM(INFO) = '` + mysqlLockQuery + `'"
-systemd-run --unit=@LOCKUNIT@ --collect --quiet @CLIENT@ --defaults-extra-file=@CLIENTCONF@ \
+systemd-run --unit=@LOCKUNIT@ $(systemd-run --help 2>/dev/null | grep -q -e --collect && echo --collect) --quiet @CLIENT@ --defaults-extra-file=@CLIENTCONF@ \
   -e "FLUSH TABLES WITH READ LOCK; ` + mysqlLockQuery + `" || fail "could not start the read-lock session"
 i=0
 until [ -n "$(@CLIENT@ --defaults-extra-file=@CLIENTCONF@ -N -e "$q" 2>/dev/null)" ]; do
@@ -120,7 +120,7 @@ cat > @THAWFILE@ <<'HAIFYTHAW'
 chmod 0700 @THAWFILE@
 systemctl stop @THAWUNIT@.timer @THAWUNIT@.service 2>/dev/null
 systemctl reset-failed @THAWUNIT@.timer @THAWUNIT@.service 2>/dev/null
-systemd-run --unit=@THAWUNIT@ --collect --quiet --on-active=@WATCHDOG@ /bin/bash @THAWFILE@ \
+systemd-run --unit=@THAWUNIT@ $(systemd-run --help 2>/dev/null | grep -q -e --collect && echo --collect) --quiet --on-active=@WATCHDOG@ /bin/bash @THAWFILE@ \
   || { echo "$(hostname): could not arm the thaw watchdog; not freezing" >&2; rm -f @THAWFILE@; exit 3; }
 @FREEZE@echo "frozen=yes"
 `)

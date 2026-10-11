@@ -520,7 +520,7 @@ func (rm *ResourceManager) runDetachedScript(ctx context.Context, selfAddr, scri
 		fmt.Sprintf("sudo chmod 755 %s", scriptPath)); err != nil {
 		return fmt.Errorf("failed to install script %s: %w", scriptPath, err)
 	}
-	launch := fmt.Sprintf("sudo systemd-run --unit=%s --collect /bin/bash %s", unitName, scriptPath)
+	launch := fmt.Sprintf("sudo systemd-run --unit=%s "+collectFlag+" /bin/bash %s", unitName, scriptPath)
 	if err := rm.execAllSuccess(ctx, []string{selfAddr}, launch,
 		fmt.Sprintf("failed to launch %s", unitName)); err != nil {
 		return err

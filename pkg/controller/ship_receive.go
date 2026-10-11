@@ -43,7 +43,7 @@ rm -rf %[1]s
 mkdir -p -m 0700 %[1]s
 umask 077
 printf %%s %[3]s > %[1]s/token
-systemd-run --quiet --collect --unit=%[2]s /usr/local/bin/haify ship %[4]s --token-file %[1]s/token --state-dir %[1]s %[5]s
+systemd-run --quiet `+collectFlag+` --unit=%[2]s /usr/local/bin/haify ship %[4]s --token-file %[1]s/token --state-dir %[1]s %[5]s
 for i in $(seq 1 120); do [ -s %[1]s/%[6]s ] && break; [ -s %[1]s/result.json ] && break; sleep 0.5; done
 cat %[1]s/%[6]s 2>/dev/null || cat %[1]s/result.json 2>/dev/null || echo "no answer from the %[4]s unit" >&2
 `, d, unit, token, kind, strings.Join(args, " "), ready)

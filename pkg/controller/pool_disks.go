@@ -178,7 +178,7 @@ func containsPV(pvs []pvInfo, name string) bool {
 
 func (sm *StorageManager) launchDiskJob(ctx context.Context, host string, j *database.StorageJob) error {
 	script := base64Std(diskJobScript(j))
-	cmd := fmt.Sprintf("sudo systemd-run --unit=haify-disk-%s --collect /bin/bash -c 'echo %s | base64 -d | /bin/bash'", j.ID, script)
+	cmd := fmt.Sprintf("sudo systemd-run --unit=haify-disk-%s "+collectFlag+" /bin/bash -c 'echo %s | base64 -d | /bin/bash'", j.ID, script)
 	return execFailure(sm.controller.deployment.Exec(ctx, []string{host}, cmd))
 }
 
