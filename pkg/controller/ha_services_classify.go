@@ -141,7 +141,7 @@ func classifyHaUnit(unit string, facts *haUnitFacts) (kind, label string) {
 	switch {
 	case strings.HasPrefix(name, "haify-app-"):
 		return classifyHaifyApp(strings.TrimPrefix(prefix, "haify-app-"), desc)
-	case isDatabaseUnit(name):
+	case isDatabaseUnit(name), describesDatabase(desc):
 		return haKindDatabase, labelOr(desc, unitBaseName(unit))
 	case name == "haify-controller", name == "haify-ai", strings.HasPrefix(name, "haify-mcp"):
 		return haKindHaify, labelOr(desc, unitBaseName(unit))
@@ -163,6 +163,23 @@ func isDatabaseUnit(name string) bool {
 	for _, p := range databasePrefixes {
 		if strings.HasPrefix(name, p) {
 			return true
+		}
+	}
+	return false
+}
+
+// describesDatabase reports whether a unit's description names a database
+// server, for units named after what they serve rather than what runs them
+// ("pgha.service", "PostgreSQL HA instance on DRBD").
+func describesDatabase(desc string) bool {
+	words := strings.FieldsFunc(strings.ToLower(desc), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	for _, w := range words {
+		for _, p := range databasePrefixes {
+			if w == p {
+				return true
+			}
 		}
 	}
 	return false

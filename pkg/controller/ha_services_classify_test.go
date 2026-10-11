@@ -58,6 +58,10 @@ func TestClassifyHaUnitRealChains(t *testing.T) {
 		{"postgresql@16-main.service", &haUnitFacts{ID: "postgresql@16-main.service", OwnDesc: "PostgreSQL Cluster %i"},
 			haKindDatabase, "PostgreSQL Cluster 16-main"},
 		{"mariadb.service", desc("MariaDB 10.11 database server"), haKindDatabase, "MariaDB 10.11 database server"},
+		// Named after what it serves; only the description says PostgreSQL.
+		{"pgha.service", desc("PostgreSQL HA instance on DRBD"), haKindDatabase, "PostgreSQL HA instance on DRBD"},
+		// "redistribute" is not Redis.
+		{"sync.service", desc("Redistribute uploads"), haKindService, "Redistribute uploads"},
 		{"redis-server.service", nil, haKindDatabase, "redis-server"},
 		{"nfs-server.service", nil, haKindNFS, "nfs-server"},
 		{"ocf.rs@fs_x.service", nil, haKindService, "OCF fs_x"},
