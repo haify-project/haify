@@ -1,0 +1,65 @@
+# The Haify controller this cluster's volumes come from. It runs on the storage
+# servers, outside Kubernetes: give the IP it answers on, which with Self-HA is
+# its floating IP (`haify ha self status`). Required.
+controller:
+  address: ""            # e.g. 192.168.1.10
+  port: 3374
+
+# API token, when the controller has [auth] or [rbac] on. Either name a Secret
+# you created (key "token"), or give the token and the chart creates one.
+token:
+  existingSecret: ""
+  value: ""
+
+image:
+  repository: haify-csi
+  tag: latest
+  pullPolicy: IfNotPresent
+
+sidecars:
+  provisioner: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0
+  resizer: registry.k8s.io/sig-storage/csi-resizer:v1.13.2
+  snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.2.0
+  livenessProbe: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
+  nodeDriverRegistrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.12.0
+
+# The kubelet's directory on the nodes; change it only for distributions that
+# move it (e.g. microk8s: /var/snap/microk8s/common/var/lib/kubelet).
+kubeletDir: /var/lib/kubelet
+
+# Seconds a provisioning, resize or snapshot call may take. Creating a
+# replicated volume runs over SSH on the storage nodes and can take a while.
+operationTimeout: 120s
+
+# One StorageClass per entry. pool is the Haify pool; replicas the number of
+# copies. Any other parameters the driver takes go in parameters.
+storageClasses:
+  - name: haify
+    default: false
+    pool: vg0
+    replicas: 2
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer
+    allowVolumeExpansion: true
+    parameters: {}
+
+# A VolumeSnapshotClass, created only when the cluster has the snapshot CRDs
+# (kubernetes-csi/external-snapshotter); k3s and most distributions do not ship
+# them.
+snapshotClass:
+  enabled: true
+  name: haify-snapshot
+  default: false
+  deletionPolicy: Delete
+
+controllerPlugin:
+  replicas: 1
+  nodeSelector: {}
+  tolerations: []
+  resources: {}
+
+nodePlugin:
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists
+  resources: {}

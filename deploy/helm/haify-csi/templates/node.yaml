@@ -1,0 +1,69 @@
+{{- $plugins := printf "%s/plugins/%s" .Values.kubeletDir (include "haify-csi.driver" .) }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: haify-csi-node
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+spec:
+  selector: { matchLabels: { app: haify-csi-node } }
+  template:
+    metadata:
+      labels:
+        app: haify-csi-node
+        {{- include "haify-csi.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: haify-csi-node
+      # Never evicted: a node without this plugin cannot unmount its volumes,
+      # and they stay Primary there until someone does it by hand.
+      priorityClassName: system-node-critical
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- with .Values.nodePlugin.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodePlugin.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: node-driver-registrar
+          image: {{ .Values.sidecars.nodeDriverRegistrar }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path={{ $plugins }}/csi.sock
+          volumeMounts:
+            - { name: socket-dir, mountPath: /csi }
+            - { name: registration-dir, mountPath: /registration }
+        - name: plugin
+          image: {{ include "haify-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/usr/local/bin/csi-node]
+          args:
+            - --endpoint=unix:///csi/csi.sock
+            - --haify-controller=haify-controller:{{ .Values.controller.port }}
+          securityContext: { privileged: true }
+          env:
+            {{- include "haify-csi.tokenEnv" . | nindent 12 }}
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: NODE_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+          {{- with .Values.nodePlugin.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - { name: socket-dir, mountPath: /csi }
+            - { name: kubelet-dir, mountPath: {{ .Values.kubeletDir }}, mountPropagation: Bidirectional }
+            - { name: dev-dir, mountPath: /dev }
+            - { name: cgroup, mountPath: /sys/fs/cgroup }
+      volumes:
+        - name: socket-dir
+          hostPath: { path: {{ $plugins }}, type: DirectoryOrCreate }
+        - name: registration-dir
+          hostPath: { path: {{ .Values.kubeletDir }}/plugins_registry, type: Directory }
+        - name: kubelet-dir
+          hostPath: { path: {{ .Values.kubeletDir }}, type: Directory }
+        - name: dev-dir
+          hostPath: { path: /dev, type: Directory }
+        - name: cgroup
+          hostPath: { path: /sys/fs/cgroup, type: Directory }

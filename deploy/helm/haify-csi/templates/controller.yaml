@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haify-csi-controller
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controllerPlugin.replicas }}
+  selector: { matchLabels: { app: haify-csi-controller } }
+  template:
+    metadata:
+      labels:
+        app: haify-csi-controller
+        {{- include "haify-csi.labels" . | nindent 8 }}
+    spec:
+      # Provisioning, resizing and snapshots stop with this pod.
+      priorityClassName: system-cluster-critical
+      # The controller's IP is reached over the host network; cluster DNS
+      # still resolves the haify-controller Service.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: haify-csi-controller
+      {{- with .Values.controllerPlugin.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controllerPlugin.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: csi-provisioner
+          image: {{ .Values.sidecars.provisioner }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --feature-gates=Topology=true
+            - --strict-topology
+            - --immediate-topology=false
+            - --timeout={{ .Values.operationTimeout }}
+            - --enable-capacity
+            - --capacity-ownerref-level=2
+            - --capacity-poll-interval=1m
+            - --extra-create-metadata
+            - --v=2
+          env:
+            - name: NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          volumeMounts: [{ name: socket-dir, mountPath: /csi }]
+        - name: csi-resizer
+          image: {{ .Values.sidecars.resizer }}
+          args: [--csi-address=/csi/csi.sock, --timeout={{ .Values.operationTimeout }}, --handle-volume-inuse-error=false, --v=2]
+          volumeMounts: [{ name: socket-dir, mountPath: /csi }]
+        - name: csi-snapshotter
+          image: {{ .Values.sidecars.snapshotter }}
+          args: [--csi-address=/csi/csi.sock, --timeout={{ .Values.operationTimeout }}, --v=2]
+          volumeMounts: [{ name: socket-dir, mountPath: /csi }]
+        - name: plugin
+          image: {{ include "haify-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/usr/local/bin/csi-controller]
+          args:
+            - --endpoint=unix:///csi/csi.sock
+            - --haify-controller=haify-controller:{{ .Values.controller.port }}
+          env:
+            {{- include "haify-csi.tokenEnv" . | nindent 12 }}
+          {{- with .Values.controllerPlugin.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts: [{ name: socket-dir, mountPath: /csi }]
+        - name: liveness-probe
+          image: {{ .Values.sidecars.livenessProbe }}
+          args: [--csi-address=/csi/csi.sock]
+          volumeMounts: [{ name: socket-dir, mountPath: /csi }]
+      volumes:
+        - { name: socket-dir, emptyDir: {} }

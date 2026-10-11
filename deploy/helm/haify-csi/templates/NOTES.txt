@@ -1,0 +1,12 @@
+Haify volumes are available through StorageClass{{ if gt (len .Values.storageClasses) 1 }}es{{ end }}:
+{{- range .Values.storageClasses }}
+  {{ .name }}  (pool {{ .pool }}, {{ .replicas }} replicas)
+{{- end }}
+
+Check the plugins are up:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name=haify-csi
+{{- if and .Values.snapshotClass.enabled (not (.Capabilities.APIVersions.Has "snapshot.storage.k8s.io/v1/VolumeSnapshotClass")) }}
+
+No VolumeSnapshotClass was created: this cluster has no snapshot CRDs. Install
+kubernetes-csi/external-snapshotter, then upgrade this release.
+{{- end }}

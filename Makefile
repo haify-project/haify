@@ -156,6 +156,8 @@ ci: ui-ensure
 	else \
 		python3 -m unittest discover -s deploy/openstack/tests -p 'test_*.py'; \
 	fi
+	@echo "==> helm lint (CSI chart)"
+	@helm lint --strict deploy/helm/haify-csi --set controller.address=192.0.2.10
 	@echo "==> govulncheck"
 	@# Scanned with the newest Go, as CI's vuln job is: a standard library
 	@# finding is fixed by upgrading Go, and a local Go a patch release behind

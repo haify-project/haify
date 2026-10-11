@@ -1,5 +1,9 @@
 # Haify CSI driver
 
+The quickest install is the Helm chart in `deploy/helm/haify-csi` (see its
+README); the manifests below are the same objects for clusters that are
+managed without Helm.
+
 Driver name: `haify.csi.liliang-cn.com`. Everything is deployed into
 `kube-system` except the optional Copilot RBAC (`60-haify-ai-apps-rbac.yaml`,
 namespace `haify-ai`).

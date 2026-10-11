@@ -1,0 +1,11 @@
+apiVersion: v2
+name: haify-csi
+description: Kubernetes volumes on Haify — replicated block storage on your own servers, with snapshots, clones and resizing
+type: application
+version: 0.1.0
+appVersion: "1.12.0"
+kubeVersion: ">=1.25.0-0"
+home: https://haify-project.github.io/haify/
+sources:
+  - https://github.com/haify-project/haify
+keywords: [csi, storage, drbd, replication]

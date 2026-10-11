@@ -1,0 +1,13 @@
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: {{ include "haify-csi.driver" . }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+spec:
+  attachRequired: false
+  podInfoOnMount: false
+  volumeLifecycleModes: [Persistent]
+  # Each node's free pool space is published as CSIStorageCapacity, so the
+  # scheduler does not place a Pod where its volume cannot fit.
+  storageCapacity: true
+  fsGroupPolicy: File

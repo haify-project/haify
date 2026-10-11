@@ -1,0 +1,15 @@
+{{- if and .Values.snapshotClass.enabled (.Capabilities.APIVersions.Has "snapshot.storage.k8s.io/v1/VolumeSnapshotClass") }}
+# A snapshot lives on one node's backing volume and is not replicated: it
+# protects against bad writes and deletions, not against losing that node.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ .Values.snapshotClass.name }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+  {{- if .Values.snapshotClass.default }}
+  annotations:
+    snapshot.storage.kubernetes.io/is-default-class: "true"
+  {{- end }}
+driver: {{ include "haify-csi.driver" . }}
+deletionPolicy: {{ .Values.snapshotClass.deletionPolicy }}
+{{- end }}

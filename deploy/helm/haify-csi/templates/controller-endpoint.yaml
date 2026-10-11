@@ -1,0 +1,29 @@
+{{- if not .Values.controller.address }}
+{{- fail "set controller.address to the Haify controller's IP (its floating IP with Self-HA)" }}
+{{- end }}
+# The plugins reach the Haify controller, which runs outside the cluster, by
+# the in-cluster name haify-controller: a Service without a selector and an
+# EndpointSlice carrying its IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: haify-controller
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+spec:
+  ports:
+    - { name: grpc, protocol: TCP, port: {{ .Values.controller.port }}, targetPort: {{ .Values.controller.port }} }
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: haify-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    kubernetes.io/service-name: haify-controller
+    {{- include "haify-csi.labels" . | nindent 4 }}
+addressType: IPv4
+ports:
+  - { name: grpc, protocol: TCP, port: {{ .Values.controller.port }} }
+endpoints:
+  - addresses: [{{ .Values.controller.address | quote }}]

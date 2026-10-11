@@ -108,6 +108,16 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # ubuntu-latest ships helm.
+      - name: Lint the CSI chart
+        run: helm lint --strict deploy/helm/haify-csi --set controller.address=192.0.2.10
+
   web-ui:
     name: Web UI build
     runs-on: ubuntu-latest

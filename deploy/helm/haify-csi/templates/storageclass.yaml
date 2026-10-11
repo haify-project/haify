@@ -1,0 +1,22 @@
+{{- range .Values.storageClasses }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ required "every storageClasses entry needs a name" .name }}
+  labels: {{- include "haify-csi.labels" $ | nindent 4 }}
+  {{- if .default }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  {{- end }}
+provisioner: {{ include "haify-csi.driver" $ }}
+parameters:
+  pool: {{ required "every storageClasses entry needs a pool" .pool | quote }}
+  replicas: {{ .replicas | quote }}
+  {{- range $k, $v := .parameters }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+reclaimPolicy: {{ .reclaimPolicy | default "Delete" }}
+allowVolumeExpansion: {{ if hasKey . "allowVolumeExpansion" }}{{ .allowVolumeExpansion }}{{ else }}true{{ end }}
+volumeBindingMode: {{ .volumeBindingMode | default "WaitForFirstConsumer" }}
+{{- end }}
