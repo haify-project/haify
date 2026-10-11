@@ -195,3 +195,9 @@ func (c *HaifyClient) SetNodeAddress(ctx context.Context, node, address, replica
 func (c *HaifyClient) SetNodeAddresses(ctx context.Context, moves []*haifypb.NodeAddressMove) (*haifypb.SetNodeAddressResponse, error) {
 	return c.client.SetNodeAddress(ctx, &haifypb.SetNodeAddressRequest{Moves: moves})
 }
+
+// SetNodeReplicationPaths sets a node's extra replication addresses (empty
+// clears them) and rewrites its resources.
+func (c *HaifyClient) SetNodeReplicationPaths(ctx context.Context, node string, addresses []string) (*haifypb.SetNodeAddressResponse, error) {
+	return c.client.SetNodeReplicationPaths(ctx, &haifypb.SetNodeReplicationPathsRequest{Node: node, Addresses: addresses})
+}

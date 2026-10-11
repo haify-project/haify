@@ -24,6 +24,7 @@ func (s *Server) RegisterNode(ctx context.Context, req *haifypb.RegisterNodeRequ
 			Name:               node.Name,
 			Address:            node.Address,
 			ReplicationAddress: node.ReplicationAddress,
+			ReplicationPaths:   node.ReplicationPaths,
 			Hostname:           node.Hostname,
 			State:              string(node.State),
 			LastSeen:           node.LastSeen.Unix(),
@@ -88,6 +89,7 @@ func (s *Server) GetNode(ctx context.Context, req *haifypb.GetNodeRequest) (*hai
 			Version:            node.Version,
 			Labels:             node.Labels,
 			ReplicationAddress: node.ReplicationAddress,
+			ReplicationPaths:   node.ReplicationPaths,
 		},
 	}, nil
 }
@@ -152,6 +154,7 @@ func (s *Server) SetNodeLabels(ctx context.Context, req *haifypb.SetNodeLabelsRe
 			Version:            node.Version,
 			Labels:             node.Labels,
 			ReplicationAddress: node.ReplicationAddress,
+			ReplicationPaths:   node.ReplicationPaths,
 		},
 	}, nil
 }

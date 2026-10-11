@@ -147,15 +147,22 @@ func New(cfg *config.Config, logger *zap.Logger) (*Controller, error) {
 	}
 
 	ctrl := &Controller{
-		config:     cfg,
-		logger:     logger,
-		db:         db,
-		deployment: deploymentClient,
-		hosts:      []string{},
-		hostsMap:   make(map[string]string),
-		ctx:        ctx,
-		cancel:     cancel,
+		config:   cfg,
+		logger:   logger,
+		db:       db,
+		hosts:    []string{},
+		hostsMap: make(map[string]string),
+		ctx:      ctx,
+		cancel:   cancel,
 	}
+	// Every DRBD config written or read goes through the replication-paths
+	// layer (replication_paths.go).
+	ctrl.deployment = &resPathsDeployment{deploymentClient: deploymentClient, extra: func() map[string][]string {
+		if ctrl.nodes == nil {
+			return nil
+		}
+		return ctrl.nodes.replicationPathsByDRBDName()
+	}}
 
 	// Initialize managers
 	ctrl.storage = NewStorageManager(ctrl)
@@ -500,6 +507,7 @@ func (c *Controller) loadFromDatabase(ctx context.Context) error {
 			Name:               dbNode.Name,
 			Address:            dbNode.Address,
 			ReplicationAddress: dbNode.ReplicationAddress,
+			ReplicationPaths:   dbNode.ReplicationPaths,
 			Hostname:           dbNode.Hostname,
 			State:              NodeState(dbNode.State),
 			LastSeen:           dbNode.LastSeen,

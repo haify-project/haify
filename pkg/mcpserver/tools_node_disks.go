@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 
+	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/util"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -45,5 +46,32 @@ func (s *Server) registerNodeDiskTools(srv *mcp.Server) {
 					Pool: d.Pool, Detail: d.Detail})
 			}
 			return nil, out, nil
+		})
+}
+
+type nodePathsIn struct {
+	Node      string   `json:"node" jsonschema:"node name"`
+	Addresses []string `json:"addresses" jsonschema:"the node's address on each further replication network, in the same order on every node; empty removes them"`
+}
+
+// registerNodePathTools adds the tool for further replication networks, when
+// the client can set them.
+func (s *Server) registerNodePathTools(srv *mcp.Server) {
+	c, supported := s.client.(interface {
+		SetNodeReplicationPaths(context.Context, string, []string) (*haifypb.SetNodeAddressResponse, error)
+	})
+	if !supported {
+		return
+	}
+	addWrite(s, srv, writeTool("haify_node_set_replication_paths", "Give a node more replication networks",
+		"Set a node's addresses on further replication networks (a second NIC or switch). Every pair of nodes then "+
+			"gets a DRBD path per network both are on, and a connection survives losing one link: DRBD reconnects "+
+			"over another within about half a minute. The node's resources are rewritten and adjusted in place."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in nodePathsIn) (*mcp.CallToolResult, nodeAddressOut, error) {
+			resp, err := c.SetNodeReplicationPaths(ctx, in.Node, in.Addresses)
+			if err != nil {
+				return nil, nodeAddressOut{}, err
+			}
+			return nil, nodeAddressOut{OK: resp.Success, Message: resp.Message, Resources: resp.Resources, Failed: resp.Failed}, nil
 		})
 }

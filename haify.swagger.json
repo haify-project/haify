@@ -2932,6 +2932,45 @@
         ]
       }
     },
+    "/v1/nodes/{node}/replication-paths": {
+      "post": {
+        "summary": "SetNodeReplicationPaths sets the further addresses DRBD may use for a\nnode and rewrites every resource it takes part in.",
+        "operationId": "HaifyController_SetNodeReplicationPaths",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SetNodeAddressResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/HaifyControllerSetNodeReplicationPathsBody"
+            }
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
     "/v1/nodes/{node}/restore": {
       "post": {
         "operationId": "HaifyController_RestoreNode",
@@ -7144,6 +7183,18 @@
       },
       "description": "SetNodeLabels sets or merges key=value labels on a node. When replace is\ntrue the node's labels are replaced wholesale; otherwise the given labels are\nmerged in (a label with an empty value deletes that key)."
     },
+    "HaifyControllerSetNodeReplicationPathsBody": {
+      "type": "object",
+      "properties": {
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "addresses replace the node's current extra replication addresses; empty\nremoves them."
+        }
+      }
+    },
     "HaifyControllerSetPrimaryBody": {
       "type": "object",
       "properties": {
@@ -10923,6 +10974,13 @@
           "type": "string",
           "format": "int64",
           "description": "offline_since is when the node stopped answering (Unix seconds), 0 while\nit answers. Self-healing counts from it."
+        },
+        "replicationPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "replication_paths are further addresses DRBD uses for this node, one per\nadditional replication network; each pair of nodes gets a path per\nnetwork both are on."
         }
       }
     },

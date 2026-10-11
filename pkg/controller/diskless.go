@@ -82,7 +82,7 @@ func (rm *ResourceManager) AttachDisklessClient(ctx context.Context, resource, n
 		zap.String("node", node),
 		zap.Bool("already_recorded", alreadyClient))
 
-	// Resolve the client's DRBD replication address the same way create does.
+	// The client's management address, for the commands run on it.
 	ip := rm.controller.nodes.GetNodeAddressByName(node)
 	if ip == "" {
 		rm.mu.RLock()
@@ -131,7 +131,13 @@ func (rm *ResourceManager) AttachDisklessClient(ctx context.Context, resource, n
 		return err
 	}
 
-	newConfig, err := addDisklessClientBlock(originalConfig, node, ip, dbRes.Port)
+	// SSH goes to ip; DRBD talks over the node's replication network, the
+	// same address create and repair write for it.
+	replIP := ip
+	if r := rm.controller.nodes.GetReplicationAddressByName(node); r != "" {
+		replIP = resolveToIP(r)
+	}
+	newConfig, err := addDisklessClientBlock(originalConfig, node, replIP, dbRes.Port)
 	if err == errDisklessAlreadyPresent {
 		// The .res already carries the client (a prior partial attach). Make sure
 		// it is up and recorded, then return success.

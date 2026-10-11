@@ -29,6 +29,7 @@ func nodeCommand() *cobra.Command {
 	cmd.AddCommand(nodeDrain())
 	cmd.AddCommand(nodeUndrain())
 	cmd.AddCommand(nodeDisks())
+	cmd.AddCommand(nodeSetPaths())
 
 	return cmd
 }
@@ -118,6 +119,12 @@ func nodeGet() *cobra.Command {
 
 			// Print node details
 			fmt.Printf("Address:   %s\n", foundNode.Address)
+			if r := foundNode.ReplicationAddress; r != "" && r != foundNode.Address {
+				fmt.Printf("DRBD:      %s\n", r)
+			}
+			if len(foundNode.ReplicationPaths) > 0 {
+				fmt.Printf("DRBD also: %s\n", strings.Join(foundNode.ReplicationPaths, ", "))
+			}
 			fmt.Printf("Hostname:  %s\n", foundNode.Hostname)
 			fmt.Printf("State:     %s\n", foundNode.State)
 			fmt.Printf("Version:   %s\n", foundNode.Version)

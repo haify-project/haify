@@ -133,6 +133,23 @@ haify node register --name node1 --address 192.0.2.11 \
     --replication-address 10.0.0.11
 ```
 
+**More than one replication network.** With two links between the nodes (two
+NICs, two switches), give each node its address on the second network, in the
+same order on every node:
+
+```bash
+haify node set-paths node1 10.1.0.11
+haify node set-paths node2 10.1.0.12
+haify node set-paths node3 10.1.0.13
+haify node set-paths node1 --clear     # back to one network
+```
+
+Every pair of nodes then has a DRBD path on each network both are on. When the
+link in use fails, DRBD reconnects over the other within about half a minute,
+and the resource stays UpToDate. The resources a node takes part in are rewritten and
+adjusted in place; their connections stay up while the paths are added or
+removed.
+
 **Labels** describe where a node physically is. Auto-placement uses them to keep
 replicas apart, or together:
 

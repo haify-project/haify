@@ -260,7 +260,13 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 		newBind = ports[0]
 	}
 
-	newConfig, err := rm.addReplicaToConfig(liveConfig, resource, node, newAddr, dbVols,
+	// SSH goes to newAddr; DRBD talks over the node's replication network,
+	// the same address create and repair write for it.
+	replAddr := rm.controller.nodes.GetReplicationAddressByName(node)
+	if replAddr == "" {
+		replAddr = newAddr
+	}
+	newConfig, err := rm.addReplicaToConfig(liveConfig, resource, node, resolveToIP(replAddr), dbVols,
 		dbRes.Port, len(primaries), newBind, dbRes.WANMode && dbRes.DRNode != "", dbRes.DRNode,
 		dbRes.Encrypted)
 	if err != nil {

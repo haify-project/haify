@@ -35,6 +35,7 @@ const (
 	HaifyController_UnregisterNode_FullMethodName            = "/v1.HaifyController/UnregisterNode"
 	HaifyController_SetNodeLabels_FullMethodName             = "/v1.HaifyController/SetNodeLabels"
 	HaifyController_SetNodeAddress_FullMethodName            = "/v1.HaifyController/SetNodeAddress"
+	HaifyController_SetNodeReplicationPaths_FullMethodName   = "/v1.HaifyController/SetNodeReplicationPaths"
 	HaifyController_GetNode_FullMethodName                   = "/v1.HaifyController/GetNode"
 	HaifyController_ListNodes_FullMethodName                 = "/v1.HaifyController/ListNodes"
 	HaifyController_HealthCheck_FullMethodName               = "/v1.HaifyController/HealthCheck"
@@ -231,6 +232,9 @@ type HaifyControllerClient interface {
 	UnregisterNode(ctx context.Context, in *UnregisterNodeRequest, opts ...grpc.CallOption) (*UnregisterNodeResponse, error)
 	SetNodeLabels(ctx context.Context, in *SetNodeLabelsRequest, opts ...grpc.CallOption) (*SetNodeLabelsResponse, error)
 	SetNodeAddress(ctx context.Context, in *SetNodeAddressRequest, opts ...grpc.CallOption) (*SetNodeAddressResponse, error)
+	// SetNodeReplicationPaths sets the further addresses DRBD may use for a
+	// node and rewrites every resource it takes part in.
+	SetNodeReplicationPaths(ctx context.Context, in *SetNodeReplicationPathsRequest, opts ...grpc.CallOption) (*SetNodeAddressResponse, error)
 	GetNode(ctx context.Context, in *GetNodeRequest, opts ...grpc.CallOption) (*GetNodeResponse, error)
 	ListNodes(ctx context.Context, in *ListNodesRequest, opts ...grpc.CallOption) (*ListNodesResponse, error)
 	HealthCheck(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error)
@@ -711,6 +715,16 @@ func (c *haifyControllerClient) SetNodeAddress(ctx context.Context, in *SetNodeA
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetNodeAddressResponse)
 	err := c.cc.Invoke(ctx, HaifyController_SetNodeAddress_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) SetNodeReplicationPaths(ctx context.Context, in *SetNodeReplicationPathsRequest, opts ...grpc.CallOption) (*SetNodeAddressResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetNodeAddressResponse)
+	err := c.cc.Invoke(ctx, HaifyController_SetNodeReplicationPaths_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2423,6 +2437,9 @@ type HaifyControllerServer interface {
 	UnregisterNode(context.Context, *UnregisterNodeRequest) (*UnregisterNodeResponse, error)
 	SetNodeLabels(context.Context, *SetNodeLabelsRequest) (*SetNodeLabelsResponse, error)
 	SetNodeAddress(context.Context, *SetNodeAddressRequest) (*SetNodeAddressResponse, error)
+	// SetNodeReplicationPaths sets the further addresses DRBD may use for a
+	// node and rewrites every resource it takes part in.
+	SetNodeReplicationPaths(context.Context, *SetNodeReplicationPathsRequest) (*SetNodeAddressResponse, error)
 	GetNode(context.Context, *GetNodeRequest) (*GetNodeResponse, error)
 	ListNodes(context.Context, *ListNodesRequest) (*ListNodesResponse, error)
 	HealthCheck(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error)
@@ -2796,6 +2813,9 @@ func (UnimplementedHaifyControllerServer) SetNodeLabels(context.Context, *SetNod
 }
 func (UnimplementedHaifyControllerServer) SetNodeAddress(context.Context, *SetNodeAddressRequest) (*SetNodeAddressResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetNodeAddress not implemented")
+}
+func (UnimplementedHaifyControllerServer) SetNodeReplicationPaths(context.Context, *SetNodeReplicationPathsRequest) (*SetNodeAddressResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetNodeReplicationPaths not implemented")
 }
 func (UnimplementedHaifyControllerServer) GetNode(context.Context, *GetNodeRequest) (*GetNodeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetNode not implemented")
@@ -3603,6 +3623,24 @@ func _HaifyController_SetNodeAddress_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HaifyControllerServer).SetNodeAddress(ctx, req.(*SetNodeAddressRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_SetNodeReplicationPaths_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetNodeReplicationPathsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).SetNodeReplicationPaths(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_SetNodeReplicationPaths_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).SetNodeReplicationPaths(ctx, req.(*SetNodeReplicationPathsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6676,6 +6714,10 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetNodeAddress",
 			Handler:    _HaifyController_SetNodeAddress_Handler,
+		},
+		{
+			MethodName: "SetNodeReplicationPaths",
+			Handler:    _HaifyController_SetNodeReplicationPaths_Handler,
 		},
 		{
 			MethodName: "GetNode",

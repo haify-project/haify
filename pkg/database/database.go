@@ -176,10 +176,13 @@ type Node struct {
 	// registered before this field existed deserializes, so the single-network
 	// setup keeps working untouched.
 	ReplicationAddress string
-	Hostname           string
-	State              string
-	LastSeen           time.Time
-	Version            string
+	// ReplicationPaths are further addresses DRBD may use for this node, one
+	// per additional replication network.
+	ReplicationPaths []string `json:",omitempty"`
+	Hostname         string
+	State            string
+	LastSeen         time.Time
+	Version          string
 	// Labels is a JSON-encoded map[string]string of arbitrary node tags (e.g.
 	// {"rack":"A","zone":"east"}) used by placement constraints. Empty for nodes
 	// registered before labels existed — deserializes as no labels.

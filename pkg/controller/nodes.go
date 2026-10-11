@@ -35,12 +35,16 @@ type NodeInfo struct {
 	// Address. Keeping these separate is what lets replication ride a dedicated
 	// NIC/subnet while the controller still reaches the node for SSH on the
 	// management address.
-	ReplicationAddress string                 `json:"replication_address,omitempty"`
-	Hostname           string                 `json:"hostname"`
-	State              NodeState              `json:"state"`
-	LastSeen           time.Time              `json:"last_seen"`
-	Capacity           map[string]interface{} `json:"capacity"`
-	Version            string                 `json:"version"`
+	ReplicationAddress string `json:"replication_address,omitempty"`
+	// ReplicationPaths are further addresses DRBD may use to reach this node,
+	// one per additional network, in the same order on every node
+	// (replication_paths.go).
+	ReplicationPaths []string               `json:"replication_paths,omitempty"`
+	Hostname         string                 `json:"hostname"`
+	State            NodeState              `json:"state"`
+	LastSeen         time.Time              `json:"last_seen"`
+	Capacity         map[string]interface{} `json:"capacity"`
+	Version          string                 `json:"version"`
 	// Labels are arbitrary key=value tags (e.g. rack=A) used by placement
 	// constraints such as replicas-on-different.
 	Labels map[string]string `json:"labels,omitempty"`
@@ -506,6 +510,7 @@ func nodeRecord(n *NodeInfo) *database.Node {
 		Name:               n.Name,
 		Address:            n.Address,
 		ReplicationAddress: n.ReplicationAddress,
+		ReplicationPaths:   n.ReplicationPaths,
 		Hostname:           n.Hostname,
 		State:              string(n.State),
 		LastSeen:           n.LastSeen,
