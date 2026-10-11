@@ -82,10 +82,12 @@ func (rm *ResourceManager) DeleteResource(ctx context.Context, name string, forc
 		return err
 	}
 
-	// Diskless quorum tiebreakers carry the config and a kernel resource but no
-	// backing volume. They must be torn down too, or the config and minor/port
-	// linger in the kernel as an orphan that blocks reusing them later.
-	allHosts := append(append([]string(nil), hosts...), rm.disklessHosts(ctx, name)...)
+	// Diskless members — quorum tiebreakers and data clients — carry the
+	// config and a kernel resource but no backing volume. They must be torn
+	// down too, or the config and minor/port linger as an orphan: a client's
+	// leftover file once made the next resource given the same port fail to
+	// come up on that node.
+	allHosts := append(append([]string(nil), hosts...), rm.disklessParticipantHosts(ctx, name)...)
 
 	// Best-effort unmount of the resource's DRBD devices so a mounted resource
 	// can be brought down — drbdadm down fails on a busy (mounted) device,

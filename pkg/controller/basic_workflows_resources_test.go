@@ -479,3 +479,25 @@ func TestResourceManagerCreateFilesystemOnlySupportsBtrfs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, dep.execCalls, 1)
 }
+
+// A diskless data client holds the config and a kernel resource too. Left
+// behind, its file claimed the resource's port, and the next resource given
+// that port could not come up on the node.
+func TestDeleteResourceTearsDownDisklessClients(t *testing.T) {
+	dep := &fakeDeploymentClient{}
+	ctrl := newBasicTestController(dep)
+	ctrl.db = newTestDB(t)
+	require.NoError(t, ctrl.db.SaveResource(context.Background(), &database.Resource{
+		Name: "res1", Port: 7004, Nodes: "node1,node2", DisklessClients: "node3", Protocol: "C", Replicas: 2,
+	}))
+	for i, n := range []string{"node1", "node2", "node3"} {
+		addr := fmt.Sprintf("10.0.0.%d", i+1)
+		ctrl.nodes.nodes[addr] = &NodeInfo{Name: n, Address: addr}
+		ctrl.hostsMap[n] = addr
+	}
+	require.NoError(t, ctrl.resources.DeleteResource(context.Background(), "res1", false))
+	require.NotEmpty(t, dep.drbdDownCalls)
+	assert.Contains(t, dep.drbdDownCalls[0].hosts, "10.0.0.3", "the client is brought down")
+	require.NotEmpty(t, dep.deleteConfigCalls)
+	assert.Contains(t, dep.deleteConfigCalls[0].hosts, "10.0.0.3", "and its config removed")
+}
