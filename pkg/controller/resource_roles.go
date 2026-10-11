@@ -137,11 +137,13 @@ func (rm *ResourceManager) resourceNeedsInitialForce(ctx context.Context, resour
 // UpToDate" test is fooled by volume 1 and wrongly refuses the force that
 // volume 0 needs. For each LOCAL device:
 //   - already UpToDate    -> a force cannot harm it; ignore.
-//   - not UpToDate, a peer holds an UpToDate copy of THIS volume -> forcing
-//     would overwrite that peer's real data from our stale copy: UNSAFE, so
-//     refuse the force entirely (normal failover / resync, not initial sync).
-//   - not UpToDate, no peer holds an UpToDate copy of THIS volume -> a fresh
+//   - Outdated or Consistent, or a peer holds a copy with data (UpToDate,
+//     Outdated, Consistent) of THIS volume -> forcing would rewrite real
+//     data: UNSAFE, so refuse the force entirely.
+//   - Inconsistent, every peer connected and none holding data -> a fresh
 //     unsynced volume with no data to lose: force is needed and safe for it.
+//
+// Any peer that is not connected refuses the force: it may hold the data.
 //
 // Returns true only if at least one volume needs the force and NO volume made it
 // unsafe. Empty/unparseable input returns an error so callers fail closed.
@@ -162,12 +164,22 @@ func safeToForceInitialSync(output string) (bool, error) {
 		return false, fmt.Errorf("drbdsetup status json reported no local devices")
 	}
 
-	// Per volume: does any peer hold an UpToDate copy?
-	peerUpToDate := make(map[int]bool)
+	// A peer that is not connected may hold the only good copy: its disk
+	// state is unknown, not absent. Forcing past it is how an Outdated
+	// replica became the data while the node with the newer writes was still
+	// booting (a PVE host rebooted with its VM running).
+	for _, conn := range res.Connections {
+		if conn.ConnectionState != "Connected" {
+			return false, nil
+		}
+	}
+	// Per volume: does any peer hold a copy that has data?
+	peerHasData := make(map[int]bool)
 	for _, conn := range res.Connections {
 		for _, pd := range conn.PeerDevices {
-			if pd.PeerDiskState == "UpToDate" {
-				peerUpToDate[pd.Volume] = true
+			switch pd.PeerDiskState {
+			case "UpToDate", "Outdated", "Consistent", "DUnknown":
+				peerHasData[pd.Volume] = true
 			}
 		}
 	}
@@ -177,12 +189,12 @@ func safeToForceInitialSync(output string) (bool, error) {
 		if dev.DiskState == "UpToDate" {
 			continue
 		}
-		if peerUpToDate[dev.Volume] {
-			// A peer has real UpToDate data for this volume that a blanket
-			// force-primary would destroy: refuse to force the whole resource.
+		// Only a volume that has never been synced is a fresh one. Outdated
+		// and Consistent copies have history a force would rewrite.
+		if dev.DiskState != "Inconsistent" || peerHasData[dev.Volume] {
 			return false, nil
 		}
-		// This volume has no UpToDate copy anywhere: fresh, nothing to lose.
+		// This volume has no copy with data anywhere: fresh, nothing to lose.
 		needForce = true
 	}
 	return needForce, nil
@@ -298,6 +310,23 @@ func (rm *ResourceManager) PromoteForNode(ctx context.Context, resource, node st
 				resource, node, err)
 		}
 
+		// Quorum is not enough on its own. An Outdated disk is one a peer
+		// marked as missing writes when it disconnected on purpose — the old
+		// Primary going down in an orderly way while still writing — and a
+		// forced promote makes that stale copy the data, discarding the newer
+		// writes on the node that left. Seen on a PVE host rebooted with its
+		// VM running: the guest came up on the outdated replica and the two
+		// copies split. Such a copy has to wait for the node that has the
+		// writes.
+		if stale, sErr := rm.nodeStaleDisk(ctx, resource, node); sErr != nil {
+			return fmt.Errorf("refusing to force-promote %s on %s: normal promote failed (%v) and its disk state could not be read: %w",
+				resource, node, err, sErr)
+		} else if stale != "" {
+			return fmt.Errorf("refusing to force-promote %s on %s: its copy is %s, so another node has writes it lacks; "+
+				"bring that node back, or if it is gone for good, promote by hand knowing those writes are lost (original promote error: %v)",
+				resource, node, stale, err)
+		}
+
 		// (c) Quorum held -> safe to force. Any old/partitioned Primary that lost
 		// quorum is blocked from I/O by on-no-quorum=io-error and cannot serve
 		// stale writes, so this node can safely become the sole Primary.
@@ -333,6 +362,40 @@ func (rm *ResourceManager) nodeHasQuorum(ctx context.Context, resource, node str
 		return localNodeHasQuorum(r.Output)
 	}
 	return false, fmt.Errorf("no drbd status result returned for %s", node)
+}
+
+// nodeStaleDisk returns the disk state of node's copy of resource when it is
+// not one a forced promote may build on (UpToDate or Consistent), or "".
+func (rm *ResourceManager) nodeStaleDisk(ctx context.Context, resource, node string) (string, error) {
+	res, err := rm.deployment.DRBDStatusJSON(ctx, []string{rm.controller.ResolveHost(node)}, resource)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range res.Hosts {
+		if !r.Success {
+			return "", fmt.Errorf("drbd status on %s failed: %s", node, r.Output)
+		}
+		return localStaleDisk(r.Output)
+	}
+	return "", fmt.Errorf("no drbd status result returned for %s", node)
+}
+
+func localStaleDisk(output string) (string, error) {
+	var resources []drbdsetupStatus
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resources); err != nil {
+		return "", fmt.Errorf("decode drbdsetup status json: %w", err)
+	}
+	if len(resources) == 0 || len(resources[0].Devices) == 0 {
+		return "", fmt.Errorf("drbdsetup status json reported no local devices")
+	}
+	for _, d := range resources[0].Devices {
+		switch d.DiskState {
+		case "UpToDate", "Consistent":
+		default:
+			return d.DiskState, nil
+		}
+	}
+	return "", nil
 }
 
 // localNodeHasQuorum parses `drbdsetup status <res> --json` and reports whether

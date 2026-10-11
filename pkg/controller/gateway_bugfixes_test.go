@@ -198,7 +198,7 @@ func TestCreateResourceFailsWhenInitialSyncFails(t *testing.T) {
 // fooled by a sibling volume being UpToDate.
 func TestSafeToForceInitialSync(t *testing.T) {
 	// Single volume, both local and peer Inconsistent -> fresh, force needed.
-	force, err := safeToForceInitialSync(`[{"name":"data","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"node2","peer-role":"Secondary","peer_devices":[{"volume":0,"replication-state":"Established","peer-disk-state":"Inconsistent"}]}]}]`)
+	force, err := safeToForceInitialSync(`[{"name":"data","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"node2","connection-state":"Connected","peer-role":"Secondary","peer_devices":[{"volume":0,"replication-state":"Established","peer-disk-state":"Inconsistent"}]}]}]`)
 	require.NoError(t, err)
 	assert.True(t, force)
 
@@ -208,7 +208,7 @@ func TestSafeToForceInitialSync(t *testing.T) {
 	assert.False(t, force)
 
 	// Single volume, peer UpToDate (normal failover) -> must NOT force.
-	force, err = safeToForceInitialSync(`[{"name":"data","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"node2","peer-role":"Primary","peer_devices":[{"volume":0,"replication-state":"Established","peer-disk-state":"UpToDate"}]}]}]`)
+	force, err = safeToForceInitialSync(`[{"name":"data","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"node2","connection-state":"Connected","peer-role":"Primary","peer_devices":[{"volume":0,"replication-state":"Established","peer-disk-state":"UpToDate"}]}]}]`)
 	require.NoError(t, err)
 	assert.False(t, force)
 
@@ -217,14 +217,14 @@ func TestSafeToForceInitialSync(t *testing.T) {
 	// UpToDate copy anywhere. The UpToDate volume 1 must NOT mask volume 0:
 	// force IS needed (and safe — volume 1 is locally UpToDate, volume 0 has no
 	// data to lose).
-	force, err = safeToForceInitialSync(`[{"name":"vtest","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"},{"volume":1,"disk-state":"UpToDate"}],"connections":[{"name":"node-b","peer-role":"Secondary","peer_devices":[{"volume":0,"peer-disk-state":"Inconsistent"},{"volume":1,"peer-disk-state":"UpToDate"}]},{"name":"node-c","peer-role":"Secondary","peer_devices":[{"volume":0,"peer-disk-state":"Diskless"},{"volume":1,"peer-disk-state":"Diskless"}]}]}]`)
+	force, err = safeToForceInitialSync(`[{"name":"vtest","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"},{"volume":1,"disk-state":"UpToDate"}],"connections":[{"name":"node-b","connection-state":"Connected","peer-role":"Secondary","peer_devices":[{"volume":0,"peer-disk-state":"Inconsistent"},{"volume":1,"peer-disk-state":"UpToDate"}]},{"name":"node-c","connection-state":"Connected","peer-role":"Secondary","peer_devices":[{"volume":0,"peer-disk-state":"Diskless"},{"volume":1,"peer-disk-state":"Diskless"}]}]}]`)
 	require.NoError(t, err)
 	assert.True(t, force, "an UpToDate state volume must not suppress the force the data volume needs")
 
 	// Data-loss guard, multi-volume: volume 0 has a real UpToDate copy on a peer
 	// (would be overwritten by a blanket force) while volume 1 is fresh. The
 	// unsafe volume 0 must veto the whole force.
-	force, err = safeToForceInitialSync(`[{"name":"vtest","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"},{"volume":1,"disk-state":"Inconsistent"}],"connections":[{"name":"node-b","peer-role":"Primary","peer_devices":[{"volume":0,"peer-disk-state":"UpToDate"},{"volume":1,"peer-disk-state":"Inconsistent"}]}]}]`)
+	force, err = safeToForceInitialSync(`[{"name":"vtest","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"},{"volume":1,"disk-state":"Inconsistent"}],"connections":[{"name":"node-b","connection-state":"Connected","peer-role":"Primary","peer_devices":[{"volume":0,"peer-disk-state":"UpToDate"},{"volume":1,"peer-disk-state":"Inconsistent"}]}]}]`)
 	require.NoError(t, err)
 	assert.False(t, force, "a peer's real UpToDate data on any volume must veto a blanket force")
 
@@ -247,7 +247,7 @@ func TestSetPrimaryForcesInitialSyncWhenNoUpToDate(t *testing.T) {
 			return &deployment.HostResult{Host: host, Success: true}, nil
 		},
 		drbdStatusJSONFunc: func(_ context.Context, hosts []string, resource string) (*deployment.ExecResult, error) {
-			return successExecResult(hosts, `[{"name":"data","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"node2","peer-role":"Secondary","peer_devices":[{"volume":0,"replication-state":"Established","peer-disk-state":"Inconsistent"}]}]}]`), nil
+			return successExecResult(hosts, `[{"name":"data","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"node2","connection-state":"Connected","peer-role":"Secondary","peer_devices":[{"volume":0,"replication-state":"Established","peer-disk-state":"Inconsistent"}]}]}]`), nil
 		},
 	}
 	ctrl := newBasicTestController(dep)
@@ -267,7 +267,7 @@ func TestSetPrimaryDoesNotForceWhenPeerUpToDate(t *testing.T) {
 			return &deployment.HostResult{Host: host, Success: false, Output: "State change was refused by peer node"}, nil
 		},
 		drbdStatusJSONFunc: func(_ context.Context, hosts []string, resource string) (*deployment.ExecResult, error) {
-			return successExecResult(hosts, `[{"name":"data","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"node2","peer-role":"Primary","peer_devices":[{"volume":0,"replication-state":"Established","peer-disk-state":"UpToDate"}]}]}]`), nil
+			return successExecResult(hosts, `[{"name":"data","role":"Secondary","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"node2","connection-state":"Connected","peer-role":"Primary","peer_devices":[{"volume":0,"replication-state":"Established","peer-disk-state":"UpToDate"}]}]}]`), nil
 		},
 	}
 	ctrl := newBasicTestController(dep)
@@ -275,4 +275,19 @@ func TestSetPrimaryDoesNotForceWhenPeerUpToDate(t *testing.T) {
 	err := ctrl.resources.SetPrimary(context.Background(), "data", "node1", false)
 	require.Error(t, err)
 	assert.Equal(t, []bool{false}, forces, "must NOT force-promote when a replica is still UpToDate")
+}
+
+// A peer that is not connected may hold the only copy with data; an Outdated
+// or Consistent local copy has history. Neither is an initial sync.
+func TestSafeToForceInitialSyncRefusesUnknownPeersAndHistory(t *testing.T) {
+	for name, js := range map[string]string{
+		"peer unreachable": `[{"name":"d","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"n2","connection-state":"Connecting"}]}]`,
+		"local Outdated":   `[{"name":"d","devices":[{"volume":0,"disk-state":"Outdated"}],"connections":[{"name":"n2","connection-state":"Connected","peer_devices":[{"volume":0,"peer-disk-state":"Diskless"}]}]}]`,
+		"local Consistent": `[{"name":"d","devices":[{"volume":0,"disk-state":"Consistent"}],"connections":[]}]`,
+		"peer Outdated":    `[{"name":"d","devices":[{"volume":0,"disk-state":"Inconsistent"}],"connections":[{"name":"n2","connection-state":"Connected","peer_devices":[{"volume":0,"peer-disk-state":"Outdated"}]}]}]`,
+	} {
+		force, err := safeToForceInitialSync(js)
+		require.NoError(t, err, name)
+		assert.False(t, force, name)
+	}
 }

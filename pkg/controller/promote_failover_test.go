@@ -154,3 +154,30 @@ func TestPromoteForNode_ForceFailureKeepsFirstReason(t *testing.T) {
 	assert.Contains(t, err.Error(), "Held open by qemu on peer os2")
 	assert.Contains(t, err.Error(), "State change failed: (-10)")
 }
+
+// The PVE reboot case: the old Primary disconnected on purpose while its VM
+// still wrote, so this replica is Outdated, and that node is still booting.
+// This one holds quorum with a diskless peer, and forcing it would make the
+// stale copy the data.
+func TestPromoteForNode_OutdatedCopyRefusesEvenWithQuorum(t *testing.T) {
+	for _, state := range []string{"Outdated", "Inconsistent", "Diskless"} {
+		var forces []bool
+		dep := &fakeDeploymentClient{
+			drbdPrimaryFunc: func(_ context.Context, host, resource string, force bool) (*deployment.HostResult, error) {
+				forces = append(forces, force)
+				if !force {
+					return &deployment.HostResult{Host: host, Success: false, Output: "State change failed: (-2) Need access to UpToDate data"}, nil
+				}
+				return &deployment.HostResult{Host: host, Success: true}, nil
+			},
+			drbdStatusJSONFunc: func(_ context.Context, hosts []string, resource string) (*deployment.ExecResult, error) {
+				return successExecResult(hosts, fmt.Sprintf(
+					`[{"name":%q,"role":"Secondary","devices":[{"volume":0,"disk-state":%q,"quorum":true}],"connections":[{"name":"node2","connection-state":"Connecting"},{"name":"node3","connection-state":"Connected","peer_devices":[{"volume":0,"peer-disk-state":"Diskless"}]}]}]`, resource, state)), nil
+			},
+		}
+		err := newBasicTestController(dep).resources.PromoteForNode(context.Background(), "data", "node1")
+		require.Error(t, err, state)
+		assert.Contains(t, err.Error(), "its copy is "+state, state)
+		assert.Equal(t, []bool{false}, forces, "%s: no forced promote", state)
+	}
+}
