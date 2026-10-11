@@ -94,6 +94,7 @@ type poolCreateIn struct {
 	Nodes   []string `json:"nodes" jsonschema:"nodes to create the pool on"`
 	Devices []string `json:"devices" jsonschema:"block devices to use, e.g. [\"/dev/sdb\"]"`
 	SizeGB  uint64   `json:"size_gb,omitempty" jsonschema:"thin pool size in GiB (lvm-thin only); 0 uses the whole VG"`
+	Wipe    bool     `json:"wipe,omitempty" jsonschema:"erase devices that hold only old data (a filesystem, partition table, or the label of an array or pool that is not running). Without it such a device is refused with what it holds; show that to the user and get their confirmation before retrying with wipe. A device in use is refused either way."`
 }
 
 type poolDeleteIn struct {
@@ -105,6 +106,7 @@ type poolAddDiskIn struct {
 	Pool    string   `json:"pool" jsonschema:"pool name"`
 	Devices []string `json:"devices" jsonschema:"block devices to add"`
 	Nodes   []string `json:"nodes" jsonschema:"nodes to add the devices on"`
+	Wipe    bool     `json:"wipe,omitempty" jsonschema:"erase devices that hold only old data (a filesystem, partition table, or the label of an array or pool that is not running). Without it such a device is refused with what it holds; show that to the user and get their confirmation before retrying with wipe. A device in use is refused either way."`
 }
 
 // registerClusterTools adds node, health, and pool tools.
@@ -215,7 +217,8 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 		})
 
 	addWrite(s, srv, writeTool("haify_pool_create", "Create storage pool",
-		"Create a storage pool on one or more nodes. Types: lvm (plain VG), lvm-thin (VG + thin pool), lvm-thin-vdo (thin pool on VDO), zfs."),
+		"Create a storage pool on one or more nodes. Types: lvm (plain VG), lvm-thin (VG + thin pool), lvm-thin-vdo (thin pool on VDO), zfs. "+
+			"Find usable devices with haify_node_disks first."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolCreateIn) (*mcp.CallToolResult, opResult, error) {
 			if len(in.Nodes) == 0 || len(in.Devices) == 0 {
 				return nil, opResult{}, fmt.Errorf("nodes and devices are required")
@@ -225,13 +228,13 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 				var err error
 				switch in.Type {
 				case "zfs":
-					err = s.client.CreateZFSPool(ctx, in.Name, node, in.Devices)
+					err = s.client.CreateZFSPoolOptions(ctx, in.Name, node, in.Devices, "", false, in.Wipe)
 				case "lvm", "vg":
-					err = s.client.CreatePool(ctx, in.Name, "vg", node, in.Devices, in.SizeGB)
+					err = s.client.CreatePool(ctx, in.Name, "vg", node, in.Devices, in.SizeGB, in.Wipe)
 				case "lvm-thin", "thin_pool":
-					err = s.client.CreatePool(ctx, in.Name, "thin_pool", node, in.Devices, in.SizeGB)
+					err = s.client.CreatePool(ctx, in.Name, "thin_pool", node, in.Devices, in.SizeGB, in.Wipe)
 				case "lvm-thin-vdo", "thin_vdo":
-					err = s.client.CreatePool(ctx, in.Name, "thin_vdo", node, in.Devices, in.SizeGB)
+					err = s.client.CreatePool(ctx, in.Name, "thin_vdo", node, in.Devices, in.SizeGB, in.Wipe)
 				default:
 					return nil, opResult{}, fmt.Errorf("unsupported pool type %q (use lvm, lvm-thin, lvm-thin-vdo, or zfs)", in.Type)
 				}
@@ -261,7 +264,9 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 		})
 
 	addWrite(s, srv, writeTool("haify_pool_add_disk", "Add disks to pool",
-		"Add block devices to an existing storage pool on one or more nodes."),
+		"Add block devices to an existing storage pool on one or more nodes; the pool grows into them (a thin pool too). "+
+			"Find usable devices with haify_node_disks first. Existing volumes do not grow by themselves, and a replicated "+
+			"volume can only grow as far as the fullest of its nodes allows, so add disks on every node that holds a replica."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolAddDiskIn) (*mcp.CallToolResult, opResult, error) {
 			if len(in.Nodes) == 0 || len(in.Devices) == 0 {
 				return nil, opResult{}, fmt.Errorf("nodes and devices are required")
@@ -270,7 +275,7 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 			added := 0
 			for _, node := range in.Nodes {
 				for _, dev := range in.Devices {
-					if err := s.client.AddDiskToPool(ctx, in.Pool, dev, node); err != nil {
+					if err := s.client.AddDiskToPool(ctx, in.Pool, dev, node, in.Wipe); err != nil {
 						failed = append(failed, fmt.Sprintf("%s %s: %v", node, dev, err))
 						continue
 					}

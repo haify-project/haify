@@ -17,6 +17,24 @@ export interface PoolDisk {
   serial?: string;
 }
 
+// A disk on a node and whether a pool can use it. state: "free" (as it is),
+// "wipe" (holds only old data; usable when the caller asks for it to be
+// erased), "pool" (in a Haify pool) or "busy" (in use; never touched).
+export interface NodeDisk {
+  node: string;
+  device: string;
+  byId?: string;
+  type?: string;
+  sizeBytes?: string;
+  model?: string;
+  serial?: string;
+  transport?: string;
+  rotational?: boolean;
+  state: 'free' | 'wipe' | 'pool' | 'busy';
+  pool?: string;
+  detail?: string;
+}
+
 export interface TrimResult {
   node: string;
   mount: string;
@@ -55,6 +73,11 @@ export const storageApi = (request: RequestFn) => ({
       request<ApiResponse & { disks?: PoolDisk[] }>(`/storage/disks${queryString({ pool, node })}`),
     ),
 
+  getNodeDisks: (node?: string) =>
+    checked(
+      request<ApiResponse & { disks?: NodeDisk[] }>(`/storage/node-disks${queryString({ node })}`),
+    ),
+
   // Not checked: success is false when one filesystem failed, and the
   // results still say which ones were trimmed.
   trimPools: (node?: string) =>
@@ -71,7 +94,7 @@ export const storageApi = (request: RequestFn) => ({
       }),
     ),
 
-  replacePoolDisk: (data: { pool: string; node: string; oldDisk: string; newDisk: string }) =>
+  replacePoolDisk: (data: { pool: string; node: string; oldDisk: string; newDisk: string; wipe?: boolean }) =>
     checked(
       request<StorageJobResponse>('/storage/disks/replace', {
         method: 'POST',

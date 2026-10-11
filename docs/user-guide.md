@@ -279,17 +279,33 @@ keeps serving throughout; the node is diskless for the duration. It refuses
 to start if the node holds a Primary, if a peer is not `UpToDate`, if a resync
 is already running, or if this is one of only two diskful copies.
 
-Growing a pool:
+Growing a pool. A disk put into a server shows up in `node disks`, and on the
+web UI's Pools page under "Unused disks":
 
 ```bash
+haify node disks                     # every node; --node to narrow
 haify pool add --pool data-pool --nodes node1 --devices /dev/sde
 ```
+
+`node disks` says what each disk is: `free` (empty), `wipe` (holds only old
+data: a filesystem, a partition table, the label of an array or pool that is not
+running), `pool` (in a Haify pool) or `busy` (mounted, the system disk, another
+volume group, a DRBD backing disk). `pool create`, `pool add` and
+`pool replace-disk` take only `free` disks, and `wipe` disks with `--wipe`,
+which erases them. A `busy` disk is refused either way, so a mistyped device
+name cannot destroy a disk in use. A device can also be named by its
+`/dev/disk/by-id` link, which does not change when a reboot renumbers `/dev/sdX`.
 
 The disk joins the volume group. If the group holds a thin pool, that pool is
 then extended into the same share of the group's free space `pool create` uses
 (95% less `[storage.thin] reserve_percent`, so 85% by default), with its
 metadata area grown in proportion first, so thin volumes can use the new disk
-straight away.
+straight away. A ZFS pool takes the disk as a new vdev (`zpool add`). If the
+thin pool could not be extended, running the same `pool add` again finishes it.
+
+Volumes already in the pool keep their size until resized. A volume with
+replicas can only grow as far as the fullest of its nodes allows, so give each
+node that holds a replica a disk.
 
 **Disks.** `pool disks` lists the disks under the pools on every node, with
 their health from SMART or the NVMe health log:

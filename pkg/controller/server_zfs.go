@@ -7,7 +7,7 @@ import (
 )
 
 func (s *Server) CreateZFSPool(ctx context.Context, req *haifypb.CreateZFSPoolRequest) (*haifypb.CreateZFSPoolResponse, error) {
-	err := s.storage.CreateZFSPool(ctx, req.Name, req.Node, req.Vdevs, req.Compression, req.Dedup)
+	err := s.storage.CreateZFSPool(ctx, req.Name, req.Node, req.Vdevs, req.Compression, req.Dedup, req.Wipe)
 	if err != nil {
 		return &haifypb.CreateZFSPoolResponse{
 			Success: false,

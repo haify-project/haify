@@ -49,7 +49,7 @@ func TestAddDiskToPoolGrowsThinPool(t *testing.T) {
 	// 95 GiB pool with the 128 MiB metadata floor; a 100 GiB disk arrives.
 	dep := thinAddDiskDeployment(rec, "haify_vg0_thin", 95*gib, thinMetadataFloor, 105*gib)
 
-	err := newBasicTestController(dep).storage.AddDiskToPool(context.Background(), "vg0", "/dev/sdc", "n1")
+	err := newBasicTestController(dep).storage.AddDiskToPool(context.Background(), "vg0", "/dev/sdc", "n1", false)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"metadata", "data"}, rec.order, "metadata grows before data takes the free extents")
@@ -64,7 +64,7 @@ func TestAddDiskToPoolLeavesThickPoolAlone(t *testing.T) {
 	rec := &growRecorder{}
 	dep := thinAddDiskDeployment(rec, "", 0, 0, 100*gib)
 
-	err := newBasicTestController(dep).storage.AddDiskToPool(context.Background(), "vg0", "/dev/sdc", "n1")
+	err := newBasicTestController(dep).storage.AddDiskToPool(context.Background(), "vg0", "/dev/sdc", "n1", false)
 	require.NoError(t, err)
 	assert.Empty(t, rec.order, "a group without a thin pool already sees the new space")
 }
@@ -76,7 +76,7 @@ func TestAddDiskToPoolReportsThinGrowFailure(t *testing.T) {
 		return failedResult(hosts, "Insufficient free space"), nil
 	}
 
-	err := newBasicTestController(dep).storage.AddDiskToPool(context.Background(), "vg0", "/dev/sdc", "n1")
+	err := newBasicTestController(dep).storage.AddDiskToPool(context.Background(), "vg0", "/dev/sdc", "n1", false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "thin pool was not grown")
 	assert.Contains(t, err.Error(), "Insufficient free space")
@@ -96,4 +96,15 @@ func TestPlanThinGrow(t *testing.T) {
 	p = planThinGrow(2000*gib, thinMetadataFloor, 1*gib, thinPoolGrowPercentFree)
 	assert.True(t, p.ExtendData)
 	assert.Zero(t, p.MetadataGrowTo)
+}
+
+// lvextend refuses a metadata size that is not a multiple of 512 bytes. The
+// pool that found this was 11.97 GiB growing by 6 GiB, whose 1% was
+// 183280599 bytes.
+func TestThinMetadataBytesIsWholeMiB(t *testing.T) {
+	for _, pool := range []uint64{18328059900, 95*gib + 105*gib*95/100, 3*gib + 12345, 2000 * gib} {
+		m := thinMetadataBytes(pool)
+		assert.Zero(t, m%(1<<20), "pool %d", pool)
+		assert.GreaterOrEqual(t, m, min(pool/100, 16*gib), "never smaller than 1%%")
+	}
 }

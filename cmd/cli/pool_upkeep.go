@@ -115,6 +115,7 @@ they have none, use replace-disk. Follow it with: haify pool jobs`,
 
 func poolReplaceDisk() *cobra.Command {
 	var pool, node, disk, newDisk string
+	var wipe bool
 	cmd := &cobra.Command{
 		Use:   "replace-disk",
 		Short: "Move a disk's data to a new disk, then take the old one out",
@@ -123,7 +124,7 @@ one's data moves to it, and the old disk leaves the pool. The pool stays in use 
 Follow it with: haify pool jobs`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runJob(func(ctx context.Context, c *client.HaifyClient) (string, error) {
-				resp, err := c.ReplacePoolDisk(ctx, pool, node, disk, newDisk)
+				resp, err := c.ReplacePoolDisk(ctx, pool, node, disk, newDisk, wipe)
 				if err != nil {
 					return "", err
 				}
@@ -134,7 +135,8 @@ Follow it with: haify pool jobs`,
 	cmd.Flags().StringVar(&pool, "pool", "", "Pool name (required)")
 	cmd.Flags().StringVar(&node, "node", "", "Node (required)")
 	cmd.Flags().StringVar(&disk, "disk", "", "Disk to replace")
-	cmd.Flags().StringVar(&newDisk, "new-disk", "", "Empty disk to move its data to")
+	cmd.Flags().StringVar(&newDisk, "new-disk", "", "Empty disk to move its data to (haify node disks)")
+	cmd.Flags().BoolVar(&wipe, "wipe", false, "Erase the new disk if it holds only old data; without it such a disk is refused")
 	return cmd
 }
 

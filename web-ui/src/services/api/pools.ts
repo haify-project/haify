@@ -63,6 +63,7 @@ export const poolsApi = (request: RequestFn) => ({
     node: string;
     disks?: string[];
     sizeGb?: number;
+    wipe?: boolean;
   }) =>
     request<ApiResponse>('/pools', {
       method: 'POST',
@@ -74,7 +75,7 @@ export const poolsApi = (request: RequestFn) => ({
 
   // ZFS pools live on a dedicated API: creation takes vdevs (whole devices
   // or partitions), not the LVM disks/VG flow.
-  createZFSPool: (data: { name: string; node: string; vdevs: string[] }) =>
+  createZFSPool: (data: { name: string; node: string; vdevs: string[]; wipe?: boolean }) =>
     request<ApiResponse>('/zfs/pools', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -85,10 +86,10 @@ export const poolsApi = (request: RequestFn) => ({
       method: 'DELETE',
     }),
 
-  addDisk: (pool: string, disk: string, node?: string) =>
+  addDisk: (pool: string, disk: string, node?: string, wipe = false) =>
     request<ApiResponse>(`/pools/${pool}/disks`, {
       method: 'POST',
-      body: JSON.stringify({ disk, node }),
+      body: JSON.stringify({ disk, node, wipe }),
     }),
 });
 

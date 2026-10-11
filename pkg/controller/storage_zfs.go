@@ -18,7 +18,7 @@ import (
 // inherits them. Both used to be accepted by the deployment layer and dropped
 // on the floor, so a pool asked to compress did whatever the OpenZFS default
 // was. An empty compression still means that default (on, i.e. lz4, from 2.2).
-func (sm *StorageManager) CreateZFSPool(ctx context.Context, name, node string, vdevs []string, compression string, dedup bool) error {
+func (sm *StorageManager) CreateZFSPool(ctx context.Context, name, node string, vdevs []string, compression string, dedup, wipe bool) error {
 	name = normalizeManagedName(name)
 	if compression != "" && !deployment.ValidZFSCompression(compression) {
 		return fmt.Errorf("unknown ZFS compression %q (on, off, lz4, zstd, zstd-1..19, gzip, gzip-1..9, lzjb, zle)", compression)
@@ -31,6 +31,14 @@ func (sm *StorageManager) CreateZFSPool(ctx context.Context, name, node string, 
 
 	// Convert node name to address
 	address := sm.controller.ResolveHost(node)
+	if address == "" {
+		return fmt.Errorf("node not found: %s", node)
+	}
+	// zpool create -f overwrites whatever is on the devices, so they are
+	// checked first like any other pool's.
+	if _, err := sm.prepareDisks(ctx, address, node, zfsVdevDevices(vdevs), wipe); err != nil {
+		return err
+	}
 
 	// Create ZFS pool
 	result, err := sm.controller.deployment.ZFSCreatePool(ctx, []string{address}, name, vdevs,

@@ -40,7 +40,7 @@ func (m *mockClient) ListPools(ctx context.Context) ([]*haifypb.PoolInfo, error)
 	return m.listPoolsFn(ctx)
 }
 
-func (m *mockClient) CreatePool(_ context.Context, name, poolType, node string, _ []string, _ uint64) error {
+func (m *mockClient) CreatePool(_ context.Context, name, poolType, node string, _ []string, _ uint64, _ bool) error {
 	m.createPoolCalls = append(m.createPoolCalls, name+"/"+poolType+"@"+node)
 	return nil
 }

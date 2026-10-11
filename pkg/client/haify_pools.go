@@ -8,13 +8,14 @@ import (
 )
 
 // CreatePool creates a storage pool
-func (c *HaifyClient) CreatePool(ctx context.Context, name, poolType, node string, disks []string, sizeGB uint64) error {
+func (c *HaifyClient) CreatePool(ctx context.Context, name, poolType, node string, disks []string, sizeGB uint64, wipe bool) error {
 	req := &haifypb.CreatePoolRequest{
 		Name:   name,
 		Type:   poolType,
 		Node:   node,
 		Disks:  disks,
 		SizeGb: sizeGB,
+		Wipe:   wipe,
 	}
 
 	resp, err := c.client.CreatePool(ctx, req)
@@ -65,11 +66,12 @@ func (c *HaifyClient) ListPools(ctx context.Context) ([]*haifypb.PoolInfo, error
 }
 
 // AddDiskToPool adds a disk to a pool
-func (c *HaifyClient) AddDiskToPool(ctx context.Context, pool, disk, node string) error {
+func (c *HaifyClient) AddDiskToPool(ctx context.Context, pool, disk, node string, wipe bool) error {
 	req := &haifypb.AddDiskToPoolRequest{
 		Pool: pool,
 		Disk: disk,
 		Node: node,
+		Wipe: wipe,
 	}
 
 	resp, err := c.client.AddDiskToPool(ctx, req)

@@ -28,6 +28,7 @@ func nodeCommand() *cobra.Command {
 	cmd.AddCommand(nodeSetAddress())
 	cmd.AddCommand(nodeDrain())
 	cmd.AddCommand(nodeUndrain())
+	cmd.AddCommand(nodeDisks())
 
 	return cmd
 }

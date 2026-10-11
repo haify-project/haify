@@ -19,16 +19,17 @@ type ControllerClient interface {
 
 	// Pools
 	ListPools(ctx context.Context) ([]*haifypb.PoolInfo, error)
-	CreatePool(ctx context.Context, name, poolType, node string, disks []string, sizeGB uint64) error
-	CreateZFSPool(ctx context.Context, name, node string, vdevs []string) error
+	CreatePool(ctx context.Context, name, poolType, node string, disks []string, sizeGB uint64, wipe bool) error
+	CreateZFSPoolOptions(ctx context.Context, name, node string, vdevs []string, compression string, dedup, wipe bool) error
 	DeletePool(ctx context.Context, pool, node string) error
-	AddDiskToPool(ctx context.Context, pool, disk, node string) error
+	AddDiskToPool(ctx context.Context, pool, disk, node string, wipe bool) error
+	ListNodeDisks(ctx context.Context, node string) ([]*haifypb.NodeDiskInfo, error)
 
 	// Storage upkeep
 	TrimPools(ctx context.Context, node string) (*haifypb.TrimPoolsResponse, error)
 	ListPoolDisks(ctx context.Context, pool, node string) ([]*haifypb.PoolDiskInfo, error)
 	RemovePoolDisk(ctx context.Context, pool, node, disk string) (*haifypb.StorageJobResponse, error)
-	ReplacePoolDisk(ctx context.Context, pool, node, oldDisk, newDisk string) (*haifypb.StorageJobResponse, error)
+	ReplacePoolDisk(ctx context.Context, pool, node, oldDisk, newDisk string, wipe bool) (*haifypb.StorageJobResponse, error)
 	MoveVolume(ctx context.Context, resource string, volumeID int32, pool string) (*haifypb.StorageJobResponse, error)
 	ListStorageJobs(ctx context.Context, includeFinished bool) ([]*haifypb.StorageJobInfo, error)
 

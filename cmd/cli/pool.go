@@ -39,7 +39,7 @@ func poolCreate() *cobra.Command {
 	var devices string
 	var size string
 	var compression string
-	var dedup bool
+	var dedup, wipe bool
 
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -96,7 +96,7 @@ func poolCreate() *cobra.Command {
 				case "zfs":
 					// For ZFS, 'disks' are vdevs. A zpool has no thin/thick mode;
 					// thin provisioning is a per-zvol property set at volume creation.
-					err = haifyClient.CreateZFSPoolOptions(ctx, name, n, diskList, compression, dedup)
+					err = haifyClient.CreateZFSPoolOptions(ctx, name, n, diskList, compression, dedup, wipe)
 				// "" reaches the LVM path deliberately: an unspecified type is
 				// resolved by the controller from storage.default_pool_type, and
 				// that setting can only name an LVM type — ZFS pools are built by
@@ -114,7 +114,7 @@ func poolCreate() *cobra.Command {
 					case "lvm-thin-vdo":
 						backendType = "thin_vdo"
 					}
-					err = haifyClient.CreatePool(ctx, name, backendType, n, diskList, util.BytesToGiB(sizeBytes))
+					err = haifyClient.CreatePool(ctx, name, backendType, n, diskList, util.BytesToGiB(sizeBytes), wipe)
 				default:
 					err = fmt.Errorf("unsupported pool type: %s", poolType)
 				}
@@ -158,6 +158,7 @@ func poolCreate() *cobra.Command {
 	cmd.Flags().StringVar(&size, "size", "", "Pool size (e.g., 10G, 10GB, 10GiB, 1T, 1TB)")
 	cmd.Flags().StringVar(&compression, "compression", "", "ZFS only: compression algorithm (lz4, zstd, zstd-N, gzip-N, off, ...); default: OpenZFS's (lz4 from 2.2)")
 	cmd.Flags().BoolVar(&dedup, "dedup", false, "ZFS only: deduplicate (costs RAM on every write; for data known to repeat)")
+	cmd.Flags().BoolVar(&wipe, "wipe", false, "Erase devices that hold only old data (a filesystem, a partition table, a stale array or pool label); without it they are refused. Devices in use are refused either way")
 	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
 		if (compression != "" || dedup) && poolType != "zfs" {
 			return fmt.Errorf("--compression and --dedup apply to --type zfs only")
@@ -374,10 +375,11 @@ func poolAddDisk() *cobra.Command {
 	var pool string
 	var devices string
 	var nodes string
+	var wipe bool
 
 	cmd := &cobra.Command{
 		Use:   "add",
-		Short: "Add devices to a pool",
+		Short: "Add devices to a pool; it grows into them (`haify node disks` lists the empty ones)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if pool == "" {
 				return fmt.Errorf("pool name is required")
@@ -409,7 +411,7 @@ func poolAddDisk() *cobra.Command {
 
 			for _, node := range nodeList {
 				for _, device := range deviceList {
-					err = haifyClient.AddDiskToPool(ctx, pool, strings.TrimSpace(device), node)
+					err = haifyClient.AddDiskToPool(ctx, pool, strings.TrimSpace(device), node, wipe)
 					if err != nil {
 						failedOps = append(failedOps, fmt.Sprintf("%s@%s: %v", device, node, err))
 						continue
@@ -436,6 +438,7 @@ func poolAddDisk() *cobra.Command {
 	cmd.Flags().StringVar(&pool, "pool", "", "Pool name")
 	cmd.Flags().StringVar(&devices, "devices", "", "Comma-separated devices to add")
 	cmd.Flags().StringVar(&nodes, "nodes", "", "Comma-separated nodes")
+	cmd.Flags().BoolVar(&wipe, "wipe", false, "Erase devices that hold only old data (a filesystem, a partition table, a stale array or pool label); without it they are refused. Devices in use are refused either way")
 
 	return cmd
 }

@@ -64,6 +64,7 @@ type poolReplaceDiskIn struct {
 	Node    string `json:"node" jsonschema:"node the disk is in"`
 	Disk    string `json:"disk" jsonschema:"the disk to replace, as haify_pool_disks lists it"`
 	NewDisk string `json:"new_disk" jsonschema:"an empty disk on the same node to move its data to"`
+	Wipe    bool   `json:"wipe,omitempty" jsonschema:"erase devices that hold only old data (a filesystem, partition table, or the label of an array or pool that is not running). Without it such a device is refused with what it holds; show that to the user and get their confirmation before retrying with wipe. A device in use is refused either way."`
 }
 
 type moveVolumeIn struct {
@@ -180,7 +181,7 @@ func (s *Server) registerStorageTools(srv *mcp.Server) {
 		"Replace a failing or too-small disk: the new disk joins the pool, the old one's data moves to it, and the "+
 			"old disk leaves the pool. The pool stays in use throughout. Returns a job id; follow it with haify_storage_jobs."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolReplaceDiskIn) (*mcp.CallToolResult, jobStartOut, error) {
-			resp, err := s.client.ReplacePoolDisk(ctx, in.Pool, in.Node, in.Disk, in.NewDisk)
+			resp, err := s.client.ReplacePoolDisk(ctx, in.Pool, in.Node, in.Disk, in.NewDisk, in.Wipe)
 			if err != nil {
 				return nil, jobStartOut{}, err
 			}

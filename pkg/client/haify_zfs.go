@@ -9,18 +9,20 @@ import (
 
 // CreateZFSPool creates a ZFS pool with the OpenZFS default compression.
 func (c *HaifyClient) CreateZFSPool(ctx context.Context, name, node string, vdevs []string) error {
-	return c.CreateZFSPoolOptions(ctx, name, node, vdevs, "", false)
+	return c.CreateZFSPoolOptions(ctx, name, node, vdevs, "", false, false)
 }
 
 // CreateZFSPoolOptions creates a ZFS pool with the given compression algorithm
-// (empty: the OpenZFS default) and deduplication.
-func (c *HaifyClient) CreateZFSPoolOptions(ctx context.Context, name, node string, vdevs []string, compression string, dedup bool) error {
+// (empty: the OpenZFS default) and deduplication; wipe lets disks holding
+// old data be erased.
+func (c *HaifyClient) CreateZFSPoolOptions(ctx context.Context, name, node string, vdevs []string, compression string, dedup, wipe bool) error {
 	req := &haifypb.CreateZFSPoolRequest{
 		Name:        name,
 		Node:        node,
 		Vdevs:       vdevs,
 		Compression: compression,
 		Dedup:       dedup,
+		Wipe:        wipe,
 	}
 
 	resp, err := c.client.CreateZFSPool(ctx, req)

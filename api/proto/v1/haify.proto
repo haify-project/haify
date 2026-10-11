@@ -28,6 +28,11 @@ service HaifyController {
   rpc ListPoolDisks(ListPoolDisksRequest) returns (ListPoolDisksResponse) {
     option (google.api.http) = { get: "/v1/storage/disks"; };
   }
+  // ListNodeDisks lists the disks on the nodes and whether a pool can use
+  // each one: empty, holding only old data, in a pool, or in use.
+  rpc ListNodeDisks(ListNodeDisksRequest) returns (ListNodeDisksResponse) {
+    option (google.api.http) = { get: "/v1/storage/node-disks"; };
+  }
   rpc RemovePoolDisk(RemovePoolDiskRequest) returns (StorageJobResponse) {
     option (google.api.http) = { post: "/v1/storage/disks/remove"; body: "*"; };
   }
@@ -763,6 +768,10 @@ message CreatePoolRequest {
   string node = 3;
   repeated string disks = 4;
   uint64 size_gb = 5;
+  // wipe erases a disk that holds only old data (a filesystem, a partition
+  // table, the label of an array or pool that is not running). Without it
+  // such a disk is refused. A disk in use is refused either way.
+  bool wipe = 6;
 }
 
 message CreatePoolResponse {
@@ -803,6 +812,10 @@ message AddDiskToPoolRequest {
   string pool = 1;
   string disk = 2;
   string node = 3;
+  // wipe erases a disk that holds only old data (a filesystem, a partition
+  // table, the label of an array or pool that is not running). Without it
+  // such a disk is refused. A disk in use is refused either way.
+  bool wipe = 4;
 }
 
 message AddDiskToPoolResponse {
@@ -908,6 +921,10 @@ message CreateZFSPoolRequest {
   // dedup turns on deduplication for the pool. It costs RAM for the dedup
   // table on every write; only worth it for data known to repeat.
   bool dedup = 6;
+  // wipe erases a disk that holds only old data (a filesystem, a partition
+  // table, the label of an array or pool that is not running). Without it
+  // such a disk is refused. A disk in use is refused either way.
+  bool wipe = 7;
 }
 
 message CreateZFSPoolResponse {
@@ -3825,6 +3842,38 @@ message ListPoolDisksResponse {
   repeated PoolDiskInfo disks = 3;
 }
 
+message ListNodeDisksRequest {
+  // node limits the list to one node; empty lists every online node.
+  string node = 1;
+}
+
+message NodeDiskInfo {
+  string node = 1;
+  string device = 2;
+  // by_id is the /dev/disk/by-id link naming the physical disk (its WWN
+  // where it has one), which survives reboots that renumber /dev/sdX.
+  string by_id = 3;
+  // type is lsblk's: disk, part or mpath.
+  string type = 4;
+  uint64 size_bytes = 5;
+  string model = 6;
+  string serial = 7;
+  string transport = 8;
+  bool rotational = 9;
+  // state is "free" (usable as it is), "wipe" (holds only old data; usable
+  // with wipe), "pool" (in a Haify pool) or "busy" (in use; never touched).
+  string state = 10;
+  string pool = 11;
+  // detail says what a "wipe" disk holds or what a "busy" disk is used by.
+  string detail = 12;
+}
+
+message ListNodeDisksResponse {
+  bool success = 1;
+  string message = 2;
+  repeated NodeDiskInfo disks = 3;
+}
+
 message RemovePoolDiskRequest {
   string pool = 1;
   string node = 2;
@@ -3836,6 +3885,10 @@ message ReplacePoolDiskRequest {
   string node = 2;
   string old_disk = 3;
   string new_disk = 4;
+  // wipe erases a disk that holds only old data (a filesystem, a partition
+  // table, the label of an array or pool that is not running). Without it
+  // such a disk is refused. A disk in use is refused either way.
+  bool wipe = 5;
 }
 
 message MoveVolumeRequest {

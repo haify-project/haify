@@ -5513,6 +5513,38 @@
         ]
       }
     },
+    "/v1/storage/node-disks": {
+      "get": {
+        "summary": "ListNodeDisks lists the disks on the nodes and whether a pool can use\neach one: empty, holding only old data, in a pool, or in use.",
+        "operationId": "HaifyController_ListNodeDisks",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListNodeDisksResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "node",
+            "description": "node limits the list to one node; empty lists every online node.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
     "/v1/storage/trim": {
       "post": {
         "summary": "Storage upkeep: trimming, disks, and long-running storage jobs.",
@@ -6624,6 +6656,10 @@
         },
         "node": {
           "type": "string"
+        },
+        "wipe": {
+          "type": "boolean",
+          "description": "wipe erases a disk that holds only old data (a filesystem, a partition\ntable, the label of an array or pool that is not running). Without it\nsuch a disk is refused. A disk in use is refused either way."
         }
       }
     },
@@ -8412,6 +8448,10 @@
         "sizeGb": {
           "type": "string",
           "format": "uint64"
+        },
+        "wipe": {
+          "type": "boolean",
+          "description": "wipe erases a disk that holds only old data (a filesystem, a partition\ntable, the label of an array or pool that is not running). Without it\nsuch a disk is refused. A disk in use is refused either way."
         }
       },
       "title": "Pool messages"
@@ -8735,6 +8775,10 @@
         "dedup": {
           "type": "boolean",
           "description": "dedup turns on deduplication for the pool. It costs RAM for the dedup\ntable on every write; only worth it for data known to repeat."
+        },
+        "wipe": {
+          "type": "boolean",
+          "description": "wipe erases a disk that holds only old data (a filesystem, a partition\ntable, the label of an array or pool that is not running). Without it\nsuch a disk is refused. A disk in use is refused either way."
         }
       },
       "title": "ZFS messages"
@@ -10265,6 +10309,24 @@
         }
       }
     },
+    "v1ListNodeDisksResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "disks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1NodeDiskInfo"
+          }
+        }
+      }
+    },
     "v1ListNodesResponse": {
       "type": "object",
       "properties": {
@@ -10746,6 +10808,52 @@
             "type": "object",
             "$ref": "#/definitions/v1NodeCollectorOutput"
           }
+        }
+      }
+    },
+    "v1NodeDiskInfo": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "device": {
+          "type": "string"
+        },
+        "byId": {
+          "type": "string",
+          "description": "by_id is the /dev/disk/by-id link naming the physical disk (its WWN\nwhere it has one), which survives reboots that renumber /dev/sdX."
+        },
+        "type": {
+          "type": "string",
+          "description": "type is lsblk's: disk, part or mpath."
+        },
+        "sizeBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "model": {
+          "type": "string"
+        },
+        "serial": {
+          "type": "string"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "rotational": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string",
+          "description": "state is \"free\" (usable as it is), \"wipe\" (holds only old data; usable\nwith wipe), \"pool\" (in a Haify pool) or \"busy\" (in use; never touched)."
+        },
+        "pool": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string",
+          "description": "detail says what a \"wipe\" disk holds or what a \"busy\" disk is used by."
         }
       }
     },
@@ -11571,6 +11679,10 @@
         },
         "newDisk": {
           "type": "string"
+        },
+        "wipe": {
+          "type": "boolean",
+          "description": "wipe erases a disk that holds only old data (a filesystem, a partition\ntable, the label of an array or pool that is not running). Without it\nsuch a disk is refused. A disk in use is refused either way."
         }
       }
     },

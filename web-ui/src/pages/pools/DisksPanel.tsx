@@ -11,7 +11,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -27,6 +26,7 @@ import { toast } from 'sonner';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatBytes } from './format';
+import { DiskPicker, chosenToWipe, useNodeDisks } from './DiskPicker';
 
 // The disks under the pools, with their SMART / NVMe health, and the two ways
 // to take one out. Probing runs smartctl on every node over SSH, so it is
@@ -192,16 +192,26 @@ function DiskActionDialog({
 }) {
   const queryClient = useQueryClient();
   const { kind, disk } = action;
-  const [newDisk, setNewDisk] = useState('');
+  const [newDisk, setNewDisk] = useState<string[]>([]);
+  const [wipe, setWipe] = useState(false);
+  const { byDevice } = useNodeDisks(kind === 'replace' ? disk.node : '');
+  const toWipe = chosenToWipe(newDisk, byDevice).length > 0;
 
   const start = useMutation({
     mutationFn: () =>
       kind === 'replace'
-        ? api.replacePoolDisk({ pool: disk.pool, node: disk.node, oldDisk: disk.device, newDisk: newDisk.trim() })
+        ? api.replacePoolDisk({
+            pool: disk.pool,
+            node: disk.node,
+            oldDisk: disk.device,
+            newDisk: newDisk[0] ?? '',
+            wipe: toWipe && wipe,
+          })
         : api.removePoolDisk({ pool: disk.pool, node: disk.node, disk: disk.device }),
     onSuccess: (res) => {
       toast.success(res.message);
       queryClient.invalidateQueries({ queryKey: ['storage-jobs'] });
+      queryClient.invalidateQueries({ queryKey: ['node-disks'] });
       onClose();
     },
     onError: (e: Error) => toast.error(e.message),
@@ -229,16 +239,10 @@ function DiskActionDialog({
           </DialogHeader>
           {replace && (
             <div className="space-y-2 py-4">
-              <Label htmlFor="new-disk">New disk on {disk.node}</Label>
-              <Input
-                id="new-disk"
-                value={newDisk}
-                onChange={(e) => setNewDisk(e.target.value)}
-                placeholder="/dev/sdf"
-                required
-              />
+              <Label>New disk on {disk.node}</Label>
+              <DiskPicker node={disk.node} selected={newDisk} onSelect={setNewDisk} wipe={wipe} onWipe={setWipe} />
               <p className="text-xs text-muted-foreground">
-                An empty disk at least as large as the data on {disk.device}. Anything on it is overwritten.
+                At least as large as the data on {disk.device} ({formatBytes(disk.usedBytes)}).
               </p>
             </div>
           )}
@@ -246,7 +250,7 @@ function DiskActionDialog({
             <Button type="button" variant="outline" onClick={onClose} disabled={start.isPending}>
               Cancel
             </Button>
-            <Button type="submit" disabled={start.isPending || (replace && !newDisk.trim())}>
+            <Button type="submit" disabled={start.isPending || (replace && (!newDisk[0] || (toWipe && !wipe)))}>
               {start.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
               {replace ? 'Replace disk' : 'Remove disk'}
             </Button>

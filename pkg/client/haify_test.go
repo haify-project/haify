@@ -79,10 +79,10 @@ func TestHaifyClientPoolAndResourceOperations(t *testing.T) {
 	ctx := context.Background()
 
 	// Pool Operations
-	err := c.CreatePool(ctx, "pool1", "lvm", "node1", []string{"/dev/sdb"}, 100)
+	err := c.CreatePool(ctx, "pool1", "lvm", "node1", []string{"/dev/sdb"}, 100, false)
 	require.NoError(t, err)
 
-	err = c.CreatePool(ctx, "fail-pool", "lvm", "node1", nil, 0)
+	err = c.CreatePool(ctx, "fail-pool", "lvm", "node1", nil, 0, false)
 	assert.Error(t, err)
 
 	pools, err := c.ListPools(ctx)
@@ -96,10 +96,10 @@ func TestHaifyClientPoolAndResourceOperations(t *testing.T) {
 	_, err = c.GetPool(ctx, "fail-pool", "node1")
 	assert.Error(t, err)
 
-	err = c.AddDiskToPool(ctx, "pool1", "/dev/sdc", "node1")
+	err = c.AddDiskToPool(ctx, "pool1", "/dev/sdc", "node1", false)
 	require.NoError(t, err)
 
-	err = c.AddDiskToPool(ctx, "fail-pool", "/dev/sdc", "node1")
+	err = c.AddDiskToPool(ctx, "fail-pool", "/dev/sdc", "node1", false)
 	assert.Error(t, err)
 
 	err = c.DeletePool(ctx, "pool1", "node1")
@@ -410,10 +410,10 @@ func TestHaifyClientTransportErrors(t *testing.T) {
 	ctx := context.Background()
 
 	checks := []func() error{
-		func() error { return c.CreatePool(ctx, "p", "lvm", "n", nil, 0) },
+		func() error { return c.CreatePool(ctx, "p", "lvm", "n", nil, 0, false) },
 		func() error { _, err := c.GetPool(ctx, "p", "n"); return err },
 		func() error { _, err := c.ListPools(ctx); return err },
-		func() error { return c.AddDiskToPool(ctx, "p", "/dev/sdb", "n") },
+		func() error { return c.AddDiskToPool(ctx, "p", "/dev/sdb", "n", false) },
 		func() error { return c.DeletePool(ctx, "p", "n") },
 		func() error { _, err := c.RegisterNode(ctx, "n", "a"); return err },
 		func() error { _, err := c.SetNodeLabels(ctx, "n", nil, false); return err },

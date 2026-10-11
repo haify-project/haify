@@ -31,7 +31,7 @@ func (m *profileMockClient) DeletePool(_ context.Context, name, node string) err
 	return nil
 }
 
-func (m *profileMockClient) AddDiskToPool(_ context.Context, pool, disk, node string) error {
+func (m *profileMockClient) AddDiskToPool(_ context.Context, pool, disk, node string, _ bool) error {
 	m.operations = append(m.operations, "add-disk:"+pool+":"+node+":"+disk)
 	return nil
 }

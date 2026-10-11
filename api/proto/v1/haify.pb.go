@@ -24,12 +24,16 @@ const (
 
 // Pool messages
 type CreatePoolRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
-	Node          string                 `protobuf:"bytes,3,opt,name=node,proto3" json:"node,omitempty"`
-	Disks         []string               `protobuf:"bytes,4,rep,name=disks,proto3" json:"disks,omitempty"`
-	SizeGb        uint64                 `protobuf:"varint,5,opt,name=size_gb,json=sizeGb,proto3" json:"size_gb,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Name   string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Type   string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Node   string                 `protobuf:"bytes,3,opt,name=node,proto3" json:"node,omitempty"`
+	Disks  []string               `protobuf:"bytes,4,rep,name=disks,proto3" json:"disks,omitempty"`
+	SizeGb uint64                 `protobuf:"varint,5,opt,name=size_gb,json=sizeGb,proto3" json:"size_gb,omitempty"`
+	// wipe erases a disk that holds only old data (a filesystem, a partition
+	// table, the label of an array or pool that is not running). Without it
+	// such a disk is refused. A disk in use is refused either way.
+	Wipe          bool `protobuf:"varint,6,opt,name=wipe,proto3" json:"wipe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -97,6 +101,13 @@ func (x *CreatePoolRequest) GetSizeGb() uint64 {
 		return x.SizeGb
 	}
 	return 0
+}
+
+func (x *CreatePoolRequest) GetWipe() bool {
+	if x != nil {
+		return x.Wipe
+	}
+	return false
 }
 
 type CreatePoolResponse struct {
@@ -464,10 +475,14 @@ func (x *ListPoolsResponse) GetPools() []*PoolInfo {
 }
 
 type AddDiskToPoolRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Pool          string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
-	Disk          string                 `protobuf:"bytes,2,opt,name=disk,proto3" json:"disk,omitempty"`
-	Node          string                 `protobuf:"bytes,3,opt,name=node,proto3" json:"node,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Pool  string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
+	Disk  string                 `protobuf:"bytes,2,opt,name=disk,proto3" json:"disk,omitempty"`
+	Node  string                 `protobuf:"bytes,3,opt,name=node,proto3" json:"node,omitempty"`
+	// wipe erases a disk that holds only old data (a filesystem, a partition
+	// table, the label of an array or pool that is not running). Without it
+	// such a disk is refused. A disk in use is refused either way.
+	Wipe          bool `protobuf:"varint,4,opt,name=wipe,proto3" json:"wipe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -521,6 +536,13 @@ func (x *AddDiskToPoolRequest) GetNode() string {
 		return x.Node
 	}
 	return ""
+}
+
+func (x *AddDiskToPoolRequest) GetWipe() bool {
+	if x != nil {
+		return x.Wipe
+	}
+	return false
 }
 
 type AddDiskToPoolResponse struct {
@@ -899,7 +921,11 @@ type CreateZFSPoolRequest struct {
 	Compression string `protobuf:"bytes,5,opt,name=compression,proto3" json:"compression,omitempty"`
 	// dedup turns on deduplication for the pool. It costs RAM for the dedup
 	// table on every write; only worth it for data known to repeat.
-	Dedup         bool `protobuf:"varint,6,opt,name=dedup,proto3" json:"dedup,omitempty"`
+	Dedup bool `protobuf:"varint,6,opt,name=dedup,proto3" json:"dedup,omitempty"`
+	// wipe erases a disk that holds only old data (a filesystem, a partition
+	// table, the label of an array or pool that is not running). Without it
+	// such a disk is refused. A disk in use is refused either way.
+	Wipe          bool `protobuf:"varint,7,opt,name=wipe,proto3" json:"wipe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -965,6 +991,13 @@ func (x *CreateZFSPoolRequest) GetCompression() string {
 func (x *CreateZFSPoolRequest) GetDedup() bool {
 	if x != nil {
 		return x.Dedup
+	}
+	return false
+}
+
+func (x *CreateZFSPoolRequest) GetWipe() bool {
+	if x != nil {
+		return x.Wipe
 	}
 	return false
 }
@@ -25764,6 +25797,249 @@ func (x *ListPoolDisksResponse) GetDisks() []*PoolDiskInfo {
 	return nil
 }
 
+type ListNodeDisksRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// node limits the list to one node; empty lists every online node.
+	Node          string `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListNodeDisksRequest) Reset() {
+	*x = ListNodeDisksRequest{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[406]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListNodeDisksRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListNodeDisksRequest) ProtoMessage() {}
+
+func (x *ListNodeDisksRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[406]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListNodeDisksRequest.ProtoReflect.Descriptor instead.
+func (*ListNodeDisksRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{406}
+}
+
+func (x *ListNodeDisksRequest) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+type NodeDiskInfo struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Node   string                 `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	Device string                 `protobuf:"bytes,2,opt,name=device,proto3" json:"device,omitempty"`
+	// by_id is the /dev/disk/by-id link naming the physical disk (its WWN
+	// where it has one), which survives reboots that renumber /dev/sdX.
+	ById string `protobuf:"bytes,3,opt,name=by_id,json=byId,proto3" json:"by_id,omitempty"`
+	// type is lsblk's: disk, part or mpath.
+	Type       string `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`
+	SizeBytes  uint64 `protobuf:"varint,5,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	Model      string `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`
+	Serial     string `protobuf:"bytes,7,opt,name=serial,proto3" json:"serial,omitempty"`
+	Transport  string `protobuf:"bytes,8,opt,name=transport,proto3" json:"transport,omitempty"`
+	Rotational bool   `protobuf:"varint,9,opt,name=rotational,proto3" json:"rotational,omitempty"`
+	// state is "free" (usable as it is), "wipe" (holds only old data; usable
+	// with wipe), "pool" (in a Haify pool) or "busy" (in use; never touched).
+	State string `protobuf:"bytes,10,opt,name=state,proto3" json:"state,omitempty"`
+	Pool  string `protobuf:"bytes,11,opt,name=pool,proto3" json:"pool,omitempty"`
+	// detail says what a "wipe" disk holds or what a "busy" disk is used by.
+	Detail        string `protobuf:"bytes,12,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeDiskInfo) Reset() {
+	*x = NodeDiskInfo{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[407]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeDiskInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeDiskInfo) ProtoMessage() {}
+
+func (x *NodeDiskInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[407]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeDiskInfo.ProtoReflect.Descriptor instead.
+func (*NodeDiskInfo) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{407}
+}
+
+func (x *NodeDiskInfo) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetDevice() string {
+	if x != nil {
+		return x.Device
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetById() string {
+	if x != nil {
+		return x.ById
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetSizeBytes() uint64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *NodeDiskInfo) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetSerial() string {
+	if x != nil {
+		return x.Serial
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetTransport() string {
+	if x != nil {
+		return x.Transport
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetRotational() bool {
+	if x != nil {
+		return x.Rotational
+	}
+	return false
+}
+
+func (x *NodeDiskInfo) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetPool() string {
+	if x != nil {
+		return x.Pool
+	}
+	return ""
+}
+
+func (x *NodeDiskInfo) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+type ListNodeDisksResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Disks         []*NodeDiskInfo        `protobuf:"bytes,3,rep,name=disks,proto3" json:"disks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListNodeDisksResponse) Reset() {
+	*x = ListNodeDisksResponse{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[408]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListNodeDisksResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListNodeDisksResponse) ProtoMessage() {}
+
+func (x *ListNodeDisksResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[408]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListNodeDisksResponse.ProtoReflect.Descriptor instead.
+func (*ListNodeDisksResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{408}
+}
+
+func (x *ListNodeDisksResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *ListNodeDisksResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *ListNodeDisksResponse) GetDisks() []*NodeDiskInfo {
+	if x != nil {
+		return x.Disks
+	}
+	return nil
+}
+
 type RemovePoolDiskRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Pool          string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
@@ -25775,7 +26051,7 @@ type RemovePoolDiskRequest struct {
 
 func (x *RemovePoolDiskRequest) Reset() {
 	*x = RemovePoolDiskRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[406]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[409]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25787,7 +26063,7 @@ func (x *RemovePoolDiskRequest) String() string {
 func (*RemovePoolDiskRequest) ProtoMessage() {}
 
 func (x *RemovePoolDiskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[406]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[409]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25800,7 +26076,7 @@ func (x *RemovePoolDiskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemovePoolDiskRequest.ProtoReflect.Descriptor instead.
 func (*RemovePoolDiskRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{406}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{409}
 }
 
 func (x *RemovePoolDiskRequest) GetPool() string {
@@ -25825,18 +26101,22 @@ func (x *RemovePoolDiskRequest) GetDisk() string {
 }
 
 type ReplacePoolDiskRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Pool          string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
-	Node          string                 `protobuf:"bytes,2,opt,name=node,proto3" json:"node,omitempty"`
-	OldDisk       string                 `protobuf:"bytes,3,opt,name=old_disk,json=oldDisk,proto3" json:"old_disk,omitempty"`
-	NewDisk       string                 `protobuf:"bytes,4,opt,name=new_disk,json=newDisk,proto3" json:"new_disk,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Pool    string                 `protobuf:"bytes,1,opt,name=pool,proto3" json:"pool,omitempty"`
+	Node    string                 `protobuf:"bytes,2,opt,name=node,proto3" json:"node,omitempty"`
+	OldDisk string                 `protobuf:"bytes,3,opt,name=old_disk,json=oldDisk,proto3" json:"old_disk,omitempty"`
+	NewDisk string                 `protobuf:"bytes,4,opt,name=new_disk,json=newDisk,proto3" json:"new_disk,omitempty"`
+	// wipe erases a disk that holds only old data (a filesystem, a partition
+	// table, the label of an array or pool that is not running). Without it
+	// such a disk is refused. A disk in use is refused either way.
+	Wipe          bool `protobuf:"varint,5,opt,name=wipe,proto3" json:"wipe,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ReplacePoolDiskRequest) Reset() {
 	*x = ReplacePoolDiskRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[407]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[410]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25848,7 +26128,7 @@ func (x *ReplacePoolDiskRequest) String() string {
 func (*ReplacePoolDiskRequest) ProtoMessage() {}
 
 func (x *ReplacePoolDiskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[407]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[410]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25861,7 +26141,7 @@ func (x *ReplacePoolDiskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplacePoolDiskRequest.ProtoReflect.Descriptor instead.
 func (*ReplacePoolDiskRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{407}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{410}
 }
 
 func (x *ReplacePoolDiskRequest) GetPool() string {
@@ -25892,6 +26172,13 @@ func (x *ReplacePoolDiskRequest) GetNewDisk() string {
 	return ""
 }
 
+func (x *ReplacePoolDiskRequest) GetWipe() bool {
+	if x != nil {
+		return x.Wipe
+	}
+	return false
+}
+
 type MoveVolumeRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Resource string                 `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
@@ -25904,7 +26191,7 @@ type MoveVolumeRequest struct {
 
 func (x *MoveVolumeRequest) Reset() {
 	*x = MoveVolumeRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[408]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[411]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25916,7 +26203,7 @@ func (x *MoveVolumeRequest) String() string {
 func (*MoveVolumeRequest) ProtoMessage() {}
 
 func (x *MoveVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[408]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[411]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25929,7 +26216,7 @@ func (x *MoveVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveVolumeRequest.ProtoReflect.Descriptor instead.
 func (*MoveVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{408}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{411}
 }
 
 func (x *MoveVolumeRequest) GetResource() string {
@@ -25964,7 +26251,7 @@ type StorageJobResponse struct {
 
 func (x *StorageJobResponse) Reset() {
 	*x = StorageJobResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[409]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[412]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25976,7 +26263,7 @@ func (x *StorageJobResponse) String() string {
 func (*StorageJobResponse) ProtoMessage() {}
 
 func (x *StorageJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[409]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[412]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25989,7 +26276,7 @@ func (x *StorageJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageJobResponse.ProtoReflect.Descriptor instead.
 func (*StorageJobResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{409}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{412}
 }
 
 func (x *StorageJobResponse) GetSuccess() bool {
@@ -26022,7 +26309,7 @@ type ListStorageJobsRequest struct {
 
 func (x *ListStorageJobsRequest) Reset() {
 	*x = ListStorageJobsRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[410]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[413]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26034,7 +26321,7 @@ func (x *ListStorageJobsRequest) String() string {
 func (*ListStorageJobsRequest) ProtoMessage() {}
 
 func (x *ListStorageJobsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[410]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[413]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26047,7 +26334,7 @@ func (x *ListStorageJobsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStorageJobsRequest.ProtoReflect.Descriptor instead.
 func (*ListStorageJobsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{410}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{413}
 }
 
 func (x *ListStorageJobsRequest) GetIncludeFinished() bool {
@@ -26074,7 +26361,7 @@ type StorageJobInfo struct {
 
 func (x *StorageJobInfo) Reset() {
 	*x = StorageJobInfo{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[411]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[414]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26086,7 +26373,7 @@ func (x *StorageJobInfo) String() string {
 func (*StorageJobInfo) ProtoMessage() {}
 
 func (x *StorageJobInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[411]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[414]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26099,7 +26386,7 @@ func (x *StorageJobInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageJobInfo.ProtoReflect.Descriptor instead.
 func (*StorageJobInfo) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{411}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{414}
 }
 
 func (x *StorageJobInfo) GetId() string {
@@ -26169,7 +26456,7 @@ type ListStorageJobsResponse struct {
 
 func (x *ListStorageJobsResponse) Reset() {
 	*x = ListStorageJobsResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[412]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[415]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26181,7 +26468,7 @@ func (x *ListStorageJobsResponse) String() string {
 func (*ListStorageJobsResponse) ProtoMessage() {}
 
 func (x *ListStorageJobsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[412]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[415]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26194,7 +26481,7 @@ func (x *ListStorageJobsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStorageJobsResponse.ProtoReflect.Descriptor instead.
 func (*ListStorageJobsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{412}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{415}
 }
 
 func (x *ListStorageJobsResponse) GetSuccess() bool {
@@ -26222,13 +26509,14 @@ var File_api_proto_v1_haify_proto protoreflect.FileDescriptor
 
 const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\n" +
-	"\x18api/proto/v1/haify.proto\x12\x02v1\x1a\x1cgoogle/api/annotations.proto\"~\n" +
+	"\x18api/proto/v1/haify.proto\x12\x02v1\x1a\x1cgoogle/api/annotations.proto\"\x92\x01\n" +
 	"\x11CreatePoolRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
 	"\x04node\x18\x03 \x01(\tR\x04node\x12\x14\n" +
 	"\x05disks\x18\x04 \x03(\tR\x05disks\x12\x17\n" +
-	"\asize_gb\x18\x05 \x01(\x04R\x06sizeGb\"H\n" +
+	"\asize_gb\x18\x05 \x01(\x04R\x06sizeGb\x12\x12\n" +
+	"\x04wipe\x18\x06 \x01(\bR\x04wipe\"H\n" +
 	"\x12CreatePoolResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\";\n" +
@@ -26249,11 +26537,12 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\x11ListPoolsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\"\n" +
-	"\x05pools\x18\x03 \x03(\v2\f.v1.PoolInfoR\x05pools\"R\n" +
+	"\x05pools\x18\x03 \x03(\v2\f.v1.PoolInfoR\x05pools\"f\n" +
 	"\x14AddDiskToPoolRequest\x12\x12\n" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x12\x12\n" +
 	"\x04disk\x18\x02 \x01(\tR\x04disk\x12\x12\n" +
-	"\x04node\x18\x03 \x01(\tR\x04node\"K\n" +
+	"\x04node\x18\x03 \x01(\tR\x04node\x12\x12\n" +
+	"\x04wipe\x18\x04 \x01(\bR\x04wipe\"K\n" +
 	"\x15AddDiskToPoolResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"\x84\b\n" +
@@ -26291,13 +26580,14 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\x14vdo_physical_percent\x18\x1a \x01(\x01R\x12vdoPhysicalPercent\x12,\n" +
 	"\x12vdo_saving_percent\x18\x1b \x01(\x01R\x10vdoSavingPercent\x12%\n" +
 	"\x0ecapacity_bytes\x18\x1c \x01(\x04R\rcapacityBytes\x12'\n" +
-	"\x0favailable_bytes\x18\x1d \x01(\x04R\x0eavailableBytes\"\x98\x01\n" +
+	"\x0favailable_bytes\x18\x1d \x01(\x04R\x0eavailableBytes\"\xac\x01\n" +
 	"\x14CreateZFSPoolRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04node\x18\x02 \x01(\tR\x04node\x12\x14\n" +
 	"\x05vdevs\x18\x03 \x03(\tR\x05vdevs\x12 \n" +
 	"\vcompression\x18\x05 \x01(\tR\vcompression\x12\x14\n" +
-	"\x05dedup\x18\x06 \x01(\bR\x05dedupJ\x04\b\x04\x10\x05R\x04thin\"K\n" +
+	"\x05dedup\x18\x06 \x01(\bR\x05dedup\x12\x12\n" +
+	"\x04wipe\x18\a \x01(\bR\x04wipeJ\x04\b\x04\x10\x05R\x04thin\"K\n" +
 	"\x15CreateZFSPoolResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\">\n" +
@@ -28148,16 +28438,40 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\x15ListPoolDisksResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12&\n" +
-	"\x05disks\x18\x03 \x03(\v2\x10.v1.PoolDiskInfoR\x05disks\"S\n" +
+	"\x05disks\x18\x03 \x03(\v2\x10.v1.PoolDiskInfoR\x05disks\"*\n" +
+	"\x14ListNodeDisksRequest\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\"\xb0\x02\n" +
+	"\fNodeDiskInfo\x12\x12\n" +
+	"\x04node\x18\x01 \x01(\tR\x04node\x12\x16\n" +
+	"\x06device\x18\x02 \x01(\tR\x06device\x12\x13\n" +
+	"\x05by_id\x18\x03 \x01(\tR\x04byId\x12\x12\n" +
+	"\x04type\x18\x04 \x01(\tR\x04type\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x05 \x01(\x04R\tsizeBytes\x12\x14\n" +
+	"\x05model\x18\x06 \x01(\tR\x05model\x12\x16\n" +
+	"\x06serial\x18\a \x01(\tR\x06serial\x12\x1c\n" +
+	"\ttransport\x18\b \x01(\tR\ttransport\x12\x1e\n" +
+	"\n" +
+	"rotational\x18\t \x01(\bR\n" +
+	"rotational\x12\x14\n" +
+	"\x05state\x18\n" +
+	" \x01(\tR\x05state\x12\x12\n" +
+	"\x04pool\x18\v \x01(\tR\x04pool\x12\x16\n" +
+	"\x06detail\x18\f \x01(\tR\x06detail\"s\n" +
+	"\x15ListNodeDisksResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12&\n" +
+	"\x05disks\x18\x03 \x03(\v2\x10.v1.NodeDiskInfoR\x05disks\"S\n" +
 	"\x15RemovePoolDiskRequest\x12\x12\n" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x12\x12\n" +
 	"\x04node\x18\x02 \x01(\tR\x04node\x12\x12\n" +
-	"\x04disk\x18\x03 \x01(\tR\x04disk\"v\n" +
+	"\x04disk\x18\x03 \x01(\tR\x04disk\"\x8a\x01\n" +
 	"\x16ReplacePoolDiskRequest\x12\x12\n" +
 	"\x04pool\x18\x01 \x01(\tR\x04pool\x12\x12\n" +
 	"\x04node\x18\x02 \x01(\tR\x04node\x12\x19\n" +
 	"\bold_disk\x18\x03 \x01(\tR\aoldDisk\x12\x19\n" +
-	"\bnew_disk\x18\x04 \x01(\tR\anewDisk\"`\n" +
+	"\bnew_disk\x18\x04 \x01(\tR\anewDisk\x12\x12\n" +
+	"\x04wipe\x18\x05 \x01(\bR\x04wipe\"`\n" +
 	"\x11MoveVolumeRequest\x12\x1a\n" +
 	"\bresource\x18\x01 \x01(\tR\bresource\x12\x1b\n" +
 	"\tvolume_id\x18\x02 \x01(\x05R\bvolumeId\x12\x12\n" +
@@ -28180,7 +28494,7 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\x17ListStorageJobsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12&\n" +
-	"\x04jobs\x18\x03 \x03(\v2\x12.v1.StorageJobInfoR\x04jobs2\x8b\xa3\x01\n" +
+	"\x04jobs\x18\x03 \x03(\v2\x12.v1.StorageJobInfoR\x04jobs2\xf1\xa3\x01\n" +
 	"\x0fHaifyController\x12Q\n" +
 	"\n" +
 	"CreatePool\x12\x15.v1.CreatePoolRequest\x1a\x16.v1.CreatePoolResponse\"\x14\x82\xd3\xe4\x93\x02\x0e:\x01*\"\t/v1/pools\x12U\n" +
@@ -28189,7 +28503,8 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\aGetPool\x12\x12.v1.GetPoolRequest\x1a\x13.v1.GetPoolResponse\"\x18\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/pools/{name}\x12K\n" +
 	"\tListPools\x12\x14.v1.ListPoolsRequest\x1a\x15.v1.ListPoolsResponse\"\x11\x82\xd3\xe4\x93\x02\v\x12\t/v1/pools\x12U\n" +
 	"\tTrimPools\x12\x14.v1.TrimPoolsRequest\x1a\x15.v1.TrimPoolsResponse\"\x1b\x82\xd3\xe4\x93\x02\x15:\x01*\"\x10/v1/storage/trim\x12_\n" +
-	"\rListPoolDisks\x12\x18.v1.ListPoolDisksRequest\x1a\x19.v1.ListPoolDisksResponse\"\x19\x82\xd3\xe4\x93\x02\x13\x12\x11/v1/storage/disks\x12h\n" +
+	"\rListPoolDisks\x12\x18.v1.ListPoolDisksRequest\x1a\x19.v1.ListPoolDisksResponse\"\x19\x82\xd3\xe4\x93\x02\x13\x12\x11/v1/storage/disks\x12d\n" +
+	"\rListNodeDisks\x12\x18.v1.ListNodeDisksRequest\x1a\x19.v1.ListNodeDisksResponse\"\x1e\x82\xd3\xe4\x93\x02\x18\x12\x16/v1/storage/node-disks\x12h\n" +
 	"\x0eRemovePoolDisk\x12\x19.v1.RemovePoolDiskRequest\x1a\x16.v1.StorageJobResponse\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/v1/storage/disks/remove\x12k\n" +
 	"\x0fReplacePoolDisk\x12\x1a.v1.ReplacePoolDiskRequest\x1a\x16.v1.StorageJobResponse\"$\x82\xd3\xe4\x93\x02\x1e:\x01*\"\x19/v1/storage/disks/replace\x12`\n" +
 	"\n" +
@@ -28391,7 +28706,7 @@ func file_api_proto_v1_haify_proto_rawDescGZIP() []byte {
 	return file_api_proto_v1_haify_proto_rawDescData
 }
 
-var file_api_proto_v1_haify_proto_msgTypes = make([]protoimpl.MessageInfo, 438)
+var file_api_proto_v1_haify_proto_msgTypes = make([]protoimpl.MessageInfo, 441)
 var file_api_proto_v1_haify_proto_goTypes = []any{
 	(*CreatePoolRequest)(nil),                 // 0: v1.CreatePoolRequest
 	(*CreatePoolResponse)(nil),                // 1: v1.CreatePoolResponse
@@ -28799,38 +29114,41 @@ var file_api_proto_v1_haify_proto_goTypes = []any{
 	(*ListPoolDisksRequest)(nil),              // 403: v1.ListPoolDisksRequest
 	(*PoolDiskInfo)(nil),                      // 404: v1.PoolDiskInfo
 	(*ListPoolDisksResponse)(nil),             // 405: v1.ListPoolDisksResponse
-	(*RemovePoolDiskRequest)(nil),             // 406: v1.RemovePoolDiskRequest
-	(*ReplacePoolDiskRequest)(nil),            // 407: v1.ReplacePoolDiskRequest
-	(*MoveVolumeRequest)(nil),                 // 408: v1.MoveVolumeRequest
-	(*StorageJobResponse)(nil),                // 409: v1.StorageJobResponse
-	(*ListStorageJobsRequest)(nil),            // 410: v1.ListStorageJobsRequest
-	(*StorageJobInfo)(nil),                    // 411: v1.StorageJobInfo
-	(*ListStorageJobsResponse)(nil),           // 412: v1.ListStorageJobsResponse
-	nil,                                       // 413: v1.SetNodeLabelsRequest.LabelsEntry
-	nil,                                       // 414: v1.NodeInfo.LabelsEntry
-	nil,                                       // 415: v1.CreateResourceRequest.DrbdOptionsEntry
-	nil,                                       // 416: v1.CreateResourceRequest.LabelsEntry
-	nil,                                       // 417: v1.AdoptResourceRequest.LabelsEntry
-	nil,                                       // 418: v1.ResourceProfile.DrbdOptionsEntry
-	nil,                                       // 419: v1.ResourceProfile.LabelsEntry
-	nil,                                       // 420: v1.UpdateResourceOptionsRequest.OptionsEntry
-	nil,                                       // 421: v1.SetResourceLabelsRequest.LabelsEntry
-	nil,                                       // 422: v1.SetResourceLabelsResponse.LabelsEntry
-	nil,                                       // 423: v1.OcfAgent.ParamsEntry
-	nil,                                       // 424: v1.ControllerLogEntry.FieldsEntry
-	nil,                                       // 425: v1.Event.DetailsEntry
-	nil,                                       // 426: v1.ResourceInfo.NodeStatesEntry
-	nil,                                       // 427: v1.ResourceInfo.LabelsEntry
-	nil,                                       // 428: v1.ResourceStatus.NodeStatesEntry
-	nil,                                       // 429: v1.ResourceStatus.WanProxyEntry
-	nil,                                       // 430: v1.NotifyChannelInfo.HeadersEntry
-	nil,                                       // 431: v1.SaveNotifyChannelRequest.HeadersEntry
-	nil,                                       // 432: v1.ImportBackupsResponse.SkippedEntry
-	nil,                                       // 433: v1.CreateNFSGatewayRequest.OptionsEntry
-	nil,                                       // 434: v1.CreateISCSIGatewayRequest.OptionsEntry
-	nil,                                       // 435: v1.CreateNVMeGatewayRequest.OptionsEntry
-	nil,                                       // 436: v1.GatewayInfo.OptionsEntry
-	nil,                                       // 437: v1.SetResourceProfileOptionsRequest.OptionsEntry
+	(*ListNodeDisksRequest)(nil),              // 406: v1.ListNodeDisksRequest
+	(*NodeDiskInfo)(nil),                      // 407: v1.NodeDiskInfo
+	(*ListNodeDisksResponse)(nil),             // 408: v1.ListNodeDisksResponse
+	(*RemovePoolDiskRequest)(nil),             // 409: v1.RemovePoolDiskRequest
+	(*ReplacePoolDiskRequest)(nil),            // 410: v1.ReplacePoolDiskRequest
+	(*MoveVolumeRequest)(nil),                 // 411: v1.MoveVolumeRequest
+	(*StorageJobResponse)(nil),                // 412: v1.StorageJobResponse
+	(*ListStorageJobsRequest)(nil),            // 413: v1.ListStorageJobsRequest
+	(*StorageJobInfo)(nil),                    // 414: v1.StorageJobInfo
+	(*ListStorageJobsResponse)(nil),           // 415: v1.ListStorageJobsResponse
+	nil,                                       // 416: v1.SetNodeLabelsRequest.LabelsEntry
+	nil,                                       // 417: v1.NodeInfo.LabelsEntry
+	nil,                                       // 418: v1.CreateResourceRequest.DrbdOptionsEntry
+	nil,                                       // 419: v1.CreateResourceRequest.LabelsEntry
+	nil,                                       // 420: v1.AdoptResourceRequest.LabelsEntry
+	nil,                                       // 421: v1.ResourceProfile.DrbdOptionsEntry
+	nil,                                       // 422: v1.ResourceProfile.LabelsEntry
+	nil,                                       // 423: v1.UpdateResourceOptionsRequest.OptionsEntry
+	nil,                                       // 424: v1.SetResourceLabelsRequest.LabelsEntry
+	nil,                                       // 425: v1.SetResourceLabelsResponse.LabelsEntry
+	nil,                                       // 426: v1.OcfAgent.ParamsEntry
+	nil,                                       // 427: v1.ControllerLogEntry.FieldsEntry
+	nil,                                       // 428: v1.Event.DetailsEntry
+	nil,                                       // 429: v1.ResourceInfo.NodeStatesEntry
+	nil,                                       // 430: v1.ResourceInfo.LabelsEntry
+	nil,                                       // 431: v1.ResourceStatus.NodeStatesEntry
+	nil,                                       // 432: v1.ResourceStatus.WanProxyEntry
+	nil,                                       // 433: v1.NotifyChannelInfo.HeadersEntry
+	nil,                                       // 434: v1.SaveNotifyChannelRequest.HeadersEntry
+	nil,                                       // 435: v1.ImportBackupsResponse.SkippedEntry
+	nil,                                       // 436: v1.CreateNFSGatewayRequest.OptionsEntry
+	nil,                                       // 437: v1.CreateISCSIGatewayRequest.OptionsEntry
+	nil,                                       // 438: v1.CreateNVMeGatewayRequest.OptionsEntry
+	nil,                                       // 439: v1.GatewayInfo.OptionsEntry
+	nil,                                       // 440: v1.SetResourceProfileOptionsRequest.OptionsEntry
 }
 var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	10,  // 0: v1.GetPoolResponse.pool:type_name -> v1.PoolInfo
@@ -28839,48 +29157,48 @@ var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	192, // 3: v1.ListZFSSnapshotsResponse.snapshots:type_name -> v1.SnapshotInfo
 	192, // 4: v1.ListLvmSnapshotsResponse.snapshots:type_name -> v1.SnapshotInfo
 	53,  // 5: v1.RegisterNodeResponse.node:type_name -> v1.NodeInfo
-	413, // 6: v1.SetNodeLabelsRequest.labels:type_name -> v1.SetNodeLabelsRequest.LabelsEntry
+	416, // 6: v1.SetNodeLabelsRequest.labels:type_name -> v1.SetNodeLabelsRequest.LabelsEntry
 	53,  // 7: v1.SetNodeLabelsResponse.node:type_name -> v1.NodeInfo
 	53,  // 8: v1.GetNodeResponse.node:type_name -> v1.NodeInfo
 	53,  // 9: v1.ListNodesResponse.nodes:type_name -> v1.NodeInfo
-	414, // 10: v1.NodeInfo.labels:type_name -> v1.NodeInfo.LabelsEntry
+	417, // 10: v1.NodeInfo.labels:type_name -> v1.NodeInfo.LabelsEntry
 	56,  // 11: v1.HealthCheckResponse.health:type_name -> v1.NodeHealthInfo
-	415, // 12: v1.CreateResourceRequest.drbd_options:type_name -> v1.CreateResourceRequest.DrbdOptionsEntry
+	418, // 12: v1.CreateResourceRequest.drbd_options:type_name -> v1.CreateResourceRequest.DrbdOptionsEntry
 	58,  // 13: v1.CreateResourceRequest.volumes:type_name -> v1.VolumeSpec
-	416, // 14: v1.CreateResourceRequest.labels:type_name -> v1.CreateResourceRequest.LabelsEntry
-	417, // 15: v1.AdoptResourceRequest.labels:type_name -> v1.AdoptResourceRequest.LabelsEntry
+	419, // 14: v1.CreateResourceRequest.labels:type_name -> v1.CreateResourceRequest.LabelsEntry
+	420, // 15: v1.AdoptResourceRequest.labels:type_name -> v1.AdoptResourceRequest.LabelsEntry
 	176, // 16: v1.GetResourceResponse.resource:type_name -> v1.ResourceInfo
 	176, // 17: v1.ListResourcesResponse.resources:type_name -> v1.ResourceInfo
-	418, // 18: v1.ResourceProfile.drbd_options:type_name -> v1.ResourceProfile.DrbdOptionsEntry
-	419, // 19: v1.ResourceProfile.labels:type_name -> v1.ResourceProfile.LabelsEntry
+	421, // 18: v1.ResourceProfile.drbd_options:type_name -> v1.ResourceProfile.DrbdOptionsEntry
+	422, // 19: v1.ResourceProfile.labels:type_name -> v1.ResourceProfile.LabelsEntry
 	68,  // 20: v1.CreateResourceProfileRequest.profile:type_name -> v1.ResourceProfile
 	68,  // 21: v1.CreateResourceProfileResponse.profile:type_name -> v1.ResourceProfile
 	68,  // 22: v1.GetResourceProfileResponse.profile:type_name -> v1.ResourceProfile
 	68,  // 23: v1.ListResourceProfilesResponse.profiles:type_name -> v1.ResourceProfile
-	420, // 24: v1.UpdateResourceOptionsRequest.options:type_name -> v1.UpdateResourceOptionsRequest.OptionsEntry
+	423, // 24: v1.UpdateResourceOptionsRequest.options:type_name -> v1.UpdateResourceOptionsRequest.OptionsEntry
 	99,  // 25: v1.PlanRebalanceResponse.moves:type_name -> v1.RebalanceMove
 	177, // 26: v1.ResourceStatusResponse.status:type_name -> v1.ResourceStatus
-	421, // 27: v1.SetResourceLabelsRequest.labels:type_name -> v1.SetResourceLabelsRequest.LabelsEntry
-	422, // 28: v1.SetResourceLabelsResponse.labels:type_name -> v1.SetResourceLabelsResponse.LabelsEntry
-	423, // 29: v1.OcfAgent.params:type_name -> v1.OcfAgent.ParamsEntry
+	424, // 27: v1.SetResourceLabelsRequest.labels:type_name -> v1.SetResourceLabelsRequest.LabelsEntry
+	425, // 28: v1.SetResourceLabelsResponse.labels:type_name -> v1.SetResourceLabelsResponse.LabelsEntry
+	426, // 29: v1.OcfAgent.params:type_name -> v1.OcfAgent.ParamsEntry
 	130, // 30: v1.HaStartItem.ocf:type_name -> v1.OcfAgent
 	130, // 31: v1.MakeHaRequest.ocf_agents:type_name -> v1.OcfAgent
 	131, // 32: v1.MakeHaRequest.start_items:type_name -> v1.HaStartItem
 	133, // 33: v1.ListResourceAgentsResponse.agents:type_name -> v1.ResourceAgentInfo
 	136, // 34: v1.GetResourceAgentMetadataResponse.parameters:type_name -> v1.ResourceAgentParameter
 	160, // 35: v1.ListAuditEventsResponse.events:type_name -> v1.AuditEvent
-	424, // 36: v1.ControllerLogEntry.fields:type_name -> v1.ControllerLogEntry.FieldsEntry
+	427, // 36: v1.ControllerLogEntry.fields:type_name -> v1.ControllerLogEntry.FieldsEntry
 	163, // 37: v1.ListControllerLogsResponse.entries:type_name -> v1.ControllerLogEntry
 	167, // 38: v1.NodeDiagnostics.collectors:type_name -> v1.NodeCollectorOutput
 	168, // 39: v1.CollectNodeDiagnosticsResponse.nodes:type_name -> v1.NodeDiagnostics
-	425, // 40: v1.Event.details:type_name -> v1.Event.DetailsEntry
+	428, // 40: v1.Event.details:type_name -> v1.Event.DetailsEntry
 	170, // 41: v1.ListEventsResponse.events:type_name -> v1.Event
 	181, // 42: v1.ResourceInfo.volumes:type_name -> v1.VolumeInfo
-	426, // 43: v1.ResourceInfo.node_states:type_name -> v1.ResourceInfo.NodeStatesEntry
-	427, // 44: v1.ResourceInfo.labels:type_name -> v1.ResourceInfo.LabelsEntry
-	428, // 45: v1.ResourceStatus.node_states:type_name -> v1.ResourceStatus.NodeStatesEntry
+	429, // 43: v1.ResourceInfo.node_states:type_name -> v1.ResourceInfo.NodeStatesEntry
+	430, // 44: v1.ResourceInfo.labels:type_name -> v1.ResourceInfo.LabelsEntry
+	431, // 45: v1.ResourceStatus.node_states:type_name -> v1.ResourceStatus.NodeStatesEntry
 	181, // 46: v1.ResourceStatus.volumes:type_name -> v1.VolumeInfo
-	429, // 47: v1.ResourceStatus.wan_proxy:type_name -> v1.ResourceStatus.WanProxyEntry
+	432, // 47: v1.ResourceStatus.wan_proxy:type_name -> v1.ResourceStatus.WanProxyEntry
 	179, // 48: v1.ResourceStatus.wan_metrics:type_name -> v1.WANMetrics
 	178, // 49: v1.ResourceStatus.quorum:type_name -> v1.QuorumInfo
 	192, // 50: v1.ListSnapshotsResponse.snapshots:type_name -> v1.SnapshotInfo
@@ -28888,26 +29206,26 @@ var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	193, // 52: v1.CreateSnapshotScheduleRequest.keep:type_name -> v1.GFSRetention
 	194, // 53: v1.ListSnapshotSchedulesResponse.schedules:type_name -> v1.SnapshotScheduleInfo
 	205, // 54: v1.ListBackupTargetsResponse.targets:type_name -> v1.BackupTargetInfo
-	430, // 55: v1.NotifyChannelInfo.headers:type_name -> v1.NotifyChannelInfo.HeadersEntry
+	433, // 55: v1.NotifyChannelInfo.headers:type_name -> v1.NotifyChannelInfo.HeadersEntry
 	212, // 56: v1.ListNotifyChannelsResponse.channels:type_name -> v1.NotifyChannelInfo
-	431, // 57: v1.SaveNotifyChannelRequest.headers:type_name -> v1.SaveNotifyChannelRequest.HeadersEntry
+	434, // 57: v1.SaveNotifyChannelRequest.headers:type_name -> v1.SaveNotifyChannelRequest.HeadersEntry
 	212, // 58: v1.SaveNotifyChannelResponse.channel:type_name -> v1.NotifyChannelInfo
 	221, // 59: v1.BackupInfo.volumes:type_name -> v1.BackupVolumeInfo
 	222, // 60: v1.CreateBackupResponse.backup:type_name -> v1.BackupInfo
 	222, // 61: v1.ListBackupsResponse.backups:type_name -> v1.BackupInfo
 	222, // 62: v1.RestoreBackupResponse.backup:type_name -> v1.BackupInfo
-	432, // 63: v1.ImportBackupsResponse.skipped:type_name -> v1.ImportBackupsResponse.SkippedEntry
+	435, // 63: v1.ImportBackupsResponse.skipped:type_name -> v1.ImportBackupsResponse.SkippedEntry
 	193, // 64: v1.BackupScheduleInfo.keep:type_name -> v1.GFSRetention
 	193, // 65: v1.CreateBackupScheduleRequest.keep:type_name -> v1.GFSRetention
 	233, // 66: v1.CreateBackupScheduleResponse.schedule:type_name -> v1.BackupScheduleInfo
 	233, // 67: v1.ListBackupSchedulesResponse.schedules:type_name -> v1.BackupScheduleInfo
 	233, // 68: v1.RunBackupScheduleResponse.schedule:type_name -> v1.BackupScheduleInfo
-	433, // 69: v1.CreateNFSGatewayRequest.options:type_name -> v1.CreateNFSGatewayRequest.OptionsEntry
-	434, // 70: v1.CreateISCSIGatewayRequest.options:type_name -> v1.CreateISCSIGatewayRequest.OptionsEntry
-	435, // 71: v1.CreateNVMeGatewayRequest.options:type_name -> v1.CreateNVMeGatewayRequest.OptionsEntry
+	436, // 69: v1.CreateNFSGatewayRequest.options:type_name -> v1.CreateNFSGatewayRequest.OptionsEntry
+	437, // 70: v1.CreateISCSIGatewayRequest.options:type_name -> v1.CreateISCSIGatewayRequest.OptionsEntry
+	438, // 71: v1.CreateNVMeGatewayRequest.options:type_name -> v1.CreateNVMeGatewayRequest.OptionsEntry
 	258, // 72: v1.GetGatewayResponse.gateway:type_name -> v1.GatewayInfo
 	258, // 73: v1.ListGatewaysResponse.gateways:type_name -> v1.GatewayInfo
-	436, // 74: v1.GatewayInfo.options:type_name -> v1.GatewayInfo.OptionsEntry
+	439, // 74: v1.GatewayInfo.options:type_name -> v1.GatewayInfo.OptionsEntry
 	259, // 75: v1.ListNFSExportsResponse.exports:type_name -> v1.NFSExportInfo
 	268, // 76: v1.AddSMBShareRequest.share:type_name -> v1.SMBShareInfo
 	268, // 77: v1.ListSMBSharesResponse.shares:type_name -> v1.SMBShareInfo
@@ -28923,7 +29241,7 @@ var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	320, // 87: v1.HaPromoterStatus.outside:type_name -> v1.HaOutsideService
 	321, // 88: v1.GetHaStatusResponse.promoters:type_name -> v1.HaPromoterStatus
 	335, // 89: v1.SetNodeAddressRequest.moves:type_name -> v1.NodeAddressMove
-	437, // 90: v1.SetResourceProfileOptionsRequest.options:type_name -> v1.SetResourceProfileOptionsRequest.OptionsEntry
+	440, // 90: v1.SetResourceProfileOptionsRequest.options:type_name -> v1.SetResourceProfileOptionsRequest.OptionsEntry
 	68,  // 91: v1.SetResourceProfileOptionsResponse.profile:type_name -> v1.ResourceProfile
 	337, // 92: v1.SetResourceProfileOptionsResponse.members:type_name -> v1.ProfileMemberResult
 	337, // 93: v1.AdjustResourceProfileResponse.members:type_name -> v1.ProfileMemberResult
@@ -28944,378 +29262,381 @@ var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	387, // 108: v1.GetAppStatusResponse.app:type_name -> v1.AppInfo
 	401, // 109: v1.TrimPoolsResponse.results:type_name -> v1.TrimResultInfo
 	404, // 110: v1.ListPoolDisksResponse.disks:type_name -> v1.PoolDiskInfo
-	411, // 111: v1.ListStorageJobsResponse.jobs:type_name -> v1.StorageJobInfo
-	180, // 112: v1.ResourceInfo.NodeStatesEntry.value:type_name -> v1.NodeResourceState
-	180, // 113: v1.ResourceStatus.NodeStatesEntry.value:type_name -> v1.NodeResourceState
-	0,   // 114: v1.HaifyController.CreatePool:input_type -> v1.CreatePoolRequest
-	2,   // 115: v1.HaifyController.DeletePool:input_type -> v1.DeletePoolRequest
-	4,   // 116: v1.HaifyController.GetPool:input_type -> v1.GetPoolRequest
-	6,   // 117: v1.HaifyController.ListPools:input_type -> v1.ListPoolsRequest
-	400, // 118: v1.HaifyController.TrimPools:input_type -> v1.TrimPoolsRequest
-	403, // 119: v1.HaifyController.ListPoolDisks:input_type -> v1.ListPoolDisksRequest
-	406, // 120: v1.HaifyController.RemovePoolDisk:input_type -> v1.RemovePoolDiskRequest
-	407, // 121: v1.HaifyController.ReplacePoolDisk:input_type -> v1.ReplacePoolDiskRequest
-	408, // 122: v1.HaifyController.MoveVolume:input_type -> v1.MoveVolumeRequest
-	410, // 123: v1.HaifyController.ListStorageJobs:input_type -> v1.ListStorageJobsRequest
-	8,   // 124: v1.HaifyController.AddDiskToPool:input_type -> v1.AddDiskToPoolRequest
-	43,  // 125: v1.HaifyController.RegisterNode:input_type -> v1.RegisterNodeRequest
-	47,  // 126: v1.HaifyController.UnregisterNode:input_type -> v1.UnregisterNodeRequest
-	45,  // 127: v1.HaifyController.SetNodeLabels:input_type -> v1.SetNodeLabelsRequest
-	334, // 128: v1.HaifyController.SetNodeAddress:input_type -> v1.SetNodeAddressRequest
-	49,  // 129: v1.HaifyController.GetNode:input_type -> v1.GetNodeRequest
-	51,  // 130: v1.HaifyController.ListNodes:input_type -> v1.ListNodesRequest
-	54,  // 131: v1.HaifyController.HealthCheck:input_type -> v1.HealthCheckRequest
-	57,  // 132: v1.HaifyController.CreateResource:input_type -> v1.CreateResourceRequest
-	60,  // 133: v1.HaifyController.AdoptResource:input_type -> v1.AdoptResourceRequest
-	62,  // 134: v1.HaifyController.DeleteResource:input_type -> v1.DeleteResourceRequest
-	64,  // 135: v1.HaifyController.GetResource:input_type -> v1.GetResourceRequest
-	66,  // 136: v1.HaifyController.ListResources:input_type -> v1.ListResourcesRequest
-	69,  // 137: v1.HaifyController.CreateResourceProfile:input_type -> v1.CreateResourceProfileRequest
-	71,  // 138: v1.HaifyController.GetResourceProfile:input_type -> v1.GetResourceProfileRequest
-	73,  // 139: v1.HaifyController.ListResourceProfiles:input_type -> v1.ListResourceProfilesRequest
-	75,  // 140: v1.HaifyController.DeleteResourceProfile:input_type -> v1.DeleteResourceProfileRequest
-	338, // 141: v1.HaifyController.SetResourceProfileOptions:input_type -> v1.SetResourceProfileOptionsRequest
-	340, // 142: v1.HaifyController.AdjustResourceProfile:input_type -> v1.AdjustResourceProfileRequest
-	342, // 143: v1.HaifyController.GetResourceProfileMaxSize:input_type -> v1.GetResourceProfileMaxSizeRequest
-	344, // 144: v1.HaifyController.SetResourceProfile:input_type -> v1.SetResourceProfileRequest
-	77,  // 145: v1.HaifyController.AddVolume:input_type -> v1.AddVolumeRequest
-	83,  // 146: v1.HaifyController.RemoveVolume:input_type -> v1.RemoveVolumeRequest
-	85,  // 147: v1.HaifyController.CreateResourceSnapshot:input_type -> v1.CreateResourceSnapshotRequest
-	87,  // 148: v1.HaifyController.ListResourceSnapshots:input_type -> v1.ListResourceSnapshotsRequest
-	89,  // 149: v1.HaifyController.RollbackResourceSnapshot:input_type -> v1.RollbackResourceSnapshotRequest
-	91,  // 150: v1.HaifyController.DeleteResourceSnapshot:input_type -> v1.DeleteResourceSnapshotRequest
-	106, // 151: v1.HaifyController.RenameResource:input_type -> v1.RenameResourceRequest
-	108, // 152: v1.HaifyController.ResizeVolume:input_type -> v1.ResizeVolumeRequest
-	79,  // 153: v1.HaifyController.UpdateResourceOptions:input_type -> v1.UpdateResourceOptionsRequest
-	81,  // 154: v1.HaifyController.RepairResource:input_type -> v1.RepairResourceRequest
-	110, // 155: v1.HaifyController.ResourceStatus:input_type -> v1.ResourceStatusRequest
-	112, // 156: v1.HaifyController.SetPrimary:input_type -> v1.SetPrimaryRequest
-	114, // 157: v1.HaifyController.SetSecondary:input_type -> v1.SetSecondaryRequest
-	118, // 158: v1.HaifyController.SetDualPrimary:input_type -> v1.SetDualPrimaryRequest
-	120, // 159: v1.HaifyController.AttachDisklessClient:input_type -> v1.AttachDisklessClientRequest
-	122, // 160: v1.HaifyController.DetachDisklessClient:input_type -> v1.DetachDisklessClientRequest
-	116, // 161: v1.HaifyController.SetResourceLabels:input_type -> v1.SetResourceLabelsRequest
-	124, // 162: v1.HaifyController.CreateFilesystem:input_type -> v1.CreateFilesystemRequest
-	126, // 163: v1.HaifyController.MountResource:input_type -> v1.MountResourceRequest
-	128, // 164: v1.HaifyController.UnmountResource:input_type -> v1.UnmountResourceRequest
-	132, // 165: v1.HaifyController.MakeHa:input_type -> v1.MakeHaRequest
-	144, // 166: v1.HaifyController.EvictHa:input_type -> v1.EvictHaRequest
-	93,  // 167: v1.HaifyController.SetHaPreferredNodes:input_type -> v1.SetHaPreferredNodesRequest
-	145, // 168: v1.HaifyController.SetTiebreaker:input_type -> v1.SetTiebreakerRequest
-	353, // 169: v1.HaifyController.SetupReplicationTLS:input_type -> v1.SetupReplicationTLSRequest
-	354, // 170: v1.HaifyController.GetReplicationTLSStatus:input_type -> v1.GetReplicationTLSStatusRequest
-	357, // 171: v1.HaifyController.SetResourceTLS:input_type -> v1.SetResourceTLSRequest
-	147, // 172: v1.HaifyController.AddDR:input_type -> v1.AddDRRequest
-	149, // 173: v1.HaifyController.AddReplica:input_type -> v1.AddReplicaRequest
-	150, // 174: v1.HaifyController.RemoveReplica:input_type -> v1.RemoveReplicaRequest
-	311, // 175: v1.HaifyController.DeleteHa:input_type -> v1.DeleteHaRequest
-	313, // 176: v1.HaifyController.GetHa:input_type -> v1.GetHaRequest
-	315, // 177: v1.HaifyController.ListHa:input_type -> v1.ListHaRequest
-	322, // 178: v1.HaifyController.GetHaStatus:input_type -> v1.GetHaStatusRequest
-	134, // 179: v1.HaifyController.ListResourceAgents:input_type -> v1.ListResourceAgentsRequest
-	137, // 180: v1.HaifyController.GetResourceAgentMetadata:input_type -> v1.GetResourceAgentMetadataRequest
-	139, // 181: v1.HaifyController.GetHaToml:input_type -> v1.GetHaTomlRequest
-	141, // 182: v1.HaifyController.SyncHaToml:input_type -> v1.SyncHaTomlRequest
-	154, // 183: v1.HaifyController.EnableSelfHa:input_type -> v1.EnableSelfHaRequest
-	156, // 184: v1.HaifyController.DisableSelfHa:input_type -> v1.DisableSelfHaRequest
-	158, // 185: v1.HaifyController.GetSelfHaStatus:input_type -> v1.GetSelfHaStatusRequest
-	182, // 186: v1.HaifyController.CreateSnapshot:input_type -> v1.CreateSnapshotRequest
-	184, // 187: v1.HaifyController.DeleteSnapshot:input_type -> v1.DeleteSnapshotRequest
-	186, // 188: v1.HaifyController.RestoreSnapshot:input_type -> v1.RestoreSnapshotRequest
-	190, // 189: v1.HaifyController.ListSnapshots:input_type -> v1.ListSnapshotsRequest
-	188, // 190: v1.HaifyController.PopulateVolume:input_type -> v1.PopulateVolumeRequest
-	199, // 191: v1.HaifyController.CreateSnapshotSchedule:input_type -> v1.CreateSnapshotScheduleRequest
-	201, // 192: v1.HaifyController.ListSnapshotSchedules:input_type -> v1.ListSnapshotSchedulesRequest
-	203, // 193: v1.HaifyController.DeleteSnapshotSchedule:input_type -> v1.DeleteSnapshotScheduleRequest
-	195, // 194: v1.HaifyController.FreezeSnapshotSchedule:input_type -> v1.FreezeSnapshotScheduleRequest
-	197, // 195: v1.HaifyController.UnfreezeSnapshotSchedule:input_type -> v1.UnfreezeSnapshotScheduleRequest
-	206, // 196: v1.HaifyController.AddBackupTarget:input_type -> v1.AddBackupTargetRequest
-	208, // 197: v1.HaifyController.ListBackupTargets:input_type -> v1.ListBackupTargetsRequest
-	210, // 198: v1.HaifyController.DeleteBackupTarget:input_type -> v1.DeleteBackupTargetRequest
-	223, // 199: v1.HaifyController.CreateBackup:input_type -> v1.CreateBackupRequest
-	225, // 200: v1.HaifyController.ListBackups:input_type -> v1.ListBackupsRequest
-	227, // 201: v1.HaifyController.RestoreBackup:input_type -> v1.RestoreBackupRequest
-	229, // 202: v1.HaifyController.DeleteBackup:input_type -> v1.DeleteBackupRequest
-	231, // 203: v1.HaifyController.ImportBackups:input_type -> v1.ImportBackupsRequest
-	234, // 204: v1.HaifyController.CreateBackupSchedule:input_type -> v1.CreateBackupScheduleRequest
-	236, // 205: v1.HaifyController.ListBackupSchedules:input_type -> v1.ListBackupSchedulesRequest
-	238, // 206: v1.HaifyController.DeleteBackupSchedule:input_type -> v1.DeleteBackupScheduleRequest
-	240, // 207: v1.HaifyController.RunBackupSchedule:input_type -> v1.RunBackupScheduleRequest
-	242, // 208: v1.HaifyController.CreateNFSGateway:input_type -> v1.CreateNFSGatewayRequest
-	244, // 209: v1.HaifyController.CreateISCSIGateway:input_type -> v1.CreateISCSIGatewayRequest
-	246, // 210: v1.HaifyController.CreateNVMeGateway:input_type -> v1.CreateNVMeGatewayRequest
-	248, // 211: v1.HaifyController.DeleteGateway:input_type -> v1.DeleteGatewayRequest
-	250, // 212: v1.HaifyController.GetGateway:input_type -> v1.GetGatewayRequest
-	252, // 213: v1.HaifyController.ListGateways:input_type -> v1.ListGatewaysRequest
-	254, // 214: v1.HaifyController.StartGateway:input_type -> v1.StartGatewayRequest
-	256, // 215: v1.HaifyController.StopGateway:input_type -> v1.StopGatewayRequest
-	260, // 216: v1.HaifyController.AddNFSExport:input_type -> v1.AddNFSExportRequest
-	262, // 217: v1.HaifyController.RemoveNFSExport:input_type -> v1.RemoveNFSExportRequest
-	264, // 218: v1.HaifyController.ListNFSExports:input_type -> v1.ListNFSExportsRequest
-	266, // 219: v1.HaifyController.CreateSMBGateway:input_type -> v1.CreateSMBGatewayRequest
-	269, // 220: v1.HaifyController.AddSMBShare:input_type -> v1.AddSMBShareRequest
-	271, // 221: v1.HaifyController.RemoveSMBShare:input_type -> v1.RemoveSMBShareRequest
-	273, // 222: v1.HaifyController.ListSMBShares:input_type -> v1.ListSMBSharesRequest
-	275, // 223: v1.HaifyController.SetSMBUser:input_type -> v1.SetSMBUserRequest
-	277, // 224: v1.HaifyController.RemoveSMBUser:input_type -> v1.RemoveSMBUserRequest
-	279, // 225: v1.HaifyController.ListSMBUsers:input_type -> v1.ListSMBUsersRequest
-	282, // 226: v1.HaifyController.AddISCSILUN:input_type -> v1.AddISCSILUNRequest
-	284, // 227: v1.HaifyController.RemoveISCSILUN:input_type -> v1.RemoveISCSILUNRequest
-	286, // 228: v1.HaifyController.ListISCSILUNs:input_type -> v1.ListISCSILUNsRequest
-	288, // 229: v1.HaifyController.AddISCSIInitiator:input_type -> v1.AddISCSIInitiatorRequest
-	290, // 230: v1.HaifyController.RemoveISCSIInitiator:input_type -> v1.RemoveISCSIInitiatorRequest
-	292, // 231: v1.HaifyController.ListISCSIInitiators:input_type -> v1.ListISCSIInitiatorsRequest
-	294, // 232: v1.HaifyController.SetISCSIChap:input_type -> v1.SetISCSIChapRequest
-	296, // 233: v1.HaifyController.GetISCSIChap:input_type -> v1.GetISCSIChapRequest
-	299, // 234: v1.HaifyController.AddNVMeNamespace:input_type -> v1.AddNVMeNamespaceRequest
-	301, // 235: v1.HaifyController.RemoveNVMeNamespace:input_type -> v1.RemoveNVMeNamespaceRequest
-	303, // 236: v1.HaifyController.ListNVMeNamespaces:input_type -> v1.ListNVMeNamespacesRequest
-	305, // 237: v1.HaifyController.AddNVMeHost:input_type -> v1.AddNVMeHostRequest
-	307, // 238: v1.HaifyController.RemoveNVMeHost:input_type -> v1.RemoveNVMeHostRequest
-	309, // 239: v1.HaifyController.ListNVMeHosts:input_type -> v1.ListNVMeHostsRequest
-	11,  // 240: v1.HaifyController.CreateZFSPool:input_type -> v1.CreateZFSPoolRequest
-	13,  // 241: v1.HaifyController.DeleteZFSPool:input_type -> v1.DeleteZFSPoolRequest
-	15,  // 242: v1.HaifyController.ListZFSpools:input_type -> v1.ListZFSPoolsRequest
-	17,  // 243: v1.HaifyController.CreateZFSDataset:input_type -> v1.CreateZFSDatasetRequest
-	19,  // 244: v1.HaifyController.CreateZFSVolume:input_type -> v1.CreateZFSVolumeRequest
-	21,  // 245: v1.HaifyController.ResizeZFSVolume:input_type -> v1.ResizeZFSVolumeRequest
-	23,  // 246: v1.HaifyController.DeleteZFSDataset:input_type -> v1.DeleteZFSDatasetRequest
-	25,  // 247: v1.HaifyController.CreateZFSSnapshot:input_type -> v1.CreateZFSSnapshotRequest
-	27,  // 248: v1.HaifyController.DeleteZFSSnapshot:input_type -> v1.DeleteZFSSnapshotRequest
-	29,  // 249: v1.HaifyController.ListZFSSnapshots:input_type -> v1.ListZFSSnapshotsRequest
-	31,  // 250: v1.HaifyController.RestoreZFSSnapshot:input_type -> v1.RestoreZFSSnapshotRequest
-	33,  // 251: v1.HaifyController.CloneZFSSnapshot:input_type -> v1.CloneZFSSnapshotRequest
-	35,  // 252: v1.HaifyController.CreateLvmSnapshot:input_type -> v1.CreateLvmSnapshotRequest
-	37,  // 253: v1.HaifyController.DeleteLvmSnapshot:input_type -> v1.DeleteLvmSnapshotRequest
-	39,  // 254: v1.HaifyController.ListLvmSnapshots:input_type -> v1.ListLvmSnapshotsRequest
-	41,  // 255: v1.HaifyController.RestoreLvmSnapshot:input_type -> v1.RestoreLvmSnapshotRequest
-	95,  // 256: v1.HaifyController.SetNFSExportQuota:input_type -> v1.SetNFSExportQuotaRequest
-	97,  // 257: v1.HaifyController.MoveReplica:input_type -> v1.MoveReplicaRequest
-	100, // 258: v1.HaifyController.PlanRebalance:input_type -> v1.PlanRebalanceRequest
-	102, // 259: v1.HaifyController.MarkNodeLost:input_type -> v1.MarkNodeLostRequest
-	104, // 260: v1.HaifyController.RestoreNode:input_type -> v1.RestoreNodeRequest
-	324, // 261: v1.HaifyController.DrainNode:input_type -> v1.DrainNodeRequest
-	332, // 262: v1.HaifyController.UndrainNode:input_type -> v1.UndrainNodeRequest
-	325, // 263: v1.HaifyController.ConvertPoolToThin:input_type -> v1.ConvertPoolToThinRequest
-	327, // 264: v1.HaifyController.AddPoolCache:input_type -> v1.AddPoolCacheRequest
-	329, // 265: v1.HaifyController.RemovePoolCache:input_type -> v1.RemovePoolCacheRequest
-	161, // 266: v1.HaifyController.ListAuditEvents:input_type -> v1.ListAuditEventsRequest
-	164, // 267: v1.HaifyController.ListControllerLogs:input_type -> v1.ListControllerLogsRequest
-	166, // 268: v1.HaifyController.CollectNodeDiagnostics:input_type -> v1.CollectNodeDiagnosticsRequest
-	171, // 269: v1.HaifyController.ListEvents:input_type -> v1.ListEventsRequest
-	213, // 270: v1.HaifyController.ListNotifyChannels:input_type -> v1.ListNotifyChannelsRequest
-	215, // 271: v1.HaifyController.SaveNotifyChannel:input_type -> v1.SaveNotifyChannelRequest
-	217, // 272: v1.HaifyController.DeleteNotifyChannel:input_type -> v1.DeleteNotifyChannelRequest
-	219, // 273: v1.HaifyController.TestNotifyChannel:input_type -> v1.TestNotifyChannelRequest
-	381, // 274: v1.HaifyController.RunInspection:input_type -> v1.RunInspectionRequest
-	383, // 275: v1.HaifyController.ListInspections:input_type -> v1.ListInspectionsRequest
-	385, // 276: v1.HaifyController.GetInspection:input_type -> v1.GetInspectionRequest
-	173, // 277: v1.HaifyController.RepairWanProxy:input_type -> v1.RepairWanProxyRequest
-	348, // 278: v1.HaifyController.DRFailback:input_type -> v1.DRFailbackRequest
-	346, // 279: v1.HaifyController.SetWanEndpoint:input_type -> v1.SetWanEndpointRequest
-	349, // 280: v1.HaifyController.VerifyResource:input_type -> v1.VerifyResourceRequest
-	175, // 281: v1.HaifyController.WatchEvents:input_type -> v1.WatchEventsRequest
-	359, // 282: v1.HaifyController.GetRbacWhoami:input_type -> v1.GetRbacWhoamiRequest
-	361, // 283: v1.HaifyController.ListRbacPolicies:input_type -> v1.ListRbacPoliciesRequest
-	365, // 284: v1.HaifyController.CreateRbacUser:input_type -> v1.CreateRbacUserRequest
-	367, // 285: v1.HaifyController.DeleteRbacUser:input_type -> v1.DeleteRbacUserRequest
-	369, // 286: v1.HaifyController.SetRbacUserRole:input_type -> v1.SetRbacUserRoleRequest
-	372, // 287: v1.HaifyController.ListApprovals:input_type -> v1.ListApprovalsRequest
-	374, // 288: v1.HaifyController.ApproveRequest:input_type -> v1.ApproveRequestRequest
-	376, // 289: v1.HaifyController.RejectRequest:input_type -> v1.RejectRequestRequest
-	388, // 290: v1.HaifyController.CreateApp:input_type -> v1.CreateAppRequest
-	390, // 291: v1.HaifyController.ListApps:input_type -> v1.ListAppsRequest
-	392, // 292: v1.HaifyController.GetAppStatus:input_type -> v1.GetAppStatusRequest
-	394, // 293: v1.HaifyController.DeleteApp:input_type -> v1.DeleteAppRequest
-	396, // 294: v1.HaifyController.FailoverApp:input_type -> v1.FailoverAppRequest
-	398, // 295: v1.HaifyController.SnapshotApp:input_type -> v1.SnapshotAppRequest
-	1,   // 296: v1.HaifyController.CreatePool:output_type -> v1.CreatePoolResponse
-	3,   // 297: v1.HaifyController.DeletePool:output_type -> v1.DeletePoolResponse
-	5,   // 298: v1.HaifyController.GetPool:output_type -> v1.GetPoolResponse
-	7,   // 299: v1.HaifyController.ListPools:output_type -> v1.ListPoolsResponse
-	402, // 300: v1.HaifyController.TrimPools:output_type -> v1.TrimPoolsResponse
-	405, // 301: v1.HaifyController.ListPoolDisks:output_type -> v1.ListPoolDisksResponse
-	409, // 302: v1.HaifyController.RemovePoolDisk:output_type -> v1.StorageJobResponse
-	409, // 303: v1.HaifyController.ReplacePoolDisk:output_type -> v1.StorageJobResponse
-	409, // 304: v1.HaifyController.MoveVolume:output_type -> v1.StorageJobResponse
-	412, // 305: v1.HaifyController.ListStorageJobs:output_type -> v1.ListStorageJobsResponse
-	9,   // 306: v1.HaifyController.AddDiskToPool:output_type -> v1.AddDiskToPoolResponse
-	44,  // 307: v1.HaifyController.RegisterNode:output_type -> v1.RegisterNodeResponse
-	48,  // 308: v1.HaifyController.UnregisterNode:output_type -> v1.UnregisterNodeResponse
-	46,  // 309: v1.HaifyController.SetNodeLabels:output_type -> v1.SetNodeLabelsResponse
-	336, // 310: v1.HaifyController.SetNodeAddress:output_type -> v1.SetNodeAddressResponse
-	50,  // 311: v1.HaifyController.GetNode:output_type -> v1.GetNodeResponse
-	52,  // 312: v1.HaifyController.ListNodes:output_type -> v1.ListNodesResponse
-	55,  // 313: v1.HaifyController.HealthCheck:output_type -> v1.HealthCheckResponse
-	59,  // 314: v1.HaifyController.CreateResource:output_type -> v1.CreateResourceResponse
-	61,  // 315: v1.HaifyController.AdoptResource:output_type -> v1.AdoptResourceResponse
-	63,  // 316: v1.HaifyController.DeleteResource:output_type -> v1.DeleteResourceResponse
-	65,  // 317: v1.HaifyController.GetResource:output_type -> v1.GetResourceResponse
-	67,  // 318: v1.HaifyController.ListResources:output_type -> v1.ListResourcesResponse
-	70,  // 319: v1.HaifyController.CreateResourceProfile:output_type -> v1.CreateResourceProfileResponse
-	72,  // 320: v1.HaifyController.GetResourceProfile:output_type -> v1.GetResourceProfileResponse
-	74,  // 321: v1.HaifyController.ListResourceProfiles:output_type -> v1.ListResourceProfilesResponse
-	76,  // 322: v1.HaifyController.DeleteResourceProfile:output_type -> v1.DeleteResourceProfileResponse
-	339, // 323: v1.HaifyController.SetResourceProfileOptions:output_type -> v1.SetResourceProfileOptionsResponse
-	341, // 324: v1.HaifyController.AdjustResourceProfile:output_type -> v1.AdjustResourceProfileResponse
-	343, // 325: v1.HaifyController.GetResourceProfileMaxSize:output_type -> v1.GetResourceProfileMaxSizeResponse
-	345, // 326: v1.HaifyController.SetResourceProfile:output_type -> v1.SetResourceProfileResponse
-	78,  // 327: v1.HaifyController.AddVolume:output_type -> v1.AddVolumeResponse
-	84,  // 328: v1.HaifyController.RemoveVolume:output_type -> v1.RemoveVolumeResponse
-	86,  // 329: v1.HaifyController.CreateResourceSnapshot:output_type -> v1.CreateResourceSnapshotResponse
-	88,  // 330: v1.HaifyController.ListResourceSnapshots:output_type -> v1.ListResourceSnapshotsResponse
-	90,  // 331: v1.HaifyController.RollbackResourceSnapshot:output_type -> v1.RollbackResourceSnapshotResponse
-	92,  // 332: v1.HaifyController.DeleteResourceSnapshot:output_type -> v1.DeleteResourceSnapshotResponse
-	107, // 333: v1.HaifyController.RenameResource:output_type -> v1.RenameResourceResponse
-	109, // 334: v1.HaifyController.ResizeVolume:output_type -> v1.ResizeVolumeResponse
-	80,  // 335: v1.HaifyController.UpdateResourceOptions:output_type -> v1.UpdateResourceOptionsResponse
-	82,  // 336: v1.HaifyController.RepairResource:output_type -> v1.RepairResourceResponse
-	111, // 337: v1.HaifyController.ResourceStatus:output_type -> v1.ResourceStatusResponse
-	113, // 338: v1.HaifyController.SetPrimary:output_type -> v1.SetPrimaryResponse
-	115, // 339: v1.HaifyController.SetSecondary:output_type -> v1.SetSecondaryResponse
-	119, // 340: v1.HaifyController.SetDualPrimary:output_type -> v1.SetDualPrimaryResponse
-	121, // 341: v1.HaifyController.AttachDisklessClient:output_type -> v1.AttachDisklessClientResponse
-	123, // 342: v1.HaifyController.DetachDisklessClient:output_type -> v1.DetachDisklessClientResponse
-	117, // 343: v1.HaifyController.SetResourceLabels:output_type -> v1.SetResourceLabelsResponse
-	125, // 344: v1.HaifyController.CreateFilesystem:output_type -> v1.CreateFilesystemResponse
-	127, // 345: v1.HaifyController.MountResource:output_type -> v1.MountResourceResponse
-	129, // 346: v1.HaifyController.UnmountResource:output_type -> v1.UnmountResourceResponse
-	143, // 347: v1.HaifyController.MakeHa:output_type -> v1.MakeHaResponse
-	153, // 348: v1.HaifyController.EvictHa:output_type -> v1.EvictHaResponse
-	94,  // 349: v1.HaifyController.SetHaPreferredNodes:output_type -> v1.SetHaPreferredNodesResponse
-	146, // 350: v1.HaifyController.SetTiebreaker:output_type -> v1.SetTiebreakerResponse
-	356, // 351: v1.HaifyController.SetupReplicationTLS:output_type -> v1.ReplicationTLSResponse
-	356, // 352: v1.HaifyController.GetReplicationTLSStatus:output_type -> v1.ReplicationTLSResponse
-	358, // 353: v1.HaifyController.SetResourceTLS:output_type -> v1.SetResourceTLSResponse
-	148, // 354: v1.HaifyController.AddDR:output_type -> v1.AddDRResponse
-	152, // 355: v1.HaifyController.AddReplica:output_type -> v1.AddReplicaResponse
-	151, // 356: v1.HaifyController.RemoveReplica:output_type -> v1.RemoveReplicaResponse
-	312, // 357: v1.HaifyController.DeleteHa:output_type -> v1.DeleteHaResponse
-	314, // 358: v1.HaifyController.GetHa:output_type -> v1.GetHaResponse
-	316, // 359: v1.HaifyController.ListHa:output_type -> v1.ListHaResponse
-	323, // 360: v1.HaifyController.GetHaStatus:output_type -> v1.GetHaStatusResponse
-	135, // 361: v1.HaifyController.ListResourceAgents:output_type -> v1.ListResourceAgentsResponse
-	138, // 362: v1.HaifyController.GetResourceAgentMetadata:output_type -> v1.GetResourceAgentMetadataResponse
-	140, // 363: v1.HaifyController.GetHaToml:output_type -> v1.GetHaTomlResponse
-	142, // 364: v1.HaifyController.SyncHaToml:output_type -> v1.SyncHaTomlResponse
-	155, // 365: v1.HaifyController.EnableSelfHa:output_type -> v1.EnableSelfHaResponse
-	157, // 366: v1.HaifyController.DisableSelfHa:output_type -> v1.DisableSelfHaResponse
-	159, // 367: v1.HaifyController.GetSelfHaStatus:output_type -> v1.GetSelfHaStatusResponse
-	183, // 368: v1.HaifyController.CreateSnapshot:output_type -> v1.CreateSnapshotResponse
-	185, // 369: v1.HaifyController.DeleteSnapshot:output_type -> v1.DeleteSnapshotResponse
-	187, // 370: v1.HaifyController.RestoreSnapshot:output_type -> v1.RestoreSnapshotResponse
-	191, // 371: v1.HaifyController.ListSnapshots:output_type -> v1.ListSnapshotsResponse
-	189, // 372: v1.HaifyController.PopulateVolume:output_type -> v1.PopulateVolumeResponse
-	200, // 373: v1.HaifyController.CreateSnapshotSchedule:output_type -> v1.CreateSnapshotScheduleResponse
-	202, // 374: v1.HaifyController.ListSnapshotSchedules:output_type -> v1.ListSnapshotSchedulesResponse
-	204, // 375: v1.HaifyController.DeleteSnapshotSchedule:output_type -> v1.DeleteSnapshotScheduleResponse
-	196, // 376: v1.HaifyController.FreezeSnapshotSchedule:output_type -> v1.FreezeSnapshotScheduleResponse
-	198, // 377: v1.HaifyController.UnfreezeSnapshotSchedule:output_type -> v1.UnfreezeSnapshotScheduleResponse
-	207, // 378: v1.HaifyController.AddBackupTarget:output_type -> v1.AddBackupTargetResponse
-	209, // 379: v1.HaifyController.ListBackupTargets:output_type -> v1.ListBackupTargetsResponse
-	211, // 380: v1.HaifyController.DeleteBackupTarget:output_type -> v1.DeleteBackupTargetResponse
-	224, // 381: v1.HaifyController.CreateBackup:output_type -> v1.CreateBackupResponse
-	226, // 382: v1.HaifyController.ListBackups:output_type -> v1.ListBackupsResponse
-	228, // 383: v1.HaifyController.RestoreBackup:output_type -> v1.RestoreBackupResponse
-	230, // 384: v1.HaifyController.DeleteBackup:output_type -> v1.DeleteBackupResponse
-	232, // 385: v1.HaifyController.ImportBackups:output_type -> v1.ImportBackupsResponse
-	235, // 386: v1.HaifyController.CreateBackupSchedule:output_type -> v1.CreateBackupScheduleResponse
-	237, // 387: v1.HaifyController.ListBackupSchedules:output_type -> v1.ListBackupSchedulesResponse
-	239, // 388: v1.HaifyController.DeleteBackupSchedule:output_type -> v1.DeleteBackupScheduleResponse
-	241, // 389: v1.HaifyController.RunBackupSchedule:output_type -> v1.RunBackupScheduleResponse
-	243, // 390: v1.HaifyController.CreateNFSGateway:output_type -> v1.CreateNFSGatewayResponse
-	245, // 391: v1.HaifyController.CreateISCSIGateway:output_type -> v1.CreateISCSIGatewayResponse
-	247, // 392: v1.HaifyController.CreateNVMeGateway:output_type -> v1.CreateNVMeGatewayResponse
-	249, // 393: v1.HaifyController.DeleteGateway:output_type -> v1.DeleteGatewayResponse
-	251, // 394: v1.HaifyController.GetGateway:output_type -> v1.GetGatewayResponse
-	253, // 395: v1.HaifyController.ListGateways:output_type -> v1.ListGatewaysResponse
-	255, // 396: v1.HaifyController.StartGateway:output_type -> v1.StartGatewayResponse
-	257, // 397: v1.HaifyController.StopGateway:output_type -> v1.StopGatewayResponse
-	261, // 398: v1.HaifyController.AddNFSExport:output_type -> v1.AddNFSExportResponse
-	263, // 399: v1.HaifyController.RemoveNFSExport:output_type -> v1.RemoveNFSExportResponse
-	265, // 400: v1.HaifyController.ListNFSExports:output_type -> v1.ListNFSExportsResponse
-	267, // 401: v1.HaifyController.CreateSMBGateway:output_type -> v1.CreateSMBGatewayResponse
-	270, // 402: v1.HaifyController.AddSMBShare:output_type -> v1.AddSMBShareResponse
-	272, // 403: v1.HaifyController.RemoveSMBShare:output_type -> v1.RemoveSMBShareResponse
-	274, // 404: v1.HaifyController.ListSMBShares:output_type -> v1.ListSMBSharesResponse
-	276, // 405: v1.HaifyController.SetSMBUser:output_type -> v1.SetSMBUserResponse
-	278, // 406: v1.HaifyController.RemoveSMBUser:output_type -> v1.RemoveSMBUserResponse
-	280, // 407: v1.HaifyController.ListSMBUsers:output_type -> v1.ListSMBUsersResponse
-	283, // 408: v1.HaifyController.AddISCSILUN:output_type -> v1.AddISCSILUNResponse
-	285, // 409: v1.HaifyController.RemoveISCSILUN:output_type -> v1.RemoveISCSILUNResponse
-	287, // 410: v1.HaifyController.ListISCSILUNs:output_type -> v1.ListISCSILUNsResponse
-	289, // 411: v1.HaifyController.AddISCSIInitiator:output_type -> v1.AddISCSIInitiatorResponse
-	291, // 412: v1.HaifyController.RemoveISCSIInitiator:output_type -> v1.RemoveISCSIInitiatorResponse
-	293, // 413: v1.HaifyController.ListISCSIInitiators:output_type -> v1.ListISCSIInitiatorsResponse
-	295, // 414: v1.HaifyController.SetISCSIChap:output_type -> v1.SetISCSIChapResponse
-	297, // 415: v1.HaifyController.GetISCSIChap:output_type -> v1.GetISCSIChapResponse
-	300, // 416: v1.HaifyController.AddNVMeNamespace:output_type -> v1.AddNVMeNamespaceResponse
-	302, // 417: v1.HaifyController.RemoveNVMeNamespace:output_type -> v1.RemoveNVMeNamespaceResponse
-	304, // 418: v1.HaifyController.ListNVMeNamespaces:output_type -> v1.ListNVMeNamespacesResponse
-	306, // 419: v1.HaifyController.AddNVMeHost:output_type -> v1.AddNVMeHostResponse
-	308, // 420: v1.HaifyController.RemoveNVMeHost:output_type -> v1.RemoveNVMeHostResponse
-	310, // 421: v1.HaifyController.ListNVMeHosts:output_type -> v1.ListNVMeHostsResponse
-	12,  // 422: v1.HaifyController.CreateZFSPool:output_type -> v1.CreateZFSPoolResponse
-	14,  // 423: v1.HaifyController.DeleteZFSPool:output_type -> v1.DeleteZFSPoolResponse
-	16,  // 424: v1.HaifyController.ListZFSpools:output_type -> v1.ListZFSPoolsResponse
-	18,  // 425: v1.HaifyController.CreateZFSDataset:output_type -> v1.CreateZFSDatasetResponse
-	20,  // 426: v1.HaifyController.CreateZFSVolume:output_type -> v1.CreateZFSVolumeResponse
-	22,  // 427: v1.HaifyController.ResizeZFSVolume:output_type -> v1.ResizeZFSVolumeResponse
-	24,  // 428: v1.HaifyController.DeleteZFSDataset:output_type -> v1.DeleteZFSDatasetResponse
-	26,  // 429: v1.HaifyController.CreateZFSSnapshot:output_type -> v1.CreateZFSSnapshotResponse
-	28,  // 430: v1.HaifyController.DeleteZFSSnapshot:output_type -> v1.DeleteZFSSnapshotResponse
-	30,  // 431: v1.HaifyController.ListZFSSnapshots:output_type -> v1.ListZFSSnapshotsResponse
-	32,  // 432: v1.HaifyController.RestoreZFSSnapshot:output_type -> v1.RestoreZFSSnapshotResponse
-	34,  // 433: v1.HaifyController.CloneZFSSnapshot:output_type -> v1.CloneZFSSnapshotResponse
-	36,  // 434: v1.HaifyController.CreateLvmSnapshot:output_type -> v1.CreateLvmSnapshotResponse
-	38,  // 435: v1.HaifyController.DeleteLvmSnapshot:output_type -> v1.DeleteLvmSnapshotResponse
-	40,  // 436: v1.HaifyController.ListLvmSnapshots:output_type -> v1.ListLvmSnapshotsResponse
-	42,  // 437: v1.HaifyController.RestoreLvmSnapshot:output_type -> v1.RestoreLvmSnapshotResponse
-	96,  // 438: v1.HaifyController.SetNFSExportQuota:output_type -> v1.SetNFSExportQuotaResponse
-	98,  // 439: v1.HaifyController.MoveReplica:output_type -> v1.MoveReplicaResponse
-	101, // 440: v1.HaifyController.PlanRebalance:output_type -> v1.PlanRebalanceResponse
-	103, // 441: v1.HaifyController.MarkNodeLost:output_type -> v1.MarkNodeLostResponse
-	105, // 442: v1.HaifyController.RestoreNode:output_type -> v1.RestoreNodeResponse
-	331, // 443: v1.HaifyController.DrainNode:output_type -> v1.DrainNodeResponse
-	333, // 444: v1.HaifyController.UndrainNode:output_type -> v1.UndrainNodeResponse
-	326, // 445: v1.HaifyController.ConvertPoolToThin:output_type -> v1.ConvertPoolToThinResponse
-	328, // 446: v1.HaifyController.AddPoolCache:output_type -> v1.AddPoolCacheResponse
-	330, // 447: v1.HaifyController.RemovePoolCache:output_type -> v1.RemovePoolCacheResponse
-	162, // 448: v1.HaifyController.ListAuditEvents:output_type -> v1.ListAuditEventsResponse
-	165, // 449: v1.HaifyController.ListControllerLogs:output_type -> v1.ListControllerLogsResponse
-	169, // 450: v1.HaifyController.CollectNodeDiagnostics:output_type -> v1.CollectNodeDiagnosticsResponse
-	172, // 451: v1.HaifyController.ListEvents:output_type -> v1.ListEventsResponse
-	214, // 452: v1.HaifyController.ListNotifyChannels:output_type -> v1.ListNotifyChannelsResponse
-	216, // 453: v1.HaifyController.SaveNotifyChannel:output_type -> v1.SaveNotifyChannelResponse
-	218, // 454: v1.HaifyController.DeleteNotifyChannel:output_type -> v1.DeleteNotifyChannelResponse
-	220, // 455: v1.HaifyController.TestNotifyChannel:output_type -> v1.TestNotifyChannelResponse
-	382, // 456: v1.HaifyController.RunInspection:output_type -> v1.RunInspectionResponse
-	384, // 457: v1.HaifyController.ListInspections:output_type -> v1.ListInspectionsResponse
-	386, // 458: v1.HaifyController.GetInspection:output_type -> v1.GetInspectionResponse
-	174, // 459: v1.HaifyController.RepairWanProxy:output_type -> v1.RepairWanProxyResponse
-	352, // 460: v1.HaifyController.DRFailback:output_type -> v1.DRFailbackResponse
-	347, // 461: v1.HaifyController.SetWanEndpoint:output_type -> v1.SetWanEndpointResponse
-	351, // 462: v1.HaifyController.VerifyResource:output_type -> v1.VerifyResourceResponse
-	170, // 463: v1.HaifyController.WatchEvents:output_type -> v1.Event
-	360, // 464: v1.HaifyController.GetRbacWhoami:output_type -> v1.GetRbacWhoamiResponse
-	364, // 465: v1.HaifyController.ListRbacPolicies:output_type -> v1.ListRbacPoliciesResponse
-	366, // 466: v1.HaifyController.CreateRbacUser:output_type -> v1.CreateRbacUserResponse
-	368, // 467: v1.HaifyController.DeleteRbacUser:output_type -> v1.DeleteRbacUserResponse
-	370, // 468: v1.HaifyController.SetRbacUserRole:output_type -> v1.SetRbacUserRoleResponse
-	373, // 469: v1.HaifyController.ListApprovals:output_type -> v1.ListApprovalsResponse
-	375, // 470: v1.HaifyController.ApproveRequest:output_type -> v1.ApproveRequestResponse
-	377, // 471: v1.HaifyController.RejectRequest:output_type -> v1.RejectRequestResponse
-	389, // 472: v1.HaifyController.CreateApp:output_type -> v1.CreateAppResponse
-	391, // 473: v1.HaifyController.ListApps:output_type -> v1.ListAppsResponse
-	393, // 474: v1.HaifyController.GetAppStatus:output_type -> v1.GetAppStatusResponse
-	395, // 475: v1.HaifyController.DeleteApp:output_type -> v1.DeleteAppResponse
-	397, // 476: v1.HaifyController.FailoverApp:output_type -> v1.FailoverAppResponse
-	399, // 477: v1.HaifyController.SnapshotApp:output_type -> v1.SnapshotAppResponse
-	296, // [296:478] is the sub-list for method output_type
-	114, // [114:296] is the sub-list for method input_type
-	114, // [114:114] is the sub-list for extension type_name
-	114, // [114:114] is the sub-list for extension extendee
-	0,   // [0:114] is the sub-list for field type_name
+	407, // 111: v1.ListNodeDisksResponse.disks:type_name -> v1.NodeDiskInfo
+	414, // 112: v1.ListStorageJobsResponse.jobs:type_name -> v1.StorageJobInfo
+	180, // 113: v1.ResourceInfo.NodeStatesEntry.value:type_name -> v1.NodeResourceState
+	180, // 114: v1.ResourceStatus.NodeStatesEntry.value:type_name -> v1.NodeResourceState
+	0,   // 115: v1.HaifyController.CreatePool:input_type -> v1.CreatePoolRequest
+	2,   // 116: v1.HaifyController.DeletePool:input_type -> v1.DeletePoolRequest
+	4,   // 117: v1.HaifyController.GetPool:input_type -> v1.GetPoolRequest
+	6,   // 118: v1.HaifyController.ListPools:input_type -> v1.ListPoolsRequest
+	400, // 119: v1.HaifyController.TrimPools:input_type -> v1.TrimPoolsRequest
+	403, // 120: v1.HaifyController.ListPoolDisks:input_type -> v1.ListPoolDisksRequest
+	406, // 121: v1.HaifyController.ListNodeDisks:input_type -> v1.ListNodeDisksRequest
+	409, // 122: v1.HaifyController.RemovePoolDisk:input_type -> v1.RemovePoolDiskRequest
+	410, // 123: v1.HaifyController.ReplacePoolDisk:input_type -> v1.ReplacePoolDiskRequest
+	411, // 124: v1.HaifyController.MoveVolume:input_type -> v1.MoveVolumeRequest
+	413, // 125: v1.HaifyController.ListStorageJobs:input_type -> v1.ListStorageJobsRequest
+	8,   // 126: v1.HaifyController.AddDiskToPool:input_type -> v1.AddDiskToPoolRequest
+	43,  // 127: v1.HaifyController.RegisterNode:input_type -> v1.RegisterNodeRequest
+	47,  // 128: v1.HaifyController.UnregisterNode:input_type -> v1.UnregisterNodeRequest
+	45,  // 129: v1.HaifyController.SetNodeLabels:input_type -> v1.SetNodeLabelsRequest
+	334, // 130: v1.HaifyController.SetNodeAddress:input_type -> v1.SetNodeAddressRequest
+	49,  // 131: v1.HaifyController.GetNode:input_type -> v1.GetNodeRequest
+	51,  // 132: v1.HaifyController.ListNodes:input_type -> v1.ListNodesRequest
+	54,  // 133: v1.HaifyController.HealthCheck:input_type -> v1.HealthCheckRequest
+	57,  // 134: v1.HaifyController.CreateResource:input_type -> v1.CreateResourceRequest
+	60,  // 135: v1.HaifyController.AdoptResource:input_type -> v1.AdoptResourceRequest
+	62,  // 136: v1.HaifyController.DeleteResource:input_type -> v1.DeleteResourceRequest
+	64,  // 137: v1.HaifyController.GetResource:input_type -> v1.GetResourceRequest
+	66,  // 138: v1.HaifyController.ListResources:input_type -> v1.ListResourcesRequest
+	69,  // 139: v1.HaifyController.CreateResourceProfile:input_type -> v1.CreateResourceProfileRequest
+	71,  // 140: v1.HaifyController.GetResourceProfile:input_type -> v1.GetResourceProfileRequest
+	73,  // 141: v1.HaifyController.ListResourceProfiles:input_type -> v1.ListResourceProfilesRequest
+	75,  // 142: v1.HaifyController.DeleteResourceProfile:input_type -> v1.DeleteResourceProfileRequest
+	338, // 143: v1.HaifyController.SetResourceProfileOptions:input_type -> v1.SetResourceProfileOptionsRequest
+	340, // 144: v1.HaifyController.AdjustResourceProfile:input_type -> v1.AdjustResourceProfileRequest
+	342, // 145: v1.HaifyController.GetResourceProfileMaxSize:input_type -> v1.GetResourceProfileMaxSizeRequest
+	344, // 146: v1.HaifyController.SetResourceProfile:input_type -> v1.SetResourceProfileRequest
+	77,  // 147: v1.HaifyController.AddVolume:input_type -> v1.AddVolumeRequest
+	83,  // 148: v1.HaifyController.RemoveVolume:input_type -> v1.RemoveVolumeRequest
+	85,  // 149: v1.HaifyController.CreateResourceSnapshot:input_type -> v1.CreateResourceSnapshotRequest
+	87,  // 150: v1.HaifyController.ListResourceSnapshots:input_type -> v1.ListResourceSnapshotsRequest
+	89,  // 151: v1.HaifyController.RollbackResourceSnapshot:input_type -> v1.RollbackResourceSnapshotRequest
+	91,  // 152: v1.HaifyController.DeleteResourceSnapshot:input_type -> v1.DeleteResourceSnapshotRequest
+	106, // 153: v1.HaifyController.RenameResource:input_type -> v1.RenameResourceRequest
+	108, // 154: v1.HaifyController.ResizeVolume:input_type -> v1.ResizeVolumeRequest
+	79,  // 155: v1.HaifyController.UpdateResourceOptions:input_type -> v1.UpdateResourceOptionsRequest
+	81,  // 156: v1.HaifyController.RepairResource:input_type -> v1.RepairResourceRequest
+	110, // 157: v1.HaifyController.ResourceStatus:input_type -> v1.ResourceStatusRequest
+	112, // 158: v1.HaifyController.SetPrimary:input_type -> v1.SetPrimaryRequest
+	114, // 159: v1.HaifyController.SetSecondary:input_type -> v1.SetSecondaryRequest
+	118, // 160: v1.HaifyController.SetDualPrimary:input_type -> v1.SetDualPrimaryRequest
+	120, // 161: v1.HaifyController.AttachDisklessClient:input_type -> v1.AttachDisklessClientRequest
+	122, // 162: v1.HaifyController.DetachDisklessClient:input_type -> v1.DetachDisklessClientRequest
+	116, // 163: v1.HaifyController.SetResourceLabels:input_type -> v1.SetResourceLabelsRequest
+	124, // 164: v1.HaifyController.CreateFilesystem:input_type -> v1.CreateFilesystemRequest
+	126, // 165: v1.HaifyController.MountResource:input_type -> v1.MountResourceRequest
+	128, // 166: v1.HaifyController.UnmountResource:input_type -> v1.UnmountResourceRequest
+	132, // 167: v1.HaifyController.MakeHa:input_type -> v1.MakeHaRequest
+	144, // 168: v1.HaifyController.EvictHa:input_type -> v1.EvictHaRequest
+	93,  // 169: v1.HaifyController.SetHaPreferredNodes:input_type -> v1.SetHaPreferredNodesRequest
+	145, // 170: v1.HaifyController.SetTiebreaker:input_type -> v1.SetTiebreakerRequest
+	353, // 171: v1.HaifyController.SetupReplicationTLS:input_type -> v1.SetupReplicationTLSRequest
+	354, // 172: v1.HaifyController.GetReplicationTLSStatus:input_type -> v1.GetReplicationTLSStatusRequest
+	357, // 173: v1.HaifyController.SetResourceTLS:input_type -> v1.SetResourceTLSRequest
+	147, // 174: v1.HaifyController.AddDR:input_type -> v1.AddDRRequest
+	149, // 175: v1.HaifyController.AddReplica:input_type -> v1.AddReplicaRequest
+	150, // 176: v1.HaifyController.RemoveReplica:input_type -> v1.RemoveReplicaRequest
+	311, // 177: v1.HaifyController.DeleteHa:input_type -> v1.DeleteHaRequest
+	313, // 178: v1.HaifyController.GetHa:input_type -> v1.GetHaRequest
+	315, // 179: v1.HaifyController.ListHa:input_type -> v1.ListHaRequest
+	322, // 180: v1.HaifyController.GetHaStatus:input_type -> v1.GetHaStatusRequest
+	134, // 181: v1.HaifyController.ListResourceAgents:input_type -> v1.ListResourceAgentsRequest
+	137, // 182: v1.HaifyController.GetResourceAgentMetadata:input_type -> v1.GetResourceAgentMetadataRequest
+	139, // 183: v1.HaifyController.GetHaToml:input_type -> v1.GetHaTomlRequest
+	141, // 184: v1.HaifyController.SyncHaToml:input_type -> v1.SyncHaTomlRequest
+	154, // 185: v1.HaifyController.EnableSelfHa:input_type -> v1.EnableSelfHaRequest
+	156, // 186: v1.HaifyController.DisableSelfHa:input_type -> v1.DisableSelfHaRequest
+	158, // 187: v1.HaifyController.GetSelfHaStatus:input_type -> v1.GetSelfHaStatusRequest
+	182, // 188: v1.HaifyController.CreateSnapshot:input_type -> v1.CreateSnapshotRequest
+	184, // 189: v1.HaifyController.DeleteSnapshot:input_type -> v1.DeleteSnapshotRequest
+	186, // 190: v1.HaifyController.RestoreSnapshot:input_type -> v1.RestoreSnapshotRequest
+	190, // 191: v1.HaifyController.ListSnapshots:input_type -> v1.ListSnapshotsRequest
+	188, // 192: v1.HaifyController.PopulateVolume:input_type -> v1.PopulateVolumeRequest
+	199, // 193: v1.HaifyController.CreateSnapshotSchedule:input_type -> v1.CreateSnapshotScheduleRequest
+	201, // 194: v1.HaifyController.ListSnapshotSchedules:input_type -> v1.ListSnapshotSchedulesRequest
+	203, // 195: v1.HaifyController.DeleteSnapshotSchedule:input_type -> v1.DeleteSnapshotScheduleRequest
+	195, // 196: v1.HaifyController.FreezeSnapshotSchedule:input_type -> v1.FreezeSnapshotScheduleRequest
+	197, // 197: v1.HaifyController.UnfreezeSnapshotSchedule:input_type -> v1.UnfreezeSnapshotScheduleRequest
+	206, // 198: v1.HaifyController.AddBackupTarget:input_type -> v1.AddBackupTargetRequest
+	208, // 199: v1.HaifyController.ListBackupTargets:input_type -> v1.ListBackupTargetsRequest
+	210, // 200: v1.HaifyController.DeleteBackupTarget:input_type -> v1.DeleteBackupTargetRequest
+	223, // 201: v1.HaifyController.CreateBackup:input_type -> v1.CreateBackupRequest
+	225, // 202: v1.HaifyController.ListBackups:input_type -> v1.ListBackupsRequest
+	227, // 203: v1.HaifyController.RestoreBackup:input_type -> v1.RestoreBackupRequest
+	229, // 204: v1.HaifyController.DeleteBackup:input_type -> v1.DeleteBackupRequest
+	231, // 205: v1.HaifyController.ImportBackups:input_type -> v1.ImportBackupsRequest
+	234, // 206: v1.HaifyController.CreateBackupSchedule:input_type -> v1.CreateBackupScheduleRequest
+	236, // 207: v1.HaifyController.ListBackupSchedules:input_type -> v1.ListBackupSchedulesRequest
+	238, // 208: v1.HaifyController.DeleteBackupSchedule:input_type -> v1.DeleteBackupScheduleRequest
+	240, // 209: v1.HaifyController.RunBackupSchedule:input_type -> v1.RunBackupScheduleRequest
+	242, // 210: v1.HaifyController.CreateNFSGateway:input_type -> v1.CreateNFSGatewayRequest
+	244, // 211: v1.HaifyController.CreateISCSIGateway:input_type -> v1.CreateISCSIGatewayRequest
+	246, // 212: v1.HaifyController.CreateNVMeGateway:input_type -> v1.CreateNVMeGatewayRequest
+	248, // 213: v1.HaifyController.DeleteGateway:input_type -> v1.DeleteGatewayRequest
+	250, // 214: v1.HaifyController.GetGateway:input_type -> v1.GetGatewayRequest
+	252, // 215: v1.HaifyController.ListGateways:input_type -> v1.ListGatewaysRequest
+	254, // 216: v1.HaifyController.StartGateway:input_type -> v1.StartGatewayRequest
+	256, // 217: v1.HaifyController.StopGateway:input_type -> v1.StopGatewayRequest
+	260, // 218: v1.HaifyController.AddNFSExport:input_type -> v1.AddNFSExportRequest
+	262, // 219: v1.HaifyController.RemoveNFSExport:input_type -> v1.RemoveNFSExportRequest
+	264, // 220: v1.HaifyController.ListNFSExports:input_type -> v1.ListNFSExportsRequest
+	266, // 221: v1.HaifyController.CreateSMBGateway:input_type -> v1.CreateSMBGatewayRequest
+	269, // 222: v1.HaifyController.AddSMBShare:input_type -> v1.AddSMBShareRequest
+	271, // 223: v1.HaifyController.RemoveSMBShare:input_type -> v1.RemoveSMBShareRequest
+	273, // 224: v1.HaifyController.ListSMBShares:input_type -> v1.ListSMBSharesRequest
+	275, // 225: v1.HaifyController.SetSMBUser:input_type -> v1.SetSMBUserRequest
+	277, // 226: v1.HaifyController.RemoveSMBUser:input_type -> v1.RemoveSMBUserRequest
+	279, // 227: v1.HaifyController.ListSMBUsers:input_type -> v1.ListSMBUsersRequest
+	282, // 228: v1.HaifyController.AddISCSILUN:input_type -> v1.AddISCSILUNRequest
+	284, // 229: v1.HaifyController.RemoveISCSILUN:input_type -> v1.RemoveISCSILUNRequest
+	286, // 230: v1.HaifyController.ListISCSILUNs:input_type -> v1.ListISCSILUNsRequest
+	288, // 231: v1.HaifyController.AddISCSIInitiator:input_type -> v1.AddISCSIInitiatorRequest
+	290, // 232: v1.HaifyController.RemoveISCSIInitiator:input_type -> v1.RemoveISCSIInitiatorRequest
+	292, // 233: v1.HaifyController.ListISCSIInitiators:input_type -> v1.ListISCSIInitiatorsRequest
+	294, // 234: v1.HaifyController.SetISCSIChap:input_type -> v1.SetISCSIChapRequest
+	296, // 235: v1.HaifyController.GetISCSIChap:input_type -> v1.GetISCSIChapRequest
+	299, // 236: v1.HaifyController.AddNVMeNamespace:input_type -> v1.AddNVMeNamespaceRequest
+	301, // 237: v1.HaifyController.RemoveNVMeNamespace:input_type -> v1.RemoveNVMeNamespaceRequest
+	303, // 238: v1.HaifyController.ListNVMeNamespaces:input_type -> v1.ListNVMeNamespacesRequest
+	305, // 239: v1.HaifyController.AddNVMeHost:input_type -> v1.AddNVMeHostRequest
+	307, // 240: v1.HaifyController.RemoveNVMeHost:input_type -> v1.RemoveNVMeHostRequest
+	309, // 241: v1.HaifyController.ListNVMeHosts:input_type -> v1.ListNVMeHostsRequest
+	11,  // 242: v1.HaifyController.CreateZFSPool:input_type -> v1.CreateZFSPoolRequest
+	13,  // 243: v1.HaifyController.DeleteZFSPool:input_type -> v1.DeleteZFSPoolRequest
+	15,  // 244: v1.HaifyController.ListZFSpools:input_type -> v1.ListZFSPoolsRequest
+	17,  // 245: v1.HaifyController.CreateZFSDataset:input_type -> v1.CreateZFSDatasetRequest
+	19,  // 246: v1.HaifyController.CreateZFSVolume:input_type -> v1.CreateZFSVolumeRequest
+	21,  // 247: v1.HaifyController.ResizeZFSVolume:input_type -> v1.ResizeZFSVolumeRequest
+	23,  // 248: v1.HaifyController.DeleteZFSDataset:input_type -> v1.DeleteZFSDatasetRequest
+	25,  // 249: v1.HaifyController.CreateZFSSnapshot:input_type -> v1.CreateZFSSnapshotRequest
+	27,  // 250: v1.HaifyController.DeleteZFSSnapshot:input_type -> v1.DeleteZFSSnapshotRequest
+	29,  // 251: v1.HaifyController.ListZFSSnapshots:input_type -> v1.ListZFSSnapshotsRequest
+	31,  // 252: v1.HaifyController.RestoreZFSSnapshot:input_type -> v1.RestoreZFSSnapshotRequest
+	33,  // 253: v1.HaifyController.CloneZFSSnapshot:input_type -> v1.CloneZFSSnapshotRequest
+	35,  // 254: v1.HaifyController.CreateLvmSnapshot:input_type -> v1.CreateLvmSnapshotRequest
+	37,  // 255: v1.HaifyController.DeleteLvmSnapshot:input_type -> v1.DeleteLvmSnapshotRequest
+	39,  // 256: v1.HaifyController.ListLvmSnapshots:input_type -> v1.ListLvmSnapshotsRequest
+	41,  // 257: v1.HaifyController.RestoreLvmSnapshot:input_type -> v1.RestoreLvmSnapshotRequest
+	95,  // 258: v1.HaifyController.SetNFSExportQuota:input_type -> v1.SetNFSExportQuotaRequest
+	97,  // 259: v1.HaifyController.MoveReplica:input_type -> v1.MoveReplicaRequest
+	100, // 260: v1.HaifyController.PlanRebalance:input_type -> v1.PlanRebalanceRequest
+	102, // 261: v1.HaifyController.MarkNodeLost:input_type -> v1.MarkNodeLostRequest
+	104, // 262: v1.HaifyController.RestoreNode:input_type -> v1.RestoreNodeRequest
+	324, // 263: v1.HaifyController.DrainNode:input_type -> v1.DrainNodeRequest
+	332, // 264: v1.HaifyController.UndrainNode:input_type -> v1.UndrainNodeRequest
+	325, // 265: v1.HaifyController.ConvertPoolToThin:input_type -> v1.ConvertPoolToThinRequest
+	327, // 266: v1.HaifyController.AddPoolCache:input_type -> v1.AddPoolCacheRequest
+	329, // 267: v1.HaifyController.RemovePoolCache:input_type -> v1.RemovePoolCacheRequest
+	161, // 268: v1.HaifyController.ListAuditEvents:input_type -> v1.ListAuditEventsRequest
+	164, // 269: v1.HaifyController.ListControllerLogs:input_type -> v1.ListControllerLogsRequest
+	166, // 270: v1.HaifyController.CollectNodeDiagnostics:input_type -> v1.CollectNodeDiagnosticsRequest
+	171, // 271: v1.HaifyController.ListEvents:input_type -> v1.ListEventsRequest
+	213, // 272: v1.HaifyController.ListNotifyChannels:input_type -> v1.ListNotifyChannelsRequest
+	215, // 273: v1.HaifyController.SaveNotifyChannel:input_type -> v1.SaveNotifyChannelRequest
+	217, // 274: v1.HaifyController.DeleteNotifyChannel:input_type -> v1.DeleteNotifyChannelRequest
+	219, // 275: v1.HaifyController.TestNotifyChannel:input_type -> v1.TestNotifyChannelRequest
+	381, // 276: v1.HaifyController.RunInspection:input_type -> v1.RunInspectionRequest
+	383, // 277: v1.HaifyController.ListInspections:input_type -> v1.ListInspectionsRequest
+	385, // 278: v1.HaifyController.GetInspection:input_type -> v1.GetInspectionRequest
+	173, // 279: v1.HaifyController.RepairWanProxy:input_type -> v1.RepairWanProxyRequest
+	348, // 280: v1.HaifyController.DRFailback:input_type -> v1.DRFailbackRequest
+	346, // 281: v1.HaifyController.SetWanEndpoint:input_type -> v1.SetWanEndpointRequest
+	349, // 282: v1.HaifyController.VerifyResource:input_type -> v1.VerifyResourceRequest
+	175, // 283: v1.HaifyController.WatchEvents:input_type -> v1.WatchEventsRequest
+	359, // 284: v1.HaifyController.GetRbacWhoami:input_type -> v1.GetRbacWhoamiRequest
+	361, // 285: v1.HaifyController.ListRbacPolicies:input_type -> v1.ListRbacPoliciesRequest
+	365, // 286: v1.HaifyController.CreateRbacUser:input_type -> v1.CreateRbacUserRequest
+	367, // 287: v1.HaifyController.DeleteRbacUser:input_type -> v1.DeleteRbacUserRequest
+	369, // 288: v1.HaifyController.SetRbacUserRole:input_type -> v1.SetRbacUserRoleRequest
+	372, // 289: v1.HaifyController.ListApprovals:input_type -> v1.ListApprovalsRequest
+	374, // 290: v1.HaifyController.ApproveRequest:input_type -> v1.ApproveRequestRequest
+	376, // 291: v1.HaifyController.RejectRequest:input_type -> v1.RejectRequestRequest
+	388, // 292: v1.HaifyController.CreateApp:input_type -> v1.CreateAppRequest
+	390, // 293: v1.HaifyController.ListApps:input_type -> v1.ListAppsRequest
+	392, // 294: v1.HaifyController.GetAppStatus:input_type -> v1.GetAppStatusRequest
+	394, // 295: v1.HaifyController.DeleteApp:input_type -> v1.DeleteAppRequest
+	396, // 296: v1.HaifyController.FailoverApp:input_type -> v1.FailoverAppRequest
+	398, // 297: v1.HaifyController.SnapshotApp:input_type -> v1.SnapshotAppRequest
+	1,   // 298: v1.HaifyController.CreatePool:output_type -> v1.CreatePoolResponse
+	3,   // 299: v1.HaifyController.DeletePool:output_type -> v1.DeletePoolResponse
+	5,   // 300: v1.HaifyController.GetPool:output_type -> v1.GetPoolResponse
+	7,   // 301: v1.HaifyController.ListPools:output_type -> v1.ListPoolsResponse
+	402, // 302: v1.HaifyController.TrimPools:output_type -> v1.TrimPoolsResponse
+	405, // 303: v1.HaifyController.ListPoolDisks:output_type -> v1.ListPoolDisksResponse
+	408, // 304: v1.HaifyController.ListNodeDisks:output_type -> v1.ListNodeDisksResponse
+	412, // 305: v1.HaifyController.RemovePoolDisk:output_type -> v1.StorageJobResponse
+	412, // 306: v1.HaifyController.ReplacePoolDisk:output_type -> v1.StorageJobResponse
+	412, // 307: v1.HaifyController.MoveVolume:output_type -> v1.StorageJobResponse
+	415, // 308: v1.HaifyController.ListStorageJobs:output_type -> v1.ListStorageJobsResponse
+	9,   // 309: v1.HaifyController.AddDiskToPool:output_type -> v1.AddDiskToPoolResponse
+	44,  // 310: v1.HaifyController.RegisterNode:output_type -> v1.RegisterNodeResponse
+	48,  // 311: v1.HaifyController.UnregisterNode:output_type -> v1.UnregisterNodeResponse
+	46,  // 312: v1.HaifyController.SetNodeLabels:output_type -> v1.SetNodeLabelsResponse
+	336, // 313: v1.HaifyController.SetNodeAddress:output_type -> v1.SetNodeAddressResponse
+	50,  // 314: v1.HaifyController.GetNode:output_type -> v1.GetNodeResponse
+	52,  // 315: v1.HaifyController.ListNodes:output_type -> v1.ListNodesResponse
+	55,  // 316: v1.HaifyController.HealthCheck:output_type -> v1.HealthCheckResponse
+	59,  // 317: v1.HaifyController.CreateResource:output_type -> v1.CreateResourceResponse
+	61,  // 318: v1.HaifyController.AdoptResource:output_type -> v1.AdoptResourceResponse
+	63,  // 319: v1.HaifyController.DeleteResource:output_type -> v1.DeleteResourceResponse
+	65,  // 320: v1.HaifyController.GetResource:output_type -> v1.GetResourceResponse
+	67,  // 321: v1.HaifyController.ListResources:output_type -> v1.ListResourcesResponse
+	70,  // 322: v1.HaifyController.CreateResourceProfile:output_type -> v1.CreateResourceProfileResponse
+	72,  // 323: v1.HaifyController.GetResourceProfile:output_type -> v1.GetResourceProfileResponse
+	74,  // 324: v1.HaifyController.ListResourceProfiles:output_type -> v1.ListResourceProfilesResponse
+	76,  // 325: v1.HaifyController.DeleteResourceProfile:output_type -> v1.DeleteResourceProfileResponse
+	339, // 326: v1.HaifyController.SetResourceProfileOptions:output_type -> v1.SetResourceProfileOptionsResponse
+	341, // 327: v1.HaifyController.AdjustResourceProfile:output_type -> v1.AdjustResourceProfileResponse
+	343, // 328: v1.HaifyController.GetResourceProfileMaxSize:output_type -> v1.GetResourceProfileMaxSizeResponse
+	345, // 329: v1.HaifyController.SetResourceProfile:output_type -> v1.SetResourceProfileResponse
+	78,  // 330: v1.HaifyController.AddVolume:output_type -> v1.AddVolumeResponse
+	84,  // 331: v1.HaifyController.RemoveVolume:output_type -> v1.RemoveVolumeResponse
+	86,  // 332: v1.HaifyController.CreateResourceSnapshot:output_type -> v1.CreateResourceSnapshotResponse
+	88,  // 333: v1.HaifyController.ListResourceSnapshots:output_type -> v1.ListResourceSnapshotsResponse
+	90,  // 334: v1.HaifyController.RollbackResourceSnapshot:output_type -> v1.RollbackResourceSnapshotResponse
+	92,  // 335: v1.HaifyController.DeleteResourceSnapshot:output_type -> v1.DeleteResourceSnapshotResponse
+	107, // 336: v1.HaifyController.RenameResource:output_type -> v1.RenameResourceResponse
+	109, // 337: v1.HaifyController.ResizeVolume:output_type -> v1.ResizeVolumeResponse
+	80,  // 338: v1.HaifyController.UpdateResourceOptions:output_type -> v1.UpdateResourceOptionsResponse
+	82,  // 339: v1.HaifyController.RepairResource:output_type -> v1.RepairResourceResponse
+	111, // 340: v1.HaifyController.ResourceStatus:output_type -> v1.ResourceStatusResponse
+	113, // 341: v1.HaifyController.SetPrimary:output_type -> v1.SetPrimaryResponse
+	115, // 342: v1.HaifyController.SetSecondary:output_type -> v1.SetSecondaryResponse
+	119, // 343: v1.HaifyController.SetDualPrimary:output_type -> v1.SetDualPrimaryResponse
+	121, // 344: v1.HaifyController.AttachDisklessClient:output_type -> v1.AttachDisklessClientResponse
+	123, // 345: v1.HaifyController.DetachDisklessClient:output_type -> v1.DetachDisklessClientResponse
+	117, // 346: v1.HaifyController.SetResourceLabels:output_type -> v1.SetResourceLabelsResponse
+	125, // 347: v1.HaifyController.CreateFilesystem:output_type -> v1.CreateFilesystemResponse
+	127, // 348: v1.HaifyController.MountResource:output_type -> v1.MountResourceResponse
+	129, // 349: v1.HaifyController.UnmountResource:output_type -> v1.UnmountResourceResponse
+	143, // 350: v1.HaifyController.MakeHa:output_type -> v1.MakeHaResponse
+	153, // 351: v1.HaifyController.EvictHa:output_type -> v1.EvictHaResponse
+	94,  // 352: v1.HaifyController.SetHaPreferredNodes:output_type -> v1.SetHaPreferredNodesResponse
+	146, // 353: v1.HaifyController.SetTiebreaker:output_type -> v1.SetTiebreakerResponse
+	356, // 354: v1.HaifyController.SetupReplicationTLS:output_type -> v1.ReplicationTLSResponse
+	356, // 355: v1.HaifyController.GetReplicationTLSStatus:output_type -> v1.ReplicationTLSResponse
+	358, // 356: v1.HaifyController.SetResourceTLS:output_type -> v1.SetResourceTLSResponse
+	148, // 357: v1.HaifyController.AddDR:output_type -> v1.AddDRResponse
+	152, // 358: v1.HaifyController.AddReplica:output_type -> v1.AddReplicaResponse
+	151, // 359: v1.HaifyController.RemoveReplica:output_type -> v1.RemoveReplicaResponse
+	312, // 360: v1.HaifyController.DeleteHa:output_type -> v1.DeleteHaResponse
+	314, // 361: v1.HaifyController.GetHa:output_type -> v1.GetHaResponse
+	316, // 362: v1.HaifyController.ListHa:output_type -> v1.ListHaResponse
+	323, // 363: v1.HaifyController.GetHaStatus:output_type -> v1.GetHaStatusResponse
+	135, // 364: v1.HaifyController.ListResourceAgents:output_type -> v1.ListResourceAgentsResponse
+	138, // 365: v1.HaifyController.GetResourceAgentMetadata:output_type -> v1.GetResourceAgentMetadataResponse
+	140, // 366: v1.HaifyController.GetHaToml:output_type -> v1.GetHaTomlResponse
+	142, // 367: v1.HaifyController.SyncHaToml:output_type -> v1.SyncHaTomlResponse
+	155, // 368: v1.HaifyController.EnableSelfHa:output_type -> v1.EnableSelfHaResponse
+	157, // 369: v1.HaifyController.DisableSelfHa:output_type -> v1.DisableSelfHaResponse
+	159, // 370: v1.HaifyController.GetSelfHaStatus:output_type -> v1.GetSelfHaStatusResponse
+	183, // 371: v1.HaifyController.CreateSnapshot:output_type -> v1.CreateSnapshotResponse
+	185, // 372: v1.HaifyController.DeleteSnapshot:output_type -> v1.DeleteSnapshotResponse
+	187, // 373: v1.HaifyController.RestoreSnapshot:output_type -> v1.RestoreSnapshotResponse
+	191, // 374: v1.HaifyController.ListSnapshots:output_type -> v1.ListSnapshotsResponse
+	189, // 375: v1.HaifyController.PopulateVolume:output_type -> v1.PopulateVolumeResponse
+	200, // 376: v1.HaifyController.CreateSnapshotSchedule:output_type -> v1.CreateSnapshotScheduleResponse
+	202, // 377: v1.HaifyController.ListSnapshotSchedules:output_type -> v1.ListSnapshotSchedulesResponse
+	204, // 378: v1.HaifyController.DeleteSnapshotSchedule:output_type -> v1.DeleteSnapshotScheduleResponse
+	196, // 379: v1.HaifyController.FreezeSnapshotSchedule:output_type -> v1.FreezeSnapshotScheduleResponse
+	198, // 380: v1.HaifyController.UnfreezeSnapshotSchedule:output_type -> v1.UnfreezeSnapshotScheduleResponse
+	207, // 381: v1.HaifyController.AddBackupTarget:output_type -> v1.AddBackupTargetResponse
+	209, // 382: v1.HaifyController.ListBackupTargets:output_type -> v1.ListBackupTargetsResponse
+	211, // 383: v1.HaifyController.DeleteBackupTarget:output_type -> v1.DeleteBackupTargetResponse
+	224, // 384: v1.HaifyController.CreateBackup:output_type -> v1.CreateBackupResponse
+	226, // 385: v1.HaifyController.ListBackups:output_type -> v1.ListBackupsResponse
+	228, // 386: v1.HaifyController.RestoreBackup:output_type -> v1.RestoreBackupResponse
+	230, // 387: v1.HaifyController.DeleteBackup:output_type -> v1.DeleteBackupResponse
+	232, // 388: v1.HaifyController.ImportBackups:output_type -> v1.ImportBackupsResponse
+	235, // 389: v1.HaifyController.CreateBackupSchedule:output_type -> v1.CreateBackupScheduleResponse
+	237, // 390: v1.HaifyController.ListBackupSchedules:output_type -> v1.ListBackupSchedulesResponse
+	239, // 391: v1.HaifyController.DeleteBackupSchedule:output_type -> v1.DeleteBackupScheduleResponse
+	241, // 392: v1.HaifyController.RunBackupSchedule:output_type -> v1.RunBackupScheduleResponse
+	243, // 393: v1.HaifyController.CreateNFSGateway:output_type -> v1.CreateNFSGatewayResponse
+	245, // 394: v1.HaifyController.CreateISCSIGateway:output_type -> v1.CreateISCSIGatewayResponse
+	247, // 395: v1.HaifyController.CreateNVMeGateway:output_type -> v1.CreateNVMeGatewayResponse
+	249, // 396: v1.HaifyController.DeleteGateway:output_type -> v1.DeleteGatewayResponse
+	251, // 397: v1.HaifyController.GetGateway:output_type -> v1.GetGatewayResponse
+	253, // 398: v1.HaifyController.ListGateways:output_type -> v1.ListGatewaysResponse
+	255, // 399: v1.HaifyController.StartGateway:output_type -> v1.StartGatewayResponse
+	257, // 400: v1.HaifyController.StopGateway:output_type -> v1.StopGatewayResponse
+	261, // 401: v1.HaifyController.AddNFSExport:output_type -> v1.AddNFSExportResponse
+	263, // 402: v1.HaifyController.RemoveNFSExport:output_type -> v1.RemoveNFSExportResponse
+	265, // 403: v1.HaifyController.ListNFSExports:output_type -> v1.ListNFSExportsResponse
+	267, // 404: v1.HaifyController.CreateSMBGateway:output_type -> v1.CreateSMBGatewayResponse
+	270, // 405: v1.HaifyController.AddSMBShare:output_type -> v1.AddSMBShareResponse
+	272, // 406: v1.HaifyController.RemoveSMBShare:output_type -> v1.RemoveSMBShareResponse
+	274, // 407: v1.HaifyController.ListSMBShares:output_type -> v1.ListSMBSharesResponse
+	276, // 408: v1.HaifyController.SetSMBUser:output_type -> v1.SetSMBUserResponse
+	278, // 409: v1.HaifyController.RemoveSMBUser:output_type -> v1.RemoveSMBUserResponse
+	280, // 410: v1.HaifyController.ListSMBUsers:output_type -> v1.ListSMBUsersResponse
+	283, // 411: v1.HaifyController.AddISCSILUN:output_type -> v1.AddISCSILUNResponse
+	285, // 412: v1.HaifyController.RemoveISCSILUN:output_type -> v1.RemoveISCSILUNResponse
+	287, // 413: v1.HaifyController.ListISCSILUNs:output_type -> v1.ListISCSILUNsResponse
+	289, // 414: v1.HaifyController.AddISCSIInitiator:output_type -> v1.AddISCSIInitiatorResponse
+	291, // 415: v1.HaifyController.RemoveISCSIInitiator:output_type -> v1.RemoveISCSIInitiatorResponse
+	293, // 416: v1.HaifyController.ListISCSIInitiators:output_type -> v1.ListISCSIInitiatorsResponse
+	295, // 417: v1.HaifyController.SetISCSIChap:output_type -> v1.SetISCSIChapResponse
+	297, // 418: v1.HaifyController.GetISCSIChap:output_type -> v1.GetISCSIChapResponse
+	300, // 419: v1.HaifyController.AddNVMeNamespace:output_type -> v1.AddNVMeNamespaceResponse
+	302, // 420: v1.HaifyController.RemoveNVMeNamespace:output_type -> v1.RemoveNVMeNamespaceResponse
+	304, // 421: v1.HaifyController.ListNVMeNamespaces:output_type -> v1.ListNVMeNamespacesResponse
+	306, // 422: v1.HaifyController.AddNVMeHost:output_type -> v1.AddNVMeHostResponse
+	308, // 423: v1.HaifyController.RemoveNVMeHost:output_type -> v1.RemoveNVMeHostResponse
+	310, // 424: v1.HaifyController.ListNVMeHosts:output_type -> v1.ListNVMeHostsResponse
+	12,  // 425: v1.HaifyController.CreateZFSPool:output_type -> v1.CreateZFSPoolResponse
+	14,  // 426: v1.HaifyController.DeleteZFSPool:output_type -> v1.DeleteZFSPoolResponse
+	16,  // 427: v1.HaifyController.ListZFSpools:output_type -> v1.ListZFSPoolsResponse
+	18,  // 428: v1.HaifyController.CreateZFSDataset:output_type -> v1.CreateZFSDatasetResponse
+	20,  // 429: v1.HaifyController.CreateZFSVolume:output_type -> v1.CreateZFSVolumeResponse
+	22,  // 430: v1.HaifyController.ResizeZFSVolume:output_type -> v1.ResizeZFSVolumeResponse
+	24,  // 431: v1.HaifyController.DeleteZFSDataset:output_type -> v1.DeleteZFSDatasetResponse
+	26,  // 432: v1.HaifyController.CreateZFSSnapshot:output_type -> v1.CreateZFSSnapshotResponse
+	28,  // 433: v1.HaifyController.DeleteZFSSnapshot:output_type -> v1.DeleteZFSSnapshotResponse
+	30,  // 434: v1.HaifyController.ListZFSSnapshots:output_type -> v1.ListZFSSnapshotsResponse
+	32,  // 435: v1.HaifyController.RestoreZFSSnapshot:output_type -> v1.RestoreZFSSnapshotResponse
+	34,  // 436: v1.HaifyController.CloneZFSSnapshot:output_type -> v1.CloneZFSSnapshotResponse
+	36,  // 437: v1.HaifyController.CreateLvmSnapshot:output_type -> v1.CreateLvmSnapshotResponse
+	38,  // 438: v1.HaifyController.DeleteLvmSnapshot:output_type -> v1.DeleteLvmSnapshotResponse
+	40,  // 439: v1.HaifyController.ListLvmSnapshots:output_type -> v1.ListLvmSnapshotsResponse
+	42,  // 440: v1.HaifyController.RestoreLvmSnapshot:output_type -> v1.RestoreLvmSnapshotResponse
+	96,  // 441: v1.HaifyController.SetNFSExportQuota:output_type -> v1.SetNFSExportQuotaResponse
+	98,  // 442: v1.HaifyController.MoveReplica:output_type -> v1.MoveReplicaResponse
+	101, // 443: v1.HaifyController.PlanRebalance:output_type -> v1.PlanRebalanceResponse
+	103, // 444: v1.HaifyController.MarkNodeLost:output_type -> v1.MarkNodeLostResponse
+	105, // 445: v1.HaifyController.RestoreNode:output_type -> v1.RestoreNodeResponse
+	331, // 446: v1.HaifyController.DrainNode:output_type -> v1.DrainNodeResponse
+	333, // 447: v1.HaifyController.UndrainNode:output_type -> v1.UndrainNodeResponse
+	326, // 448: v1.HaifyController.ConvertPoolToThin:output_type -> v1.ConvertPoolToThinResponse
+	328, // 449: v1.HaifyController.AddPoolCache:output_type -> v1.AddPoolCacheResponse
+	330, // 450: v1.HaifyController.RemovePoolCache:output_type -> v1.RemovePoolCacheResponse
+	162, // 451: v1.HaifyController.ListAuditEvents:output_type -> v1.ListAuditEventsResponse
+	165, // 452: v1.HaifyController.ListControllerLogs:output_type -> v1.ListControllerLogsResponse
+	169, // 453: v1.HaifyController.CollectNodeDiagnostics:output_type -> v1.CollectNodeDiagnosticsResponse
+	172, // 454: v1.HaifyController.ListEvents:output_type -> v1.ListEventsResponse
+	214, // 455: v1.HaifyController.ListNotifyChannels:output_type -> v1.ListNotifyChannelsResponse
+	216, // 456: v1.HaifyController.SaveNotifyChannel:output_type -> v1.SaveNotifyChannelResponse
+	218, // 457: v1.HaifyController.DeleteNotifyChannel:output_type -> v1.DeleteNotifyChannelResponse
+	220, // 458: v1.HaifyController.TestNotifyChannel:output_type -> v1.TestNotifyChannelResponse
+	382, // 459: v1.HaifyController.RunInspection:output_type -> v1.RunInspectionResponse
+	384, // 460: v1.HaifyController.ListInspections:output_type -> v1.ListInspectionsResponse
+	386, // 461: v1.HaifyController.GetInspection:output_type -> v1.GetInspectionResponse
+	174, // 462: v1.HaifyController.RepairWanProxy:output_type -> v1.RepairWanProxyResponse
+	352, // 463: v1.HaifyController.DRFailback:output_type -> v1.DRFailbackResponse
+	347, // 464: v1.HaifyController.SetWanEndpoint:output_type -> v1.SetWanEndpointResponse
+	351, // 465: v1.HaifyController.VerifyResource:output_type -> v1.VerifyResourceResponse
+	170, // 466: v1.HaifyController.WatchEvents:output_type -> v1.Event
+	360, // 467: v1.HaifyController.GetRbacWhoami:output_type -> v1.GetRbacWhoamiResponse
+	364, // 468: v1.HaifyController.ListRbacPolicies:output_type -> v1.ListRbacPoliciesResponse
+	366, // 469: v1.HaifyController.CreateRbacUser:output_type -> v1.CreateRbacUserResponse
+	368, // 470: v1.HaifyController.DeleteRbacUser:output_type -> v1.DeleteRbacUserResponse
+	370, // 471: v1.HaifyController.SetRbacUserRole:output_type -> v1.SetRbacUserRoleResponse
+	373, // 472: v1.HaifyController.ListApprovals:output_type -> v1.ListApprovalsResponse
+	375, // 473: v1.HaifyController.ApproveRequest:output_type -> v1.ApproveRequestResponse
+	377, // 474: v1.HaifyController.RejectRequest:output_type -> v1.RejectRequestResponse
+	389, // 475: v1.HaifyController.CreateApp:output_type -> v1.CreateAppResponse
+	391, // 476: v1.HaifyController.ListApps:output_type -> v1.ListAppsResponse
+	393, // 477: v1.HaifyController.GetAppStatus:output_type -> v1.GetAppStatusResponse
+	395, // 478: v1.HaifyController.DeleteApp:output_type -> v1.DeleteAppResponse
+	397, // 479: v1.HaifyController.FailoverApp:output_type -> v1.FailoverAppResponse
+	399, // 480: v1.HaifyController.SnapshotApp:output_type -> v1.SnapshotAppResponse
+	298, // [298:481] is the sub-list for method output_type
+	115, // [115:298] is the sub-list for method input_type
+	115, // [115:115] is the sub-list for extension type_name
+	115, // [115:115] is the sub-list for extension extendee
+	0,   // [0:115] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_v1_haify_proto_init() }
@@ -29335,7 +29656,7 @@ func file_api_proto_v1_haify_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_v1_haify_proto_rawDesc), len(file_api_proto_v1_haify_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   438,
+			NumMessages:   441,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

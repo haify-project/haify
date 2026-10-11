@@ -37,6 +37,9 @@ type fakeDeploymentClient struct {
 	lvsThinReportFunc                   func(ctx context.Context, hosts []string, vgName string) (*deployment.ExecResult, error)
 	lvRemoveSnapshotFunc                func(ctx context.Context, hosts []string, vgName, snapshotName string) (*deployment.ExecResult, error)
 	probeBlockDeviceFunc                func(ctx context.Context, host, device string) (*deployment.ExecResult, error)
+	listBlockDevicesFunc                func(host string) (*deployment.ExecResult, error)
+	wipeCalls                           []string
+	zfsAddCalls                         []string
 	vgExtendFunc                        func(ctx context.Context, hosts []string, vgName, device string) (*deployment.ExecResult, error)
 	vgReduceAndRemovePVFunc             func(ctx context.Context, hosts []string, vgName, device string) (*deployment.ExecResult, error)
 	lvCreateCacheVolFunc                func(ctx context.Context, hosts []string, vgName, lvName, device string) (*deployment.ExecResult, error)
@@ -310,20 +313,6 @@ func (f *fakeDeploymentClient) LVSCacheReport(ctx context.Context, hosts []strin
 func (f *fakeDeploymentClient) LVSThinReport(ctx context.Context, hosts []string, vgName string) (*deployment.ExecResult, error) {
 	if f.lvsThinReportFunc != nil {
 		return f.lvsThinReportFunc(ctx, hosts, vgName)
-	}
-	return successExecResult(hosts, ""), nil
-}
-
-func (f *fakeDeploymentClient) ProbeBlockDevice(ctx context.Context, host, device string) (*deployment.ExecResult, error) {
-	if f.probeBlockDeviceFunc != nil {
-		return f.probeBlockDeviceFunc(ctx, host, device)
-	}
-	return successExecResult([]string{host}, ""), nil
-}
-
-func (f *fakeDeploymentClient) VGExtend(ctx context.Context, hosts []string, vgName, device string) (*deployment.ExecResult, error) {
-	if f.vgExtendFunc != nil {
-		return f.vgExtendFunc(ctx, hosts, vgName, device)
 	}
 	return successExecResult(hosts, ""), nil
 }

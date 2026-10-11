@@ -34,6 +34,7 @@ import {
 import { toast } from 'sonner';
 import { HardDrive, Plus, PlusCircle, Trash2, Loader2 } from 'lucide-react';
 import { POOL_TYPE_OPTIONS } from './poolTypes';
+import { DiskPicker, chosenToWipe, useNodeDisks } from './DiskPicker';
 
 export function CreatePoolDialog({
   nodes,
@@ -45,12 +46,10 @@ export function CreatePoolDialog({
   const [name, setName] = useState('');
   const [type, setType] = useState('vg');
   const [node, setNode] = useState('');
-  const [disks, setDisks] = useState('');
-
-  const diskList = disks
-    .split(',')
-    .map((d) => d.trim())
-    .filter((d) => d);
+  const [disks, setDisks] = useState<string[]>([]);
+  const [wipe, setWipe] = useState(false);
+  const { byDevice } = useNodeDisks(node);
+  const blockedByWipe = chosenToWipe(disks, byDevice).length > 0 && !wipe;
 
   const createMutation = useMutation({
     // ZFS pools go through their dedicated endpoint; sending type=zfs to
@@ -60,9 +59,10 @@ export function CreatePoolDialog({
       type: string;
       node: string;
       disks: string[];
+      wipe: boolean;
     }) => {
       const res = await (data.type === 'zfs'
-        ? api.createZFSPool({ name: data.name, node: data.node, vdevs: data.disks })
+        ? api.createZFSPool({ name: data.name, node: data.node, vdevs: data.disks, wipe: data.wipe })
         : api.createPool(data));
       if (!res.success) throw new Error(res.message);
       return res;
@@ -74,14 +74,15 @@ export function CreatePoolDialog({
       setName('');
       setType('vg');
       setNode('');
-      setDisks('');
+      setDisks([]);
+      setWipe(false);
     },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    createMutation.mutate({ name, type, node, disks: diskList });
+    createMutation.mutate({ name, type, node, disks, wipe: chosenToWipe(disks, byDevice).length > 0 && wipe });
   };
 
   return (
@@ -134,7 +135,15 @@ export function CreatePoolDialog({
 
             <div className="space-y-2">
               <Label>Node</Label>
-              <Select value={node} onValueChange={setNode} required>
+              <Select
+                value={node}
+                onValueChange={(n) => {
+                  setNode(n);
+                  setDisks([]);
+                  setWipe(false);
+                }}
+                required
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select a node..." />
                 </SelectTrigger>
@@ -149,17 +158,8 @@ export function CreatePoolDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="pool-disks">Disks</Label>
-              <Input
-                id="pool-disks"
-                value={disks}
-                onChange={(e) => setDisks(e.target.value)}
-                placeholder="/dev/sdc, /dev/sdd"
-                required
-              />
-              <p className="text-xs text-muted-foreground">
-                Comma-separated disk paths, e.g. /dev/sdc, /dev/sdd
-              </p>
+              <Label>Disks</Label>
+              <DiskPicker node={node} multiple selected={disks} onSelect={setDisks} wipe={wipe} onWipe={setWipe} />
             </div>
           </div>
 
@@ -172,7 +172,10 @@ export function CreatePoolDialog({
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={createMutation.isPending || !node}>
+            <Button
+              type="submit"
+              disabled={createMutation.isPending || !node || disks.length === 0 || blockedByWipe}
+            >
               {createMutation.isPending && (
                 <Loader2 className="h-4 w-4 animate-spin" />
               )}
@@ -185,25 +188,34 @@ export function CreatePoolDialog({
   );
 }
 
-export function AddDiskDialog({ pool }: { pool: Pool }) {
+export function AddDiskDialog({ pool, nodeName }: { pool: Pool; nodeName: string }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [disk, setDisk] = useState('');
+  const [disk, setDisk] = useState<string[]>([]);
+  const [wipe, setWipe] = useState(false);
+  const { byDevice } = useNodeDisks(open ? nodeName : '');
+  const toWipe = chosenToWipe(disk, byDevice).length > 0;
 
   const addDiskMutation = useMutation({
-    mutationFn: (d: string) => api.addDisk(pool.name, d, pool.node),
+    mutationFn: async (d: string) => {
+      const res = await api.addDisk(pool.name, d, pool.node, toWipe && wipe);
+      if (!res.success) throw new Error(res.message);
+      return res;
+    },
     onSuccess: () => {
       toast.success(`Disk added to "${pool.name}"`);
       queryClient.invalidateQueries({ queryKey: ['pools'] });
+      queryClient.invalidateQueries({ queryKey: ['node-disks'] });
       setOpen(false);
-      setDisk('');
+      setDisk([]);
+      setWipe(false);
     },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    addDiskMutation.mutate(disk);
+    if (disk[0]) addDiskMutation.mutate(disk[0]);
   };
 
   return (
@@ -223,24 +235,17 @@ export function AddDiskDialog({ pool }: { pool: Pool }) {
           <DialogHeader>
             <DialogTitle>Add Disk to Pool</DialogTitle>
             <DialogDescription>
-              Extend pool "{pool.name}" on {pool.node} with an additional disk.
+              Pool "{pool.name}" on {nodeName} grows into the disk. Volumes already on it keep their size until
+              they are resized.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>Pool</Label>
-              <Input value={pool.name} disabled />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="add-disk-path">Disk Path</Label>
-              <Input
-                id="add-disk-path"
-                value={disk}
-                onChange={(e) => setDisk(e.target.value)}
-                placeholder="/dev/sdd"
-                required
-              />
+              <Label>Disk</Label>
+              {open && (
+                <DiskPicker node={nodeName} selected={disk} onSelect={setDisk} wipe={wipe} onWipe={setWipe} />
+              )}
             </div>
           </div>
 
@@ -253,7 +258,7 @@ export function AddDiskDialog({ pool }: { pool: Pool }) {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={addDiskMutation.isPending}>
+            <Button type="submit" disabled={addDiskMutation.isPending || !disk[0] || (toWipe && !wipe)}>
               {addDiskMutation.isPending && (
                 <Loader2 className="h-4 w-4 animate-spin" />
               )}

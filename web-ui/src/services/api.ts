@@ -73,7 +73,7 @@ export type {
 export type { SelfHaStatus } from './api/selfHa';
 export type { RbacWhoami, RbacPolicy, RbacUserRole, RbacPolicies } from './api/rbac';
 export type { NotifyChannel, NotifyChannelInput } from './api/notify';
-export type { PoolDisk, TrimResult, StorageJob, StorageJobResponse } from './api/storage';
+export type { PoolDisk, NodeDisk, TrimResult, StorageJob, StorageJobResponse } from './api/storage';
 
 const request = createRequest();
 

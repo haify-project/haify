@@ -115,8 +115,9 @@ func (sm *StorageManager) poolPVs(ctx context.Context, host, vg string) ([]pvInf
 }
 
 // StartDiskJob begins removing disk from pool on node, or replacing it with
-// newDisk when that is set. It returns once the work is running.
-func (sm *StorageManager) StartDiskJob(ctx context.Context, pool, node, disk, newDisk string) (string, error) {
+// newDisk when that is set; wipe lets a new disk that holds old data be
+// erased. It returns once the work is running.
+func (sm *StorageManager) StartDiskJob(ctx context.Context, pool, node, disk, newDisk string, wipe bool) (string, error) {
 	c := sm.controller
 	pool = normalizeManagedName(pool)
 	host := c.ResolveHost(node)
@@ -144,6 +145,11 @@ func (sm *StorageManager) StartDiskJob(ctx context.Context, pool, node, disk, ne
 		if !containsPV(pvs, disk) {
 			return "", fmt.Errorf("%s is not a disk of %s on %s", disk, pool, node)
 		}
+		paths, err := sm.prepareDisks(ctx, host, node, []string{newDisk}, wipe)
+		if err != nil {
+			return "", err
+		}
+		newDisk = paths[0]
 	} else if why := checkRemovable(pvs, disk); why != "" {
 		return "", fmt.Errorf("%s", why)
 	}

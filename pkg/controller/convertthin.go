@@ -494,6 +494,11 @@ func (rm *ResourceManager) liveResourcesOn(ctx context.Context, nodeName string)
 	return out, nil
 }
 
+// thinMetadataFloor is the smallest metadata area worth creating. LVM's own
+// default is around 8 MiB, which a single converted volume already fills to
+// 30%; exhausting metadata takes the whole pool read-only.
+const thinMetadataFloor = 128 << 20
+
 // thinMetadataBytes sizes the pool's metadata area.
 //
 // LVM's default is small enough that a pool carrying many snapshots exhausts
@@ -503,13 +508,12 @@ func (rm *ResourceManager) liveResourcesOn(ctx context.Context, nodeName string)
 // 30% of the default area was already gone. Reserve ~1% of the pool, floored
 // at 128 MiB, which LVM accepts and which leaves room for hundreds of
 // snapshots.
-// thinMetadataFloor is the smallest metadata area worth creating. LVM's own
-// default is around 8 MiB, which a single converted volume already fills to
-// 30%; exhausting metadata takes the whole pool read-only.
-const thinMetadataFloor = 128 << 20
-
+//
+// The result is a whole number of MiB: lvextend refuses a byte size that is
+// not a multiple of 512, and 1% of a real pool's size rarely is one.
 func thinMetadataBytes(poolBytes uint64) uint64 {
-	m := poolBytes / 100
+	const mib = 1 << 20
+	m := (poolBytes/100 + mib - 1) / mib * mib
 	if m < thinMetadataFloor {
 		return thinMetadataFloor
 	}

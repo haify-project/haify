@@ -8,6 +8,7 @@ import { CreatePoolDialog } from './pools/PoolDialogs';
 import { TrimButton } from './pools/TrimButton';
 import { StorageJobsPanel } from './pools/StorageJobsPanel';
 import { DisksPanel } from './pools/DisksPanel';
+import { UnusedDisksPanel } from './pools/UnusedDisksPanel';
 
 export function PoolsPage() {
   const { data: pools, isLoading } = useQuery({
@@ -78,6 +79,8 @@ export function PoolsPage() {
 
       <StorageJobsPanel />
 
+      <UnusedDisksPanel pools={pools?.pools ?? []} nodeNames={nodeMap} />
+
       {nodeEntries.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
           <Database className="h-10 w-10" />
@@ -105,7 +108,7 @@ export function PoolsPage() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {nodePools.map((pool) => (
-                    <PoolItem key={`${pool.node}-${pool.name}`} pool={pool} />
+                    <PoolItem key={`${pool.node}-${pool.name}`} pool={pool} nodeName={nodeName} />
                   ))}
                 </CardContent>
               </Card>

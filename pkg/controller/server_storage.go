@@ -37,8 +37,22 @@ func (s *Server) ListPoolDisks(ctx context.Context, req *pb.ListPoolDisksRequest
 	return resp, nil
 }
 
+func (s *Server) ListNodeDisks(ctx context.Context, req *pb.ListNodeDisksRequest) (*pb.ListNodeDisksResponse, error) {
+	disks, err := s.storage.ListNodeDisks(ctx, req.Node)
+	if err != nil {
+		return &pb.ListNodeDisksResponse{Success: false, Message: err.Error()}, nil
+	}
+	resp := &pb.ListNodeDisksResponse{Success: true, Message: fmt.Sprintf("%d disk(s)", len(disks))}
+	for _, d := range disks {
+		resp.Disks = append(resp.Disks, &pb.NodeDiskInfo{Node: d.Node, Device: d.Device, ById: d.ByID, Type: d.Type,
+			SizeBytes: d.SizeBytes, Model: d.Model, Serial: d.Serial, Transport: d.Transport, Rotational: d.Rotational,
+			State: d.State, Pool: d.Pool, Detail: d.Detail})
+	}
+	return resp, nil
+}
+
 func (s *Server) RemovePoolDisk(ctx context.Context, req *pb.RemovePoolDiskRequest) (*pb.StorageJobResponse, error) {
-	id, err := s.storage.StartDiskJob(ctx, req.Pool, req.Node, req.Disk, "")
+	id, err := s.storage.StartDiskJob(ctx, req.Pool, req.Node, req.Disk, "", false)
 	if err != nil {
 		return &pb.StorageJobResponse{Success: false, Message: err.Error()}, nil
 	}
@@ -50,7 +64,7 @@ func (s *Server) ReplacePoolDisk(ctx context.Context, req *pb.ReplacePoolDiskReq
 	if strings.TrimSpace(req.NewDisk) == "" {
 		return &pb.StorageJobResponse{Success: false, Message: "new_disk is required"}, nil
 	}
-	id, err := s.storage.StartDiskJob(ctx, req.Pool, req.Node, req.OldDisk, req.NewDisk)
+	id, err := s.storage.StartDiskJob(ctx, req.Pool, req.Node, req.OldDisk, req.NewDisk, req.Wipe)
 	if err != nil {
 		return &pb.StorageJobResponse{Success: false, Message: err.Error()}, nil
 	}

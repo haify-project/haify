@@ -89,19 +89,19 @@ func TestCreatePoolAppliesTheConfiguredDefault(t *testing.T) {
 
 	t.Run("a thin default makes an omitted type thin", func(t *testing.T) {
 		ctrl, thin := withDefault(t, "thin_pool")
-		require.NoError(t, ctrl.storage.CreatePool(ctx, "fast", "", "n1", []string{"/dev/sdb"}, 0))
+		require.NoError(t, ctrl.storage.CreatePool(ctx, "fast", "", "n1", []string{"/dev/sdb"}, 0, false))
 		assert.True(t, *thin, "storage.default_pool_type = thin_pool must build a thin pool")
 	})
 
 	t.Run("a thick default makes an omitted type thick", func(t *testing.T) {
 		ctrl, thin := withDefault(t, "vg")
-		require.NoError(t, ctrl.storage.CreatePool(ctx, "fast", "", "n1", []string{"/dev/sdb"}, 0))
+		require.NoError(t, ctrl.storage.CreatePool(ctx, "fast", "", "n1", []string{"/dev/sdb"}, 0, false))
 		assert.False(t, *thin, "storage.default_pool_type = vg must build a plain volume group")
 	})
 
 	t.Run("an explicit type still overrides the default", func(t *testing.T) {
 		ctrl, thin := withDefault(t, "thin_pool")
-		require.NoError(t, ctrl.storage.CreatePool(ctx, "fast", "vg", "n1", []string{"/dev/sdb"}, 0))
+		require.NoError(t, ctrl.storage.CreatePool(ctx, "fast", "vg", "n1", []string{"/dev/sdb"}, 0, false))
 		assert.False(t, *thin, "--type vg must win over a thin default")
 	})
 }

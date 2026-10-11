@@ -294,7 +294,7 @@ func TestMCPExtraSubTools3(t *testing.T) {
 	assert.False(t, res.IsError)
 }
 
-func (m *mockExtraClient) AddDiskToPool(_ context.Context, _, _, _ string) error { return nil }
+func (m *mockExtraClient) AddDiskToPool(_ context.Context, _, _, _ string, _ bool) error { return nil }
 func (m *mockExtraClient) ResourceStatus(_ context.Context, name string) (*haifypb.ResourceStatus, error) {
 	return &haifypb.ResourceStatus{Name: name}, nil
 }

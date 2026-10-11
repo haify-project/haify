@@ -31,17 +31,20 @@ func TestStorageManagerGetPoolResolvesNodeAndParsesOutput(t *testing.T) {
 }
 
 func TestStorageManagerAddAndDeletePoolUseNormalizedName(t *testing.T) {
-	dep := &fakeDeploymentClient{}
+	var extended string
+	dep := &fakeDeploymentClient{vgExtendFunc: func(_ context.Context, hosts []string, vg, dev string) (*deployment.ExecResult, error) {
+		extended = vg + " " + dev
+		return successExecResult(hosts, ""), nil
+	}}
 	ctrl := newBasicTestController(dep)
 	ctrl.nodes.nodes["10.0.0.1"] = &NodeInfo{Name: "node1", Address: "10.0.0.1"}
 	ctrl.hostsMap["node1"] = "10.0.0.1"
 
-	err := ctrl.storage.AddDiskToPool(context.Background(), "data-pool", "/dev/sdb", "node1")
+	err := ctrl.storage.AddDiskToPool(context.Background(), "data-pool", "/dev/sdb", "node1", false)
 	require.NoError(t, err)
 	require.Len(t, dep.pvCreateCalls, 1)
 	assert.Equal(t, []string{"10.0.0.1"}, dep.pvCreateCalls[0].hosts)
-	require.NotEmpty(t, dep.execCalls)
-	assert.Equal(t, "sudo vgextend haify_data-pool /dev/sdb", dep.execCalls[len(dep.execCalls)-1].cmd)
+	assert.Equal(t, "haify_data-pool /dev/sdb", extended)
 
 	err = ctrl.storage.DeletePool(context.Background(), "data-pool", "node1")
 	require.NoError(t, err)
@@ -78,7 +81,7 @@ func TestStorageManagerCreatePoolPersistsDatabaseState(t *testing.T) {
 	db := newTestDB(t)
 	ctrl.db = db
 
-	err := ctrl.storage.CreatePool(context.Background(), "data-pool", "lvm-thin", "node1", []string{"/dev/sdb", "/dev/sdc"}, 100)
+	err := ctrl.storage.CreatePool(context.Background(), "data-pool", "lvm-thin", "node1", []string{"/dev/sdb", "/dev/sdc"}, 100, false)
 	require.NoError(t, err)
 
 	stored, err := ctrl.db.GetPool(context.Background(), "haify_data-pool")
@@ -99,7 +102,7 @@ func TestStorageManagerCreateZFSPoolPersistsThinState(t *testing.T) {
 	db := newTestDB(t)
 	ctrl.db = db
 
-	err := ctrl.storage.CreateZFSPool(context.Background(), "tank", "node1", []string{"/dev/nvme0n1"}, "", false)
+	err := ctrl.storage.CreateZFSPool(context.Background(), "tank", "node1", []string{"/dev/nvme0n1"}, "", false, false)
 	require.NoError(t, err)
 
 	require.Len(t, dep.zfsCreatePoolCalls, 1)
@@ -131,7 +134,7 @@ func TestStorageManagerAddDiskUpdatesPersistedPoolDevices(t *testing.T) {
 		Devices: "/dev/sdb",
 	}))
 
-	err := ctrl.storage.AddDiskToPool(context.Background(), "data-pool", "/dev/sdc", "node1")
+	err := ctrl.storage.AddDiskToPool(context.Background(), "data-pool", "/dev/sdc", "node1", false)
 	require.NoError(t, err)
 
 	stored, err := ctrl.db.GetPool(context.Background(), "haify_data-pool")

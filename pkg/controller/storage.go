@@ -168,8 +168,9 @@ func (sm *StorageManager) defaultedPoolType(poolType string) string {
 	return sm.controller.config.Storage.DefaultPoolType
 }
 
-// CreatePool creates a storage pool
-func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node string, disks []string, sizeGB uint64) error {
+// CreatePool creates a pool from disks on node. A disk holding old data is
+// refused unless wipe is set.
+func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node string, disks []string, sizeGB uint64, wipe bool) error {
 	normalizedType, err := normalizeLVMPoolType(sm.defaultedPoolType(poolType))
 	if err != nil {
 		return err
@@ -191,6 +192,11 @@ func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node s
 		if err := sm.assertVDOSupported(ctx, address, node); err != nil {
 			return err
 		}
+	}
+
+	disks, err = sm.prepareDisks(ctx, address, node, disks, wipe)
+	if err != nil {
+		return err
 	}
 
 	// Create PVs first
@@ -439,66 +445,6 @@ func (sm *StorageManager) ListPools(ctx context.Context) ([]*PoolInfo, error) {
 	}
 
 	return pools, nil
-}
-
-// AddDiskToPool adds a disk to a pool
-func (sm *StorageManager) AddDiskToPool(ctx context.Context, pool, disk, node string) error {
-	pool = normalizeManagedName(pool)
-	address := sm.controller.ResolveHost(node)
-
-	// Create PV first
-	result, err := sm.controller.deployment.PVCreate(ctx, []string{address}, disk)
-	if err != nil {
-		return fmt.Errorf("failed to create PV: %w", err)
-	}
-	if !result.AllSuccess() {
-		return fmt.Errorf("PV creation failed: %s", result.FailureDetails())
-	}
-
-	// Extend VG
-	cmd := fmt.Sprintf("sudo vgextend %s %s", pool, disk)
-	result, err = sm.controller.deployment.Exec(ctx, []string{address}, cmd)
-	if err != nil {
-		return fmt.Errorf("failed to add disk: %w", err)
-	}
-
-	if !result.AllSuccess() {
-		return fmt.Errorf("failed to add disk: %s", result.FailureDetails())
-	}
-
-	sm.controller.logger.Info("Disk added to pool",
-		zap.String("pool", pool),
-		zap.String("disk", disk),
-		zap.String("node", node))
-
-	// The disk is part of the group now whatever happens to the thin pool, so
-	// record it before trying to grow the pool.
-	sm.recordPoolDevice(ctx, pool, disk)
-
-	if sm.vdoPoolNames(ctx)[pool] {
-		return errVDONotGrown(pool, disk, node)
-	}
-	if err := sm.growThinPoolAfterExtend(ctx, address, pool); err != nil {
-		return fmt.Errorf("disk %s added to %s on %s, but its thin pool was not grown into it: %w",
-			disk, pool, node, err)
-	}
-	return nil
-}
-
-// recordPoolDevice appends disk to the pool's persisted device list.
-func (sm *StorageManager) recordPoolDevice(ctx context.Context, pool, disk string) {
-	if sm.controller.db != nil {
-		if dbPool, err := sm.controller.db.GetPool(ctx, pool); err == nil {
-			devices := strings.Split(strings.Trim(dbPool.Devices, ","), ",")
-			devices = append(devices, disk)
-			dbPool.Devices = strings.Join(normalizeDeviceList(devices), ",")
-			if err := sm.controller.db.SavePool(ctx, dbPool); err != nil {
-				sm.controller.logger.Warn("Failed to update pool devices in database",
-					zap.String("pool", pool),
-					zap.Error(err))
-			}
-		}
-	}
 }
 
 // DeletePool deletes a storage pool

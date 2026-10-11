@@ -16,7 +16,7 @@ function thinUsageClass(percent: number): string {
   return '';
 }
 
-export function PoolItem({ pool }: { pool: Pool }) {
+export function PoolItem({ pool, nodeName }: { pool: Pool; nodeName?: string }) {
   const total = Number(pool.totalGb);
   const free = Number(pool.freeGb);
 
@@ -59,7 +59,7 @@ export function PoolItem({ pool }: { pool: Pool }) {
           <Badge variant="outline" className={poolTypeBadgeClass(shownType)}>
             {poolTypeLabel(shownType)}
           </Badge>
-          <AddDiskDialog pool={pool} />
+          <AddDiskDialog pool={pool} nodeName={nodeName ?? pool.node} />
           <DeletePoolDialog pool={pool} />
         </div>
       </div>

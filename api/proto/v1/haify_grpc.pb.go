@@ -25,6 +25,7 @@ const (
 	HaifyController_ListPools_FullMethodName                 = "/v1.HaifyController/ListPools"
 	HaifyController_TrimPools_FullMethodName                 = "/v1.HaifyController/TrimPools"
 	HaifyController_ListPoolDisks_FullMethodName             = "/v1.HaifyController/ListPoolDisks"
+	HaifyController_ListNodeDisks_FullMethodName             = "/v1.HaifyController/ListNodeDisks"
 	HaifyController_RemovePoolDisk_FullMethodName            = "/v1.HaifyController/RemovePoolDisk"
 	HaifyController_ReplacePoolDisk_FullMethodName           = "/v1.HaifyController/ReplacePoolDisk"
 	HaifyController_MoveVolume_FullMethodName                = "/v1.HaifyController/MoveVolume"
@@ -217,6 +218,9 @@ type HaifyControllerClient interface {
 	// Storage upkeep: trimming, disks, and long-running storage jobs.
 	TrimPools(ctx context.Context, in *TrimPoolsRequest, opts ...grpc.CallOption) (*TrimPoolsResponse, error)
 	ListPoolDisks(ctx context.Context, in *ListPoolDisksRequest, opts ...grpc.CallOption) (*ListPoolDisksResponse, error)
+	// ListNodeDisks lists the disks on the nodes and whether a pool can use
+	// each one: empty, holding only old data, in a pool, or in use.
+	ListNodeDisks(ctx context.Context, in *ListNodeDisksRequest, opts ...grpc.CallOption) (*ListNodeDisksResponse, error)
 	RemovePoolDisk(ctx context.Context, in *RemovePoolDiskRequest, opts ...grpc.CallOption) (*StorageJobResponse, error)
 	ReplacePoolDisk(ctx context.Context, in *ReplacePoolDiskRequest, opts ...grpc.CallOption) (*StorageJobResponse, error)
 	MoveVolume(ctx context.Context, in *MoveVolumeRequest, opts ...grpc.CallOption) (*StorageJobResponse, error)
@@ -607,6 +611,16 @@ func (c *haifyControllerClient) ListPoolDisks(ctx context.Context, in *ListPoolD
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListPoolDisksResponse)
 	err := c.cc.Invoke(ctx, HaifyController_ListPoolDisks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) ListNodeDisks(ctx context.Context, in *ListNodeDisksRequest, opts ...grpc.CallOption) (*ListNodeDisksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListNodeDisksResponse)
+	err := c.cc.Invoke(ctx, HaifyController_ListNodeDisks_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2396,6 +2410,9 @@ type HaifyControllerServer interface {
 	// Storage upkeep: trimming, disks, and long-running storage jobs.
 	TrimPools(context.Context, *TrimPoolsRequest) (*TrimPoolsResponse, error)
 	ListPoolDisks(context.Context, *ListPoolDisksRequest) (*ListPoolDisksResponse, error)
+	// ListNodeDisks lists the disks on the nodes and whether a pool can use
+	// each one: empty, holding only old data, in a pool, or in use.
+	ListNodeDisks(context.Context, *ListNodeDisksRequest) (*ListNodeDisksResponse, error)
 	RemovePoolDisk(context.Context, *RemovePoolDiskRequest) (*StorageJobResponse, error)
 	ReplacePoolDisk(context.Context, *ReplacePoolDiskRequest) (*StorageJobResponse, error)
 	MoveVolume(context.Context, *MoveVolumeRequest) (*StorageJobResponse, error)
@@ -2749,6 +2766,9 @@ func (UnimplementedHaifyControllerServer) TrimPools(context.Context, *TrimPoolsR
 }
 func (UnimplementedHaifyControllerServer) ListPoolDisks(context.Context, *ListPoolDisksRequest) (*ListPoolDisksResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListPoolDisks not implemented")
+}
+func (UnimplementedHaifyControllerServer) ListNodeDisks(context.Context, *ListNodeDisksRequest) (*ListNodeDisksResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListNodeDisks not implemented")
 }
 func (UnimplementedHaifyControllerServer) RemovePoolDisk(context.Context, *RemovePoolDiskRequest) (*StorageJobResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemovePoolDisk not implemented")
@@ -3403,6 +3423,24 @@ func _HaifyController_ListPoolDisks_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HaifyControllerServer).ListPoolDisks(ctx, req.(*ListPoolDisksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_ListNodeDisks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListNodeDisksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).ListNodeDisks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_ListNodeDisks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).ListNodeDisks(ctx, req.(*ListNodeDisksRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6598,6 +6636,10 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListPoolDisks",
 			Handler:    _HaifyController_ListPoolDisks_Handler,
+		},
+		{
+			MethodName: "ListNodeDisks",
+			Handler:    _HaifyController_ListNodeDisks_Handler,
 		},
 		{
 			MethodName: "RemovePoolDisk",

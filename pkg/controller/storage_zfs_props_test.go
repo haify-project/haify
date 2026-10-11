@@ -45,7 +45,7 @@ func TestListZFSPoolsReportsCompression(t *testing.T) {
 func TestCreateZFSPoolRefusesAnUnknownAlgorithm(t *testing.T) {
 	dep := &fakeDeploymentClient{}
 	ctrl := newBasicTestController(dep)
-	err := ctrl.storage.CreateZFSPool(context.Background(), "tank", "node1", []string{"/dev/sdb"}, "snappy", false)
+	err := ctrl.storage.CreateZFSPool(context.Background(), "tank", "node1", []string{"/dev/sdb"}, "snappy", false, false)
 	require.Error(t, err)
 	assert.Empty(t, dep.zfsCreatePoolCalls, "refused before anything is created")
 }

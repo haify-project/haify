@@ -37,7 +37,7 @@ func NewServer(ctrl *Controller) *Server {
 // ==================== POOL OPERATIONS ====================
 
 func (s *Server) CreatePool(ctx context.Context, req *haifypb.CreatePoolRequest) (*haifypb.CreatePoolResponse, error) {
-	err := s.storage.CreatePool(ctx, req.Name, req.Type, req.Node, req.Disks, req.SizeGb)
+	err := s.storage.CreatePool(ctx, req.Name, req.Type, req.Node, req.Disks, req.SizeGb, req.Wipe)
 	if err != nil {
 		return &haifypb.CreatePoolResponse{
 			Success: false,
@@ -153,7 +153,7 @@ func (s *Server) ListPools(ctx context.Context, req *haifypb.ListPoolsRequest) (
 }
 
 func (s *Server) AddDiskToPool(ctx context.Context, req *haifypb.AddDiskToPoolRequest) (*haifypb.AddDiskToPoolResponse, error) {
-	err := s.storage.AddDiskToPool(ctx, req.Pool, req.Disk, req.Node)
+	err := s.storage.AddDiskToPool(ctx, req.Pool, req.Disk, req.Node, req.Wipe)
 	if err != nil {
 		return &haifypb.AddDiskToPoolResponse{
 			Success: false,
