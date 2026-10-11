@@ -681,7 +681,10 @@ All of these run on a live resource.
 haify resource resize-volume db 0 200G
 
 # another local replica (refused if the node's pool has less free space than
-# the volume: the sync writes all of it; --ignore-free-space overrides)
+# the volume: the sync writes all of it; --ignore-free-space overrides).
+# On a node that is already a diskless client or the tiebreaker, the node gets
+# a disk in place: whatever it has open keeps running while the disk attaches
+# and resyncs from the peers.
 haify resource add-replica db --node node3
 
 # take one out; the node's volume for it is deleted

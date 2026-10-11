@@ -73,19 +73,10 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 			return fmt.Errorf("node %q already holds a replica of %q", node, resource)
 		}
 	}
-	// A diskless member could in principle be upgraded in place, but that is a
-	// different operation with different risks (it has metadata but no data), so
-	// refuse rather than half-do it.
-	for _, n := range splitCSV(dbRes.DisklessNodes) {
-		if n == node {
-			return fmt.Errorf("node %q is the quorum tiebreaker of %q; remove it with `ha set-tiebreaker` before making it a replica",
-				node, resource)
-		}
-	}
-	for _, n := range splitCSV(dbRes.DisklessClients) {
-		if n == node {
-			return fmt.Errorf("node %q is a diskless client of %q; detach it before making it a replica", node, resource)
-		}
+	// A diskless member — client or tiebreaker — gets its disk in place
+	// (addreplica_convert.go).
+	if nodeTakesPart(node, dbRes.DisklessNodes, dbRes.DisklessClients) {
+		return rm.convertDisklessToReplica(ctx, dbRes, node, opts)
 	}
 
 	// The DR is a member of Nodes but not a primary-site replica; keep them apart.
