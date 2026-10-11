@@ -82,7 +82,14 @@ func (s *Server) SetNodeReplicationPaths(ctx context.Context, req *haifypb.SetNo
 	if err != nil {
 		return &haifypb.SetNodeAddressResponse{Success: false, Message: err.Error()}, nil
 	}
-	done, failed := s.resources.RewriteForReplicationPaths(ctx, node.Name)
+	// The guard first: a config with a path the node has no address for would
+	// otherwise keep the connection down (replication_paths_guard.go).
+	var failed []string
+	if err := s.resources.setPathsGuard(ctx, node.Address, len(node.ReplicationPaths) > 0); err != nil {
+		failed = append(failed, fmt.Sprintf("path guard on %s: %v", node.Name, err))
+	}
+	done, rfailed := s.resources.RewriteForReplicationPaths(ctx, node.Name)
+	failed = append(failed, rfailed...)
 	msg := fmt.Sprintf("%s has no extra replication path", node.Name)
 	if len(node.ReplicationPaths) > 0 {
 		msg = fmt.Sprintf("%s replicates over %s and %s", node.Name, replicationOf(node), strings.Join(node.ReplicationPaths, ", "))

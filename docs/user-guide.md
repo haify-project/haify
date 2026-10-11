@@ -150,6 +150,12 @@ and the resource stays UpToDate. The resources a node takes part in are rewritte
 adjusted in place; their connections stay up while the paths are added or
 removed.
 
+DRBD will not connect at all while one of a connection's paths has no local
+address, so a node whose second NIC is down at boot, or lost its address with
+the link, would be cut off on the network that still works. On every node with
+`set-paths` a timer (`haify-paths-guard.timer`) drops such paths every ten
+seconds and puts them back when the address returns.
+
 **Labels** describe where a node physically is. Auto-placement uses them to keep
 replicas apart, or together:
 
@@ -277,6 +283,22 @@ inherits it; dedup costs RAM on every write and only pays off for data known to
 repeat. `pool get` (and the MCP pool listing) report the algorithm and the ratio
 ZFS achieves (`Compression: zstd, 1.85x achieved`). Encrypted resources are LVM
 only, so ciphertext, which does not compress, never lands on a ZFS pool.
+
+**A pool on a file.** A node without a spare disk (a laptop, a test VM) can
+build a pool on an image file:
+
+```bash
+haify pool create --name data --type lvm-thin --nodes node1,node2 \
+    --devices file:/var/lib/haify-pools/data.img:50G
+```
+
+The file is sparse for a thin pool and allocated in full for a thick one. It is
+attached as a loop device, by a unit that attaches it again at boot before DRBD
+starts, and the pool is built on that as on a disk, so thin volumes, snapshots
+and everything else work the same. Every write also goes through the node's
+filesystem, so give a pool that matters a disk. The file must be on the node's
+own disk: a path under `/var/lib/haify` (the controller's own replicated volume)
+or on any DRBD device is refused. `pool delete` removes the file.
 
 Omitting `--type` gives the controller's `[storage] default_pool_type`, which
 is `thin_pool` unless changed. **Choose thin unless you have a reason not to.**
