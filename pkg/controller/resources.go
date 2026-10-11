@@ -89,6 +89,13 @@ type ResourceNodeState struct {
 	// since the resource came up there, summed over volumes; nil for peers and
 	// when DRBD did not report it.
 	WrittenKiB *uint64
+	// ReadKiB is the answering node's read counter, like WrittenKiB.
+	ReadKiB *uint64
+	// SentKiB and ReceivedKiB are what the answering node sent to and received
+	// from this peer since their connection came up, summed over volumes; nil
+	// for the answering node itself and when DRBD did not report them.
+	SentKiB     *uint64
+	ReceivedKiB *uint64
 }
 
 // ResourceVolumeInfo represents DRBD volume information
@@ -120,6 +127,11 @@ type ResourceManager struct {
 	// verifyMarks remembers, per resource and peer, how much was marked out of
 	// sync when a verify started; see verifyMarks.
 	verifyMarks sync.Map
+	// haProbes keeps recent HA status probes of nodes; see GetHaStatus.
+	haProbes haProbeCache
+	// primaryHosts remembers, per resource, the address of the node last seen
+	// Primary, so its status is read first; see drbdStatusFromAnyHost.
+	primaryHosts sync.Map
 }
 
 // NewResourceManager creates a new resource manager

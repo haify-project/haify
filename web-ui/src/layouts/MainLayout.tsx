@@ -16,7 +16,7 @@ import {
   ScrollText,
   SlidersHorizontal,
   BellRing,
-  Rotate3d,
+  Activity,
   Monitor,
   Cpu,
 } from 'lucide-react';
@@ -88,7 +88,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: 'Cluster',
     items: [
       { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-      { name: '3D view', href: '/3d', icon: Rotate3d },
+      { name: 'Live map', href: '/live', icon: Activity },
       { name: 'Nodes', href: '/nodes', icon: Server },
       { name: 'Pools', href: '/pools', icon: Database },
       { name: 'Resources', href: '/resources', icon: Box },
@@ -274,7 +274,9 @@ function SidebarContent({
 
 export function MainLayout() {
   const location = useLocation();
-  const isFetching = useIsFetching();
+  // Live views re-read status every few seconds; announcing each of those
+  // would leave the indicator permanently on.
+  const isFetching = useIsFetching({ predicate: (q) => !q.meta?.live });
   const [aiOpen, setAiOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(readCollapsed);
@@ -376,9 +378,7 @@ export function MainLayout() {
             <h2 className="text-[13.5px] font-semibold tracking-tight">
               {current?.name ?? 'Dashboard'}
             </h2>
-            {/* The 3D view polls continuously and says "live" itself; a
-                spinner that never stops there would only be noise. */}
-            {isFetching > 0 && location.pathname !== '/3d' && (
+            {isFetching > 0 && (
               <span
                 className="flex items-center gap-1 text-xs text-muted-foreground"
                 role="status"

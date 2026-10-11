@@ -34,6 +34,11 @@ type haConfigOut struct {
 	Services   []string `json:"services,omitempty"`
 }
 
+type haConfigStatusOut struct {
+	haConfigOut
+	Promoter *haPromoterOut `json:"promoter,omitempty" jsonschema:"live state of the resource's drbd-reactor chain"`
+}
+
 type haListOut struct {
 	Configs []haConfigOut `json:"configs"`
 }
@@ -81,19 +86,26 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 		})
 
 	addRead(s, srv, readOnlyTool("haify_ha_status", "HA config status",
-		"Show the HA configuration of one resource: VIP, mount point, and managed services."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in haResourceIn) (*mcp.CallToolResult, haConfigOut, error) {
+		"Show the HA configuration of one resource — VIP, mount point, managed services — and, live, its "+
+			"service chain, whether each standby could take it over, and what outside the chain uses its mounts."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in haResourceIn) (*mcp.CallToolResult, haConfigStatusOut, error) {
 			c, err := s.client.GetHa(ctx, in.Resource)
 			if err != nil {
-				return nil, haConfigOut{}, err
+				return nil, haConfigStatusOut{}, err
 			}
-			return nil, haConfigOut{
+			out := haConfigStatusOut{haConfigOut: haConfigOut{
 				Resource:   c.Resource,
 				VIP:        c.Vip,
 				MountPoint: c.MountPoint,
 				FsType:     c.FsType,
 				Services:   c.Services,
-			}, nil
+			}}
+			// The live part is best effort: the stored config stands on its own.
+			if sts, err := s.client.GetHaStatus(ctx, in.Resource); err == nil && len(sts) > 0 {
+				p := haPromoterOutFrom(sts[0])
+				out.Promoter = &p
+			}
+			return nil, out, nil
 		})
 
 	addWrite(s, srv, writeTool("haify_ha_create", "Create HA config",

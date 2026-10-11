@@ -125,20 +125,6 @@ type agentMetaOut struct {
 	Parameters []agentParamOut `json:"parameters" jsonschema:"every parameter the agent accepts; required ones must be supplied"`
 }
 
-type haStatusIn struct {
-	Resource string `json:"resource,omitempty" jsonschema:"empty for every HA resource"`
-}
-
-type haPromoterOut struct {
-	Resource  string `json:"resource"`
-	PrimaryOn string `json:"primary_on,omitempty"`
-	Status    string `json:"status"`
-}
-
-type haStatusOut struct {
-	Promoters []haPromoterOut `json:"promoters"`
-}
-
 // registerTopologyTools adds replica, DR, drain, label and HA-config tools.
 func (s *Server) registerTopologyTools(srv *mcp.Server) {
 	addWrite(s, srv, writeTool("haify_resource_add_replica", "Add a replica",
@@ -425,7 +411,10 @@ func (s *Server) registerTopologyTools(srv *mcp.Server) {
 		})
 
 	addRead(s, srv, readOnlyTool("haify_ha_promoter_status", "Show promoter status",
-		"Show drbd-reactor promoter state per HA resource: where it is Primary and whether its services are up."),
+		"Show drbd-reactor promoter state per HA resource (or of one gateway or app resource): the node running "+
+			"its service chain, what each unit of the chain is and whether it is up, whether each standby could "+
+			"take the chain over and why not, and which services outside the chain use its mounts — those hold "+
+			"the unmount up on a failover."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in haStatusIn) (*mcp.CallToolResult, haStatusOut, error) {
 			sts, err := s.client.GetHaStatus(ctx, in.Resource)
 			if err != nil {
@@ -433,11 +422,7 @@ func (s *Server) registerTopologyTools(srv *mcp.Server) {
 			}
 			out := haStatusOut{Promoters: make([]haPromoterOut, 0, len(sts))}
 			for _, p := range sts {
-				out.Promoters = append(out.Promoters, haPromoterOut{
-					Resource:  p.DrbdResource,
-					PrimaryOn: p.PrimaryOn,
-					Status:    p.Status,
-				})
+				out.Promoters = append(out.Promoters, haPromoterOutFrom(p))
 			}
 			return nil, out, nil
 		})

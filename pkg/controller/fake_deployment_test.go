@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"os"
+	"sync"
 
 	"github.com/haify-project/haify/pkg/deployment"
 	"github.com/stretchr/testify/assert"
@@ -60,6 +61,7 @@ type fakeDeploymentClient struct {
 	reactorReloadFunc                   func(ctx context.Context, hosts []string) (*deployment.ExecResult, error)
 	reactorPromoterStatusByResourceFunc func(ctx context.Context, host, resource string) (*deployment.ReactorPromoterStatus, error)
 	execCalls                           []execCall
+	execMu                              sync.Mutex // guards execCalls: the HA status probes call Exec concurrently
 	pvCreateCalls                       []struct {
 		hosts  []string
 		device string
@@ -194,7 +196,9 @@ func (f *fakeDeploymentClient) DeleteConfig(ctx context.Context, hosts []string,
 }
 
 func (f *fakeDeploymentClient) Exec(ctx context.Context, hosts []string, cmd string, opts ...deployment.ExecOption) (*deployment.ExecResult, error) {
+	f.execMu.Lock()
 	f.execCalls = append(f.execCalls, execCall{hosts: cloneStrings(hosts), cmd: cmd})
+	f.execMu.Unlock()
 	if f.execFunc != nil {
 		return f.execFunc(ctx, hosts, cmd, opts...)
 	}

@@ -160,6 +160,8 @@ func (rm *ResourceManager) GetResource(ctx context.Context, name string) (*Resou
 		}
 	}
 
+	rm.rememberPrimaryHost(name, hosts, nodeAddresses, answeredAt, localRole, nodeStates)
+
 	info := &ResourceInfo{
 		Name:            dbRes.Name,
 		Port:            uint32(dbRes.Port),
@@ -383,7 +385,8 @@ func disklessByDesign(c *Controller, dbRes *database.Resource) map[string]bool {
 // failing outright — the UI has to draw something either way.
 func (rm *ResourceManager) drbdStatusFromAnyHost(ctx context.Context, hosts []string, resource string) (*deployment.ExecResult, int, error) {
 	var lastErr error
-	for i, host := range hosts {
+	for _, i := range rm.statusAskOrder(resource, hosts) {
+		host := hosts[i]
 		result, err := rm.deployment.DRBDStatus(ctx, []string{host}, resource)
 		if err != nil {
 			lastErr = err

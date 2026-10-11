@@ -3,6 +3,7 @@ import {
   Resource,
   ResourceStatus,
   type HaPromoterStatus,
+  type HaUnit,
 } from '@/services/api';
 import { mountUnitFor, vipUnitFor } from '@/lib/toml';
 
@@ -43,12 +44,8 @@ export function startListFor(
   config: HaConfig,
   promoter?: HaPromoterStatus,
 ): { units: StartUnit[]; live: boolean } {
-  const deps = (promoter?.deps ?? []).filter(
-    (d) => !d.name.startsWith('drbd-promote@'),
-  );
-  if (deps.length > 0) {
-    return { units: deps.map((d) => ({ name: d.name, status: d.status })), live: true };
-  }
+  const deps = (promoter?.deps ?? []).filter((d) => !HIDDEN_KINDS.has(unitKind(d)));
+  if (deps.length > 0) return { units: deps, live: true };
   const units = [
     config.mountPoint ? mountUnitFor(config.mountPoint) : '',
     config.vip ? vipUnitFor(config.vip) : '',
@@ -59,7 +56,27 @@ export function startListFor(
   return { units, live: false };
 }
 
-type StartUnit = { name: string; status?: string };
+type StartUnit = Omit<HaUnit, 'status'> & { status?: string };
+
+// The promotion itself and the target unit wrapping the chain are not services
+// anyone runs; their state shows in the card header instead.
+const HIDDEN_KINDS = new Set(['promote', 'target']);
+
+/** A unit's kind, read off its name when the controller does not send one. */
+export function unitKind(u: Pick<HaUnit, 'name' | 'kind'>): string {
+  if (u.kind) return u.kind;
+  if (u.name.startsWith('drbd-promote@')) return 'promote';
+  if (u.name.startsWith('drbd-services@') || u.name.endsWith('.target')) return 'target';
+  if (u.name.endsWith('.mount')) return 'mount';
+  if (u.name.startsWith('service-ip@')) return 'service_ip';
+  return 'service';
+}
+
+/** A failed promote or target unit, which the header reports in place of the hidden rows. */
+export function hiddenFailure(promoter?: HaPromoterStatus): HaUnit | undefined {
+  const units = [...(promoter?.deps ?? []), ...(promoter?.target ? [promoter.target] : [])];
+  return units.find((u) => HIDDEN_KINDS.has(unitKind(u)) && u.status?.toLowerCase() === 'failed');
+}
 
 /** Units the promoter runs that the controller's own config does not mention.
  *  Naming them is the point: this is the gap between what the console can

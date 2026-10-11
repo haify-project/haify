@@ -9596,6 +9596,28 @@
         }
       }
     },
+    "v1HaOutsideService": {
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "processes": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "mountPoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "HaOutsideService is a systemd unit outside the chain that has processes\nusing the resource's mount on the node running the chain. It holds the\nunmount up on a failover, or keeps writing to a mount that is gone."
+    },
     "v1HaPromoterStatus": {
       "type": "object",
       "properties": {
@@ -9617,6 +9639,33 @@
             "type": "object",
             "$ref": "#/definitions/v1HaServiceStatus"
           }
+        },
+        "activeNode": {
+          "type": "string",
+          "description": "active_node is the Haify node running the chain; empty when none is."
+        },
+        "standbys": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1HaStandby"
+          }
+        },
+        "outside": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1HaOutsideService"
+          }
+        },
+        "outsideSessions": {
+          "type": "integer",
+          "format": "int32",
+          "description": "Login sessions (and their processes) using the resource's mount on the\nactive node; not services, so counted rather than listed."
+        },
+        "outsideSessionProcesses": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },
@@ -9628,8 +9677,61 @@
         },
         "status": {
           "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "description": "kind is what the unit is in the chain: promote, mount, service_ip, nfs,\niscsi, nvmeof, smb, database, vm, haify, target or service."
+        },
+        "label": {
+          "type": "string",
+          "description": "label names the unit's job for a person: the mount path, the service IP,\nthe export or LUN, or the unit's own description."
+        },
+        "description": {
+          "type": "string",
+          "description": "description is the unit file's own Description=, not the\n\"drbd-reactor controlled ...\" one drbd-reactor puts over it."
+        },
+        "since": {
+          "type": "string",
+          "description": "since is when the unit last became active (RFC 3339); empty while it is\nnot active."
+        },
+        "restarts": {
+          "type": "integer",
+          "format": "int32",
+          "description": "restarts is systemd's NRestarts: automatic restarts since it was started."
+        },
+        "subState": {
+          "type": "string",
+          "description": "sub_state is systemd's SubState: running, exited, mounted, dead, ..."
+        },
+        "mainPid": {
+          "type": "integer",
+          "format": "int32",
+          "description": "main_pid is the service's main process, 0 when it has none."
         }
       }
+    },
+    "v1HaStandby": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "reasons says, briefly, what would stop a takeover there."
+        },
+        "diskState": {
+          "type": "string",
+          "description": "disk_state is the node's local DRBD disk state of the resource."
+        }
+      },
+      "description": "HaStandby is one node that holds an enabled copy of the promoter but is not\nrunning the chain, and whether it could take the chain over."
     },
     "v1HaStartItem": {
       "type": "object",
@@ -10744,6 +10846,24 @@
         "tls": {
           "type": "boolean",
           "description": "tls is whether the connection to this peer runs over TLS."
+        },
+        "writtenKib": {
+          "type": "string",
+          "format": "uint64",
+          "description": "KiB written to and read from the answering node's own DRBD device since\nit came up there, summed over volumes. Set on the answering node's entry\nonly (the one with no replication_state); unset when DRBD did not report\nthem. Two readings over time give the resource's write and read rate."
+        },
+        "readKib": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "sentKib": {
+          "type": "string",
+          "format": "uint64",
+          "description": "KiB the answering node sent to and received from this peer since their\nconnection came up, summed over volumes. Set on peer entries only."
+        },
+        "receivedKib": {
+          "type": "string",
+          "format": "uint64"
         }
       }
     },

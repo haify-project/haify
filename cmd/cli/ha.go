@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -309,8 +310,12 @@ func haList() *cobra.Command {
 func haStatus() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status <resource>",
-		Short: "Show HA configuration status for a resource",
-		Args:  cobra.ExactArgs(1),
+		Short: "Show an HA resource's service chain, standbys and what else uses its mounts",
+		Long: "Show where a resource's drbd-reactor chain runs and what each unit of it is, whether\n" +
+			"each standby could take it over (and why not), and which services outside the chain\n" +
+			"use its mounts, which would hold up the unmount on a failover. Works for `ha create`\n" +
+			"resources, gateways and apps alike.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resource := args[0]
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -322,78 +327,58 @@ func haStatus() *cobra.Command {
 			}
 			defer closeClient(haifyClient)
 
-			cfg, err := haifyClient.GetHa(ctx, resource)
-			if err != nil {
-				return fmt.Errorf("failed to get HA config: %w", err)
+			// A gateway's or an app's promoter has no `ha create` config but
+			// the same kind of chain, so a missing config is not the end.
+			cfg, cfgErr := haifyClient.GetHa(ctx, resource)
+			haStatuses, haStatusErr := haifyClient.GetHaStatus(ctx, resource)
+			if cfgErr != nil && (haStatusErr != nil || len(haStatuses) == 0) {
+				return fmt.Errorf("failed to get HA config: %w", cfgErr)
 			}
-
+			var promoter *haifypb.HaPromoterStatus
+			if haStatusErr == nil && len(haStatuses) > 0 {
+				promoter = haStatuses[0]
+			}
 			resourceStatus, statusErr := haifyClient.ResourceStatus(ctx, resource)
 
-			// Fetch reactor status from the primary node via the controller.
-			haStatuses, haStatusErr := haifyClient.GetHaStatus(ctx, resource)
-			var promoter interface {
-				GetStatus() string
-				GetPrimaryOn() string
-				GetTarget() interface {
-					GetName() string
-					GetStatus() string
-				}
-			}
-			_ = promoter
-			type pbPromoter struct {
-				status, primaryOn        string
-				targetName, targetStatus string
-				deps                     []struct{ name, status string }
-			}
-			var pb *pbPromoter
-			if haStatusErr == nil && len(haStatuses) > 0 {
-				p := haStatuses[0]
-				pb = &pbPromoter{
-					status:    p.GetStatus(),
-					primaryOn: p.GetPrimaryOn(),
-				}
-				if t := p.GetTarget(); t != nil {
-					pb.targetName = t.GetName()
-					pb.targetStatus = t.GetStatus()
-				}
-				for _, d := range p.GetDeps() {
-					pb.deps = append(pb.deps, struct{ name, status string }{d.GetName(), d.GetStatus()})
-				}
-			}
-
 			fmt.Printf("HA Configuration: %s\n", resource)
-			fmt.Printf("  Config:  controller database\n")
+			if cfgErr == nil {
+				fmt.Printf("  Config:  controller database\n")
+			} else {
+				fmt.Printf("  Config:  promoter of a gateway or app\n")
+			}
 			if statusErr == nil && resourceStatus != nil {
-				activeNode := ""
-				for node, nodeState := range resourceStatus.GetNodeStates() {
-					if nodeState.GetRole() == "Primary" {
-						activeNode = node
-						break
-					}
-				}
-				if activeNode != "" {
-					fmt.Printf("  Active:  %s\n", activeNode)
-				}
 				fmt.Printf("  Role:    %s\n", resourceStatus.GetRole())
 				fmt.Printf("  Nodes:   %v\n", resourceStatus.GetNodes())
 			}
-			if pb != nil {
-				fmt.Printf("  Status:  %s %s\n", statusIcon(pb.status), pb.status)
-				if pb.primaryOn != "" {
-					fmt.Printf("  Primary: %s\n", pb.primaryOn)
+			if promoter != nil {
+				fmt.Printf("  Status:  %s %s\n", statusIcon(promoter.GetStatus()), promoter.GetStatus())
+				if promoter.GetActiveNode() != "" {
+					fmt.Printf("  Active:  %s\n", promoter.GetActiveNode())
+				}
+				if promoter.GetPrimaryOn() != "" {
+					fmt.Printf("  Primary: %s\n", promoter.GetPrimaryOn())
 				}
 			} else if haStatusErr != nil {
 				fmt.Printf("  Reactor: unavailable (%v)\n", haStatusErr)
 			}
-
-			if cfg.GetMountPoint() != "" {
-				fmt.Printf("  Mount:   %s (%s)\n", cfg.GetMountPoint(), cfg.GetFsType())
+			if (promoter == nil || promoter.GetActiveNode() == "") && statusErr == nil && resourceStatus != nil {
+				for node, nodeState := range resourceStatus.GetNodeStates() {
+					if nodeState.GetRole() == "Primary" {
+						fmt.Printf("  Primary: %s (DRBD)\n", node)
+						break
+					}
+				}
 			}
-			if cfg.GetVip() != "" {
-				fmt.Printf("  VIP:     %s\n", cfg.GetVip())
-			}
-			if len(cfg.GetServices()) > 0 {
-				fmt.Printf("  Services: %v\n", cfg.GetServices())
+			if cfgErr == nil {
+				if cfg.GetMountPoint() != "" {
+					fmt.Printf("  Mount:   %s (%s)\n", cfg.GetMountPoint(), cfg.GetFsType())
+				}
+				if cfg.GetVip() != "" {
+					fmt.Printf("  VIP:     %s\n", cfg.GetVip())
+				}
+				if len(cfg.GetServices()) > 0 {
+					fmt.Printf("  Services: %v\n", cfg.GetServices())
+				}
 			}
 			if statusErr == nil && resourceStatus != nil && len(resourceStatus.GetNodeStates()) > 0 {
 				fmt.Printf("  Node States:\n")
@@ -405,21 +390,10 @@ func haStatus() *cobra.Command {
 						nodeState.GetReplicationState())
 				}
 			}
-			if pb != nil && pb.targetName != "" {
-				fmt.Printf("  Promoter Target:\n")
-				fmt.Printf("    - %s %s (%s)\n",
-					statusIcon(pb.targetStatus),
-					pb.targetName,
-					pb.targetStatus)
-				if len(pb.deps) > 0 {
-					fmt.Printf("  Dependencies:\n")
-					for _, dep := range pb.deps {
-						fmt.Printf("    - %s %s (%s)\n",
-							statusIcon(dep.status),
-							dep.name,
-							dep.status)
-					}
-				}
+			if promoter != nil {
+				printHaChain(os.Stdout, promoter)
+				printHaStandbys(os.Stdout, promoter)
+				printHaOutside(os.Stdout, promoter)
 			}
 
 			return nil

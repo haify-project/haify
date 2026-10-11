@@ -2207,6 +2207,16 @@ message NodeResourceState {
   string connection = 6;
   // tls is whether the connection to this peer runs over TLS.
   bool tls = 7;
+  // KiB written to and read from the answering node's own DRBD device since
+  // it came up there, summed over volumes. Set on the answering node's entry
+  // only (the one with no replication_state); unset when DRBD did not report
+  // them. Two readings over time give the resource's write and read rate.
+  optional uint64 written_kib = 8;
+  optional uint64 read_kib = 9;
+  // KiB the answering node sent to and received from this peer since their
+  // connection came up, summed over volumes. Set on peer entries only.
+  optional uint64 sent_kib = 10;
+  optional uint64 received_kib = 11;
 }
 
 message VolumeInfo {
@@ -3151,6 +3161,45 @@ message HaConfigInfo {
 message HaServiceStatus {
   string name    = 1;
   string status  = 2;
+  // kind is what the unit is in the chain: promote, mount, service_ip, nfs,
+  // iscsi, nvmeof, smb, database, vm, haify, target or service.
+  string kind        = 3;
+  // label names the unit's job for a person: the mount path, the service IP,
+  // the export or LUN, or the unit's own description.
+  string label       = 4;
+  // description is the unit file's own Description=, not the
+  // "drbd-reactor controlled ..." one drbd-reactor puts over it.
+  string description = 5;
+  // since is when the unit last became active (RFC 3339); empty while it is
+  // not active.
+  string since       = 6;
+  // restarts is systemd's NRestarts: automatic restarts since it was started.
+  int32 restarts     = 7;
+  // sub_state is systemd's SubState: running, exited, mounted, dead, ...
+  string sub_state   = 8;
+  // main_pid is the service's main process, 0 when it has none.
+  int32 main_pid     = 9;
+}
+
+// HaStandby is one node that holds an enabled copy of the promoter but is not
+// running the chain, and whether it could take the chain over.
+message HaStandby {
+  string node            = 1;
+  bool ready             = 2;
+  // reasons says, briefly, what would stop a takeover there.
+  repeated string reasons = 3;
+  // disk_state is the node's local DRBD disk state of the resource.
+  string disk_state      = 4;
+}
+
+// HaOutsideService is a systemd unit outside the chain that has processes
+// using the resource's mount on the node running the chain. It holds the
+// unmount up on a failover, or keeps writing to a mount that is gone.
+message HaOutsideService {
+  string unit                  = 1;
+  string description           = 2;
+  int32 processes              = 3;
+  repeated string mount_points = 4;
 }
 
 message HaPromoterStatus {
@@ -3159,6 +3208,14 @@ message HaPromoterStatus {
   string status                     = 3;
   HaServiceStatus target            = 4;
   repeated HaServiceStatus deps     = 5;
+  // active_node is the Haify node running the chain; empty when none is.
+  string active_node                = 6;
+  repeated HaStandby standbys       = 7;
+  repeated HaOutsideService outside = 8;
+  // Login sessions (and their processes) using the resource's mount on the
+  // active node; not services, so counted rather than listed.
+  int32 outside_sessions            = 9;
+  int32 outside_session_processes   = 10;
 }
 
 message GetHaStatusRequest {

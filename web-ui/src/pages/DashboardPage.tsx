@@ -3,7 +3,8 @@ import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router';
 import { Plus, RefreshCw, Server, ShieldCheck } from 'lucide-react';
 import { api, poolRoomGiB } from '@/services/api';
-import { eventTime, eventTitle, type ClusterEvent } from '@/services/events';
+import { type ClusterEvent } from '@/services/events';
+import { EventRows } from '@/components/EventRows';
 import { cn } from '@/lib/utils';
 import { PageHeader } from '@/components/PageHeader';
 import { StatBand, StatBandItem } from '@/components/StatBand';
@@ -12,7 +13,7 @@ import { ControllerChip } from '@/components/ControllerChip';
 import { StatusBadge } from '@/components/StatusBadge';
 import { StatusTickCell, StatusTickHead } from '@/components/StatusTick';
 import { RecordCard, RecordCards } from '@/components/RecordCard';
-import { TONE_BG, TONE_TEXT, toneOf } from '@/components/status';
+import { toneOf } from '@/components/status';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -42,14 +43,6 @@ const PAGE_QUERY_KEYS = {
 } as const;
 
 /** Coarse "how long ago", for a header line and a last-seen column. */
-
-// The clock on a recent-events row. Events read over REST carry epoch millis,
-// not an RFC 3339 string; eventTime is what knows the difference.
-function eventClock(event: ClusterEvent): string {
-  const at = eventTime(event);
-  return at === null ? '—' : new Date(at).toLocaleTimeString();
-}
-
 function agoLabel(ms: number): string {
   const secs = Math.max(0, Math.round(ms / 1000));
   if (secs < 5) return 'now';
@@ -499,16 +492,6 @@ export function DashboardPage() {
   );
 }
 
-
-/** Severity → the tone vocabulary the rest of the console uses. The controller
- *  sends "info" | "warning" | "critical"; `toneOf` does not know those words,
- *  so the mapping is stated here rather than guessed from the message text. */
-const EVENT_TONE = {
-  critical: 'bad',
-  warning: 'warn',
-  info: 'idle',
-} as const;
-
 /**
  * What just happened to the cluster, read back from the controller's bounded
  * in-memory history. The SSE stream in services/events.ts is the live tail of
@@ -547,37 +530,7 @@ function RecentEvents() {
             Nothing yet — the controller has published no events since it started.
           </p>
         ) : (
-          <div className="flex flex-col">
-            {events.map((event, i) => {
-              const tone =
-                event.status === 'resolved' ? 'ok' : EVENT_TONE[event.severity] ?? 'idle';
-              return (
-                <div
-                  key={event.id}
-                  className={cn(
-                    'flex gap-3 py-2.5',
-                    i > 0 && 'border-t border-border/70',
-                  )}
-                >
-                  {/* The rail repeats the severity; the word below carries it. */}
-                  <span
-                    aria-hidden
-                    className={cn('w-[3px] shrink-0 rounded-[2px]', TONE_BG[tone])}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[13px] leading-snug">{event.message}</p>
-                    <p className="mt-1 flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-                      <span className={TONE_TEXT[tone]}>{eventTitle(event)}</span>
-                      <span aria-hidden>·</span>
-                      <span className="font-mono tabular-nums">
-                        {eventClock(event)}
-                      </span>
-                    </p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <EventRows events={events} />
         )}
       </CardContent>
     </Card>

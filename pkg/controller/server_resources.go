@@ -224,6 +224,10 @@ func (s *Server) GetResource(ctx context.Context, req *haifypb.GetResourceReques
 			SyncPercent:      state.SyncPercent,
 			Connection:       state.Connection,
 			Tls:              state.TLS,
+			WrittenKib:       state.WrittenKiB,
+			ReadKib:          state.ReadKiB,
+			SentKib:          state.SentKiB,
+			ReceivedKib:      state.ReceivedKiB,
 		}
 	}
 
@@ -370,6 +374,10 @@ func (s *Server) ResourceStatus(ctx context.Context, req *haifypb.ResourceStatus
 			Node:             nodeName,
 			Connection:       nodeState.Connection,
 			Tls:              nodeState.TLS,
+			WrittenKib:       nodeState.WrittenKiB,
+			ReadKib:          nodeState.ReadKiB,
+			SentKib:          nodeState.SentKiB,
+			ReceivedKib:      nodeState.ReceivedKiB,
 		}
 	}
 

@@ -98,6 +98,19 @@ export interface NodeResourceState {
   // Resync completion (0..100). 100 / absent when not resyncing. Only
   // meaningful for a peer whose replicationState is a resync state.
   syncPercent?: number;
+  // DRBD's connection state for a peer ("Connected", "Connecting", ...); empty
+  // on the reporting node's own entry.
+  connection?: string;
+  tls?: boolean;
+  // Cumulative KiB counters, uint64 and therefore JSON strings. On the
+  // reporting node's own entry (the one with an empty replicationState):
+  // written to and read from its local device since it came up. On each peer
+  // entry: sent to and received from that peer since the connection came up.
+  // Absent from controllers that predate them.
+  writtenKib?: string;
+  readKib?: string;
+  sentKib?: string;
+  receivedKib?: string;
 }
 
 export interface ResourcesResponse extends ApiResponse {

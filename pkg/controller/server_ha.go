@@ -247,16 +247,7 @@ func (s *Server) GetHaStatus(ctx context.Context, req *haifypb.GetHaStatusReques
 
 	var pbPromoters []*haifypb.HaPromoterStatus
 	for _, p := range promoters {
-		pb := &haifypb.HaPromoterStatus{
-			DrbdResource: p.DRBDResource,
-			PrimaryOn:    p.PrimaryOn,
-			Status:       p.Status,
-			Target:       &haifypb.HaServiceStatus{Name: p.Target.Name, Status: p.Target.Status},
-		}
-		for _, d := range p.Deps {
-			pb.Deps = append(pb.Deps, &haifypb.HaServiceStatus{Name: d.Name, Status: d.Status})
-		}
-		pbPromoters = append(pbPromoters, pb)
+		pbPromoters = append(pbPromoters, haPromoterStatusPB(p))
 	}
 
 	return &haifypb.GetHaStatusResponse{
@@ -264,6 +255,47 @@ func (s *Server) GetHaStatus(ctx context.Context, req *haifypb.GetHaStatusReques
 		Message:   "HA status retrieved successfully",
 		Promoters: pbPromoters,
 	}, nil
+}
+
+// haPromoterStatusPB renders a promoter's status for the API.
+func haPromoterStatusPB(p *HaPromoterStatus) *haifypb.HaPromoterStatus {
+	pb := &haifypb.HaPromoterStatus{
+		DrbdResource:            p.DRBDResource,
+		PrimaryOn:               p.PrimaryOn,
+		Status:                  p.Status,
+		Target:                  haServiceStatusPB(p.Target),
+		ActiveNode:              p.ActiveNode,
+		OutsideSessions:         int32(p.OutsideSessions),
+		OutsideSessionProcesses: int32(p.OutsideSessionProcesses),
+	}
+	for _, d := range p.Deps {
+		pb.Deps = append(pb.Deps, haServiceStatusPB(d))
+	}
+	for _, sb := range p.Standbys {
+		pb.Standbys = append(pb.Standbys, &haifypb.HaStandby{
+			Node: sb.Node, Ready: sb.Ready, Reasons: sb.Reasons, DiskState: sb.DiskState,
+		})
+	}
+	for _, o := range p.Outside {
+		pb.Outside = append(pb.Outside, &haifypb.HaOutsideService{
+			Unit: o.Unit, Description: o.Description, Processes: int32(o.Processes), MountPoints: o.MountPoints,
+		})
+	}
+	return pb
+}
+
+func haServiceStatusPB(s HaServiceStatus) *haifypb.HaServiceStatus {
+	return &haifypb.HaServiceStatus{
+		Name:        s.Name,
+		Status:      s.Status,
+		Kind:        s.Kind,
+		Label:       s.Label,
+		Description: s.Description,
+		Since:       s.Since,
+		Restarts:    int32(s.Restarts),
+		SubState:    s.SubState,
+		MainPid:     int32(s.MainPID),
+	}
 }
 
 // haConfigInfo renders a stored HA config for the API, start order included.

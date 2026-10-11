@@ -1429,6 +1429,16 @@ haify ha status db
 haify ha delete db
 ```
 
+`ha status` shows the chain on the node running it, one line per unit with
+what the unit is (promote, mount, service IP, NFS/iSCSI/NVMe-oF/SMB, database,
+VM, service), its state, since when and how often systemd restarted it. It
+then lists every other node holding the promoter and whether that node could
+take over now; when it could not, it gives the reason: a unit or OCF agent not
+installed there, drbd-reactor not running, or a local disk that is not
+UpToDate. Last come the services outside the chain that have processes on the
+chain's mounts, and a count of login sessions doing the same; on a failover
+they hold the unmount up. It works for gateway and app resources too.
+
 `ha create` makes a filesystem of `--fstype` on the device when it finds none,
 and refuses when a `--services` unit is missing on any of the resource's nodes.
 

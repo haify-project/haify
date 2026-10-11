@@ -63,9 +63,54 @@ export interface ResourceAgentMetadata {
 // unit added to the TOML by hand is in `deps` and in no config the controller
 // holds — and a console that shows only the configuration tells an operator
 // that fewer things move on failover than actually do.
+/** What a unit is in the chain. */
+export type HaUnitKind =
+  | 'promote'
+  | 'mount'
+  | 'service_ip'
+  | 'nfs'
+  | 'iscsi'
+  | 'nvmeof'
+  | 'smb'
+  | 'database'
+  | 'vm'
+  | 'haify'
+  | 'service'
+  | 'target';
+
 export interface HaUnit {
   name: string;
   status: string;
+  // The fields below are absent from controllers that predate them, and
+  // proto3 leaves out zero values (an empty since, zero restarts).
+  kind?: HaUnitKind | string;
+  /** The unit's job for a person: mount path, service IP, export, or its description. */
+  label?: string;
+  /** The unit file's own Description=. */
+  description?: string;
+  /** RFC 3339; when the unit last became active. Empty while it is not. */
+  since?: string;
+  /** systemd's NRestarts. */
+  restarts?: number;
+  subState?: string;
+  mainPid?: number;
+}
+
+/** A node holding an enabled copy of the promoter, not running the chain. */
+export interface HaStandby {
+  node: string;
+  ready?: boolean;
+  /** What would stop a takeover there. */
+  reasons?: string[];
+  diskState?: string;
+}
+
+/** A unit outside the chain with processes using the resource's mount. */
+export interface HaOutsideService {
+  unit: string;
+  description?: string;
+  processes?: number;
+  mountPoints?: string[];
 }
 
 export interface HaPromoterStatus {
@@ -76,6 +121,13 @@ export interface HaPromoterStatus {
   // The promoter's units, live. The first is drbd-promote@<res>, which is the
   // promotion itself rather than an entry of start[].
   deps?: HaUnit[];
+  /** The Haify node running the chain; empty when none is. */
+  activeNode?: string;
+  standbys?: HaStandby[];
+  outside?: HaOutsideService[];
+  /** Login sessions using the mount on the active node, and their processes. */
+  outsideSessions?: number;
+  outsideSessionProcesses?: number;
 }
 
 export interface HaStatusResponse extends ApiResponse {

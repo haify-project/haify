@@ -292,6 +292,8 @@ type drbdDevice struct {
 	// device came up: the application's writes on a Primary, the
 	// replicated ones on a Secondary, and resync traffic on either.
 	Written *uint64 `json:"written"`
+	// Read is KiB read from this node's DRBD device since it came up.
+	Read *uint64 `json:"read"`
 }
 
 // drbdConnection is one peer in drbdsetup status --json.
@@ -324,6 +326,10 @@ type drbdPeerDevice struct {
 	OutOfSyncKiB uint64 `json:"out-of-sync"`
 	// PercentResyncDone is a running resync's or verify's progress.
 	PercentResyncDone *float64 `json:"percent-resync-done"`
+	// Sent and Received are KiB exchanged with this peer since the
+	// connection came up: replicated writes and resync data alike.
+	Sent     *uint64 `json:"sent"`
+	Received *uint64 `json:"received"`
 }
 
 // parseNodeStatesFromJSON parses `drbdsetup status <res> --json` into per-node
@@ -355,7 +361,8 @@ func parseNodeStatesFromJSON(output, localNode string) (map[string]*ResourceNode
 		// Quorum is only ever the queried node's own verdict; the peers below
 		// deliberately leave it nil rather than assume they agree.
 		local.Quorum = res.Devices[0].Quorum
-		local.WrittenKiB = sumWritten(res.Devices)
+		local.WrittenKiB = sumCounter(res.Devices, func(d drbdDevice) *uint64 { return d.Written })
+		local.ReadKiB = sumCounter(res.Devices, func(d drbdDevice) *uint64 { return d.Read })
 	}
 	states[localNode] = local
 
@@ -374,6 +381,8 @@ func parseNodeStatesFromJSON(output, localNode string) (map[string]*ResourceNode
 		for _, pd := range conn.PeerDevices {
 			peer.OutOfSyncKiB += pd.OutOfSyncKiB
 		}
+		peer.SentKiB = sumCounter(conn.PeerDevices, func(pd drbdPeerDevice) *uint64 { return pd.Sent })
+		peer.ReceivedKiB = sumCounter(conn.PeerDevices, func(pd drbdPeerDevice) *uint64 { return pd.Received })
 		if len(conn.PeerDevices) > 0 {
 			pd := conn.PeerDevices[0]
 			peer.DiskState = pd.PeerDiskState
@@ -391,15 +400,20 @@ func parseNodeStatesFromJSON(output, localNode string) (map[string]*ResourceNode
 	return states, nil
 }
 
-// sumWritten totals the devices' written counters, or nil when any device did
-// not report one: a partial sum would read as a sudden drop in writes.
-func sumWritten(devices []drbdDevice) *uint64 {
+// sumCounter totals one cumulative counter over volumes, or nil when there are
+// none or any volume did not report it: a partial sum would read as a sudden
+// drop in traffic.
+func sumCounter[T any](items []T, counter func(T) *uint64) *uint64 {
+	if len(items) == 0 {
+		return nil
+	}
 	var total uint64
-	for _, d := range devices {
-		if d.Written == nil {
+	for _, item := range items {
+		v := counter(item)
+		if v == nil {
 			return nil
 		}
-		total += *d.Written
+		total += *v
 	}
 	return &total
 }

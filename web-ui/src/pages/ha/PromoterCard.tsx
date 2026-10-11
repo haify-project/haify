@@ -1,6 +1,5 @@
 import { SelfHaStatus } from '@/services/api';
 import { StatusBadge } from '@/components/StatusBadge';
-import { TONE_BG, toneOf } from '@/components/status';
 import { cn } from '@/lib/utils';
 import { Trash2, Info, LogOut, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -16,45 +15,13 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { type PromoterView, startListFor, unmanagedUnits } from './promoter';
+import { type PromoterView, hiddenFailure, startListFor, unmanagedUnits } from './promoter';
+import { ChainList } from './ChainList';
+import { OutsideServices, Standbys } from './Takeover';
 import { QuorumPill } from './QuorumPill';
 import { Fact } from './Fact';
 import { SelfHaControls } from './SelfHaCard';
 import { TomlEditorSection } from './TomlEditorSection';
-
-/** One ordered entry of the promoter's start[], numbered so the order — which
- * is the whole point of the list — is readable without counting rows. */
-function StartListItem({
-  index,
-  unit,
-  status,
-}: {
-  index: number;
-  unit: string;
-  status?: string;
-}) {
-  return (
-    <li className="flex items-center gap-2.5">
-      <span className="w-4 shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
-        {index}
-      </span>
-      {status ? (
-        <span
-          aria-hidden
-          title={status}
-          className={cn('size-[7px] shrink-0 rounded-full', TONE_BG[toneOf(status)])}
-        />
-      ) : null}
-      {/* These are long unbreakable mono strings —
-          `service-ip@192.168.1.251-24`. On a phone the chip wraps inside the
-          card rather than pushing its width out; the desktop card has the room
-          to truncate instead and keep the list scannable down its left edge. */}
-      <span className="min-w-0 rounded-[5px] border border-border bg-muted px-2 py-1 font-mono text-xs break-all md:truncate">
-        {unit}
-      </span>
-    </li>
-  );
-}
 
 // ==================== Promoter card ====================
 
@@ -84,6 +51,11 @@ export function PromoterCard({
   const isRunning = Boolean(primaryNode);
   const { units: startList, live: startListIsLive } = startListFor(config, promoter);
   const unmanaged = startListIsLive ? unmanagedUnits(config, startList) : [];
+  const failed = hiddenFailure(promoter);
+  const activeNode = promoter?.activeNode || activeMember || primaryNode;
+  const standbys = promoter?.standbys ?? [];
+  const outside = promoter?.outside ?? [];
+  const outsideMount = config.mountPoint || outside[0]?.mountPoints?.[0] || '';
 
   return (
     <Card className="gap-4 py-5">
@@ -104,9 +76,7 @@ export function PromoterCard({
               {isRunning ? (
                 <>
                   active on{' '}
-                  <span className="font-mono text-foreground">
-                    {activeMember ?? primaryNode}
-                  </span>
+                  <span className="font-mono text-foreground">{activeNode}</span>
                 </>
               ) : (
                 'not currently promoted'
@@ -118,7 +88,9 @@ export function PromoterCard({
               row of height on every card. */}
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
             <QuorumPill quorum={status?.quorum} />
-            <StatusBadge status={isRunning ? 'running' : 'stopped'} />
+            <span title={failed?.name}>
+              <StatusBadge status={failed ? 'failed' : isRunning ? 'running' : 'stopped'} />
+            </span>
           </div>
         </div>
       </CardHeader>
@@ -195,16 +167,7 @@ export function PromoterCard({
                 {startListIsLive ? 'as the promoter runs it' : 'from the configuration'}
               </span>
             </div>
-            <ol className="mt-2 space-y-1.5">
-              {startList.map((unit, i) => (
-                <StartListItem
-                  key={unit.name}
-                  index={i + 1}
-                  unit={unit.name}
-                  status={unit.status}
-                />
-              ))}
-            </ol>
+            <ChainList units={startList} />
             {unmanaged.length > 0 ? (
               // Not a warning: a hand-added unit is a legitimate thing to have
               // done. What is not legitimate is a console that hides it, so the
@@ -221,6 +184,14 @@ export function PromoterCard({
             ) : null}
           </div>
         ) : null}
+
+        {standbys.length > 0 ? <Standbys standbys={standbys} /> : null}
+        <OutsideServices
+          mountPoint={outsideMount}
+          outside={outside}
+          sessions={promoter?.outsideSessions}
+          sessionProcesses={promoter?.outsideSessionProcesses}
+        />
 
         <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
           <Button
