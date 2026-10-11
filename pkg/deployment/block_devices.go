@@ -11,7 +11,7 @@ import (
 // whether it can be given to a pool: one line per fact, tagged by its first
 // field, so the controller can classify the disks without a second round trip.
 //
-//	D|name|parent|size|type|ro|rota|tran|mountpoint|model|serial  (lsblk -r)
+//	D|name|parent|size|type|ro|rota|tran|mountpoint|model|serial|parttype  (lsblk -r)
 //	B|device|fstype|pttype     low-level signature probe (blkid -p)
 //	P|pv|vg                    LVM physical volumes
 //	Z|device|pool              devices of imported ZFS pools
@@ -25,7 +25,9 @@ import (
 // loop devices, LVs and other mapper devices are never probed: reading a
 // Secondary DRBD device can go over the network, and none of them is a disk.
 const blockDeviceScript = `export LC_ALL=C
-lsblk -nrbp -o NAME,PKNAME,SIZE,TYPE,RO,ROTA,TRAN,MOUNTPOINT,MODEL,SERIAL 2>/dev/null | while IFS= read -r line; do
+cols=NAME,PKNAME,SIZE,TYPE,RO,ROTA,TRAN,MOUNTPOINT,MODEL,SERIAL,PARTTYPE
+lsblk -o "$cols" >/dev/null 2>&1 || cols=${cols%,PARTTYPE}
+lsblk -nrbp -o "$cols" 2>/dev/null | while IFS= read -r line; do
   echo "D|$(echo "$line" | tr ' ' '|')"
   dev=${line%% *}
   t=$(echo "$line" | cut -d' ' -f4)

@@ -157,3 +157,25 @@ func TestCheckPoolDiskZFSPartition(t *testing.T) {
 	_, err := inv.checkPoolDisk("n1", "/dev/sdl", true)
 	assert.ErrorContains(t, err, "in use: in ZFS pool tank")
 }
+
+// A Proxmox host's system disk: BIOS boot, the EFI system partition (vfat,
+// not mounted — proxmox-boot-tool mounts it only to update it) and the root
+// VG. The ESP looked like a 1 GiB partition holding only an old filesystem.
+func TestFirmwarePartitionsAreNeverOffered(t *testing.T) {
+	listing := `D|/dev/sda||256060514304|disk|0|0|sata||SPCC\x20Solid\x20State\x20Disk|AA1|
+B|/dev/sda||gpt
+D|/dev/sda1|/dev/sda|1031168|part|0|0|sata||||21686148-6449-6e6f-744e-656564454649
+B|/dev/sda1||
+D|/dev/sda2|/dev/sda|1073741824|part|0|0|sata||||c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+B|/dev/sda2|vfat|
+D|/dev/sda3|/dev/sda|254985813504|part|0|0|sata||||e6d6d379-f507-44c2-a23c-238f2a3df928
+B|/dev/sda3|LVM2_member|
+P|/dev/sda3|pve
+`
+	inv := parseBlockInventory(listing)
+	disks := inv.disks("hp")
+	assert.Nil(t, diskByDevice(disks, "/dev/sda2"))
+	assert.Equal(t, "sda1 holds a BIOS boot partition", diskByDevice(disks, "/dev/sda").Detail)
+	_, err := inv.checkPoolDisk("hp", "/dev/sda2", true)
+	assert.ErrorContains(t, err, "in use: the EFI system partition")
+}

@@ -45,6 +45,7 @@ type NodeDisk struct {
 
 type blockRow struct {
 	name, typ, tran, mount, model, serial string
+	parttype                              string
 	size                                  uint64
 	ro, rota                              bool
 	fstype, pttype                        string
@@ -110,6 +111,9 @@ func parseBlockInventory(out string) *blockInventory {
 			r.size, _ = strconv.ParseUint(f[3], 10, 64)
 			r.typ, r.ro, r.rota, r.tran = f[4], f[5] == "1", f[6] == "1", f[7]
 			r.mount, r.model, r.serial = unescapeLsblk(f[8]), unescapeLsblk(f[9]), unescapeLsblk(f[10])
+			if len(f) >= 12 {
+				r.parttype = strings.ToLower(strings.TrimSpace(f[11]))
+			}
 		case f[0] == "B" && len(f) >= 4:
 			r := row(f[1])
 			r.fstype, r.pttype = strings.TrimSpace(f[2]), strings.TrimSpace(f[3])
@@ -191,6 +195,20 @@ func (inv *blockInventory) subtree(name string) []*blockRow {
 
 func short(dev string) string { return strings.TrimPrefix(dev, "/dev/") }
 
+// firmwarePartitions are partition types a machine needs to boot (or that
+// another operating system relies on). They are never mounted on a running
+// Linux system as a rule, so nothing else marks them as in use. GPT type
+// GUIDs, and MBR type codes as lsblk prints them.
+var firmwarePartitions = map[string]string{
+	"c12a7328-f81f-11d2-ba4b-00a0c93ec93b": "the EFI system partition",
+	"0xef":                                 "the EFI system partition",
+	"21686148-6449-6e6f-744e-656564454649": "a BIOS boot partition",
+	"e3c9e316-0b5c-4db8-817d-f92df00215ae": "a Microsoft reserved partition",
+	"de94bba4-06d1-4d40-a16a-bfd50179d6ac": "a Windows recovery partition",
+	"9e1a2d38-c612-4316-aa26-8b49521e5a8b": "a PReP boot partition",
+	"0x41":                                 "a PReP boot partition",
+}
+
 // signatureName says what a blkid TYPE is in words.
 func signatureName(fstype string) string {
 	switch fstype {
@@ -222,6 +240,12 @@ func (inv *blockInventory) classify(node string, r *blockRow) NodeDisk {
 	for _, t := range tree {
 		if inv.drbd[t.name] {
 			return busy("backing disk of a DRBD resource")
+		}
+		if what, ok := firmwarePartitions[t.parttype]; ok {
+			if t.name == r.name {
+				return busy("%s", what)
+			}
+			return busy("%s holds %s", short(t.name), what)
 		}
 	}
 	for _, t := range tree {
