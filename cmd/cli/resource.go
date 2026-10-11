@@ -35,6 +35,7 @@ func resourceCommand() *cobra.Command {
 	cmd.AddCommand(resourceGet())
 	cmd.AddCommand(resourceDelete())
 	cmd.AddCommand(resourceRenameCommand())
+	cmd.AddCommand(resourceShip())
 	cmd.AddCommand(resourceMoveReplicaCommand())
 	cmd.AddCommand(resourceMoveVolumeCommand())
 	cmd.AddCommand(resourceList())

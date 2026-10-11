@@ -21,6 +21,7 @@ const (
 	JobRemoveDisk  = "remove-disk"
 	JobReplaceDisk = "replace-disk"
 	JobMoveVolume  = "move-volume"
+	JobShip        = "ship"
 )
 
 // Storage job states.
@@ -50,6 +51,10 @@ type StorageJob struct {
 	// Nodes is the order the volume moves in; Done the ones already moved.
 	Nodes []string `json:"nodes,omitempty"`
 	Done  []string `json:"done,omitempty"`
+
+	// Ships: the receiving controller and the resource's name there.
+	Target     string `json:"target,omitempty"`
+	TargetName string `json:"target_name,omitempty"`
 
 	Progress  string    `json:"progress,omitempty"`
 	Message   string    `json:"message,omitempty"`

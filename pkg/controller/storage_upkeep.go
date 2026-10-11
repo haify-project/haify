@@ -32,6 +32,7 @@ func (c *Controller) startStorageUpkeep(ctx context.Context) {
 	_ = c.db.PruneStorageJobs(ctx, storageJobKeep)
 	c.storage.resumeDiskJobs(ctx)
 	c.resources.resumeVolumeMoves(ctx)
+	c.backups.failInterruptedShips(ctx)
 }
 
 // backfillThinResyncDefaults gives every resource on thin storage the

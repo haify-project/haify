@@ -4737,6 +4737,45 @@
         ]
       }
     },
+    "/v1/resources/{resource}/ship": {
+      "post": {
+        "summary": "ShipResource copies a resource to another Haify cluster: a snapshot of\nevery volume streams straight into a new resource there. It runs as a\nstorage job.",
+        "operationId": "HaifyController_ShipResource",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1StorageJobResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "resource",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/HaifyControllerShipResourceBody"
+            }
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
     "/v1/resources/{resource}/snapshots": {
       "get": {
         "operationId": "HaifyController_ListResourceSnapshots",
@@ -5254,6 +5293,71 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/v1EnableSelfHaRequest"
+            }
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
+    "/v1/ship/finish": {
+      "post": {
+        "operationId": "HaifyController_FinishShipReceive",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1FinishShipReceiveResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1FinishShipReceiveRequest"
+            }
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
+    "/v1/ship/prepare": {
+      "post": {
+        "summary": "PrepareShipReceive and FinishShipReceive are the receiving cluster's half\nof a ship, called by the sending controller.",
+        "operationId": "HaifyController_PrepareShipReceive",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1PrepareShipReceiveResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1PrepareShipReceiveRequest"
             }
           }
         ],
@@ -7297,6 +7401,31 @@
       },
       "description": "SetWanEndpointRequest changes where a WAN resource's primary site reaches its\nDR site, and rebuilds the tunnels on it. An empty field keeps its value."
     },
+    "HaifyControllerShipResourceBody": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "target is the receiving controller's gRPC address (host:port)."
+        },
+        "targetToken": {
+          "type": "string",
+          "description": "target_token is an API token of the receiving controller, when it\nrequires one."
+        },
+        "name": {
+          "type": "string",
+          "description": "name is the resource's name there; empty keeps the same name."
+        },
+        "pool": {
+          "type": "string",
+          "description": "pool and replicas place it there; replicas 0 keeps the source's count."
+        },
+        "replicas": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
     "HaifyControllerSnapshotAppBody": {
       "type": "object",
       "properties": {
@@ -9275,6 +9404,40 @@
           "type": "string"
         },
         "toNode": {
+          "type": "string"
+        }
+      }
+    },
+    "v1FinishShipReceiveRequest": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "volumeId": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "last": {
+          "type": "boolean",
+          "description": "last releases the resource (demotes it) once this volume is in."
+        }
+      }
+    },
+    "v1FinishShipReceiveResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "sha256": {
           "type": "string"
         }
       }
@@ -11332,6 +11495,47 @@
           "type": "string",
           "format": "uint64",
           "description": "bytes_copied is what dd reported, for logging and progress reporting."
+        }
+      }
+    },
+    "v1PrepareShipReceiveRequest": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "volumeId": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "token": {
+          "type": "string",
+          "description": "token is the one-time token the sender will present."
+        }
+      }
+    },
+    "v1PrepareShipReceiveResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "address": {
+          "type": "string",
+          "description": "address:port the sender connects to, and the certificate fingerprint it\nmust see there."
+        },
+        "port": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
         }
       }
     },

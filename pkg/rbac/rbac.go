@@ -501,7 +501,9 @@ func classifyObject(method string) string {
 	// operator who may ship data off-site can be distinguished from one who may
 	// only snapshot in place. Unclassified would land it in "system", where an
 	// operator has read only — a working feature nobody but admin could use.
-	case strings.Contains(method, "Backup"):
+	// Shipping a resource to another cluster sends its data off-site just as
+	// a backup does, on both the sending and the receiving controller.
+	case strings.Contains(method, "Backup"), strings.Contains(method, "Ship"):
 		return "backup"
 	case strings.Contains(method, "Snapshot"):
 		return "snapshot"

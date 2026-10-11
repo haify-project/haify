@@ -106,6 +106,8 @@ func jobSubject(j *database.StorageJob) string {
 		return fmt.Sprintf("%s on %s: %s → %s", j.Pool, j.Node, j.Disk, j.NewDisk)
 	case database.JobMoveVolume:
 		return fmt.Sprintf("%s volume %d: %s → %s", j.Resource, j.VolumeID, j.FromPool, j.TargetPool)
+	case database.JobShip:
+		return fmt.Sprintf("%s → %s on %s", j.Resource, j.TargetName, j.Target)
 	}
 	return j.Kind
 }

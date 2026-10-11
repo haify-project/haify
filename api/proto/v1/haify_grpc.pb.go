@@ -26,6 +26,9 @@ const (
 	HaifyController_TrimPools_FullMethodName                 = "/v1.HaifyController/TrimPools"
 	HaifyController_ListPoolDisks_FullMethodName             = "/v1.HaifyController/ListPoolDisks"
 	HaifyController_ListNodeDisks_FullMethodName             = "/v1.HaifyController/ListNodeDisks"
+	HaifyController_ShipResource_FullMethodName              = "/v1.HaifyController/ShipResource"
+	HaifyController_PrepareShipReceive_FullMethodName        = "/v1.HaifyController/PrepareShipReceive"
+	HaifyController_FinishShipReceive_FullMethodName         = "/v1.HaifyController/FinishShipReceive"
 	HaifyController_RemovePoolDisk_FullMethodName            = "/v1.HaifyController/RemovePoolDisk"
 	HaifyController_ReplacePoolDisk_FullMethodName           = "/v1.HaifyController/ReplacePoolDisk"
 	HaifyController_MoveVolume_FullMethodName                = "/v1.HaifyController/MoveVolume"
@@ -222,6 +225,14 @@ type HaifyControllerClient interface {
 	// ListNodeDisks lists the disks on the nodes and whether a pool can use
 	// each one: empty, holding only old data, in a pool, or in use.
 	ListNodeDisks(ctx context.Context, in *ListNodeDisksRequest, opts ...grpc.CallOption) (*ListNodeDisksResponse, error)
+	// ShipResource copies a resource to another Haify cluster: a snapshot of
+	// every volume streams straight into a new resource there. It runs as a
+	// storage job.
+	ShipResource(ctx context.Context, in *ShipResourceRequest, opts ...grpc.CallOption) (*StorageJobResponse, error)
+	// PrepareShipReceive and FinishShipReceive are the receiving cluster's half
+	// of a ship, called by the sending controller.
+	PrepareShipReceive(ctx context.Context, in *PrepareShipReceiveRequest, opts ...grpc.CallOption) (*PrepareShipReceiveResponse, error)
+	FinishShipReceive(ctx context.Context, in *FinishShipReceiveRequest, opts ...grpc.CallOption) (*FinishShipReceiveResponse, error)
 	RemovePoolDisk(ctx context.Context, in *RemovePoolDiskRequest, opts ...grpc.CallOption) (*StorageJobResponse, error)
 	ReplacePoolDisk(ctx context.Context, in *ReplacePoolDiskRequest, opts ...grpc.CallOption) (*StorageJobResponse, error)
 	MoveVolume(ctx context.Context, in *MoveVolumeRequest, opts ...grpc.CallOption) (*StorageJobResponse, error)
@@ -625,6 +636,36 @@ func (c *haifyControllerClient) ListNodeDisks(ctx context.Context, in *ListNodeD
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListNodeDisksResponse)
 	err := c.cc.Invoke(ctx, HaifyController_ListNodeDisks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) ShipResource(ctx context.Context, in *ShipResourceRequest, opts ...grpc.CallOption) (*StorageJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StorageJobResponse)
+	err := c.cc.Invoke(ctx, HaifyController_ShipResource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) PrepareShipReceive(ctx context.Context, in *PrepareShipReceiveRequest, opts ...grpc.CallOption) (*PrepareShipReceiveResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareShipReceiveResponse)
+	err := c.cc.Invoke(ctx, HaifyController_PrepareShipReceive_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) FinishShipReceive(ctx context.Context, in *FinishShipReceiveRequest, opts ...grpc.CallOption) (*FinishShipReceiveResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FinishShipReceiveResponse)
+	err := c.cc.Invoke(ctx, HaifyController_FinishShipReceive_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2427,6 +2468,14 @@ type HaifyControllerServer interface {
 	// ListNodeDisks lists the disks on the nodes and whether a pool can use
 	// each one: empty, holding only old data, in a pool, or in use.
 	ListNodeDisks(context.Context, *ListNodeDisksRequest) (*ListNodeDisksResponse, error)
+	// ShipResource copies a resource to another Haify cluster: a snapshot of
+	// every volume streams straight into a new resource there. It runs as a
+	// storage job.
+	ShipResource(context.Context, *ShipResourceRequest) (*StorageJobResponse, error)
+	// PrepareShipReceive and FinishShipReceive are the receiving cluster's half
+	// of a ship, called by the sending controller.
+	PrepareShipReceive(context.Context, *PrepareShipReceiveRequest) (*PrepareShipReceiveResponse, error)
+	FinishShipReceive(context.Context, *FinishShipReceiveRequest) (*FinishShipReceiveResponse, error)
 	RemovePoolDisk(context.Context, *RemovePoolDiskRequest) (*StorageJobResponse, error)
 	ReplacePoolDisk(context.Context, *ReplacePoolDiskRequest) (*StorageJobResponse, error)
 	MoveVolume(context.Context, *MoveVolumeRequest) (*StorageJobResponse, error)
@@ -2786,6 +2835,15 @@ func (UnimplementedHaifyControllerServer) ListPoolDisks(context.Context, *ListPo
 }
 func (UnimplementedHaifyControllerServer) ListNodeDisks(context.Context, *ListNodeDisksRequest) (*ListNodeDisksResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListNodeDisks not implemented")
+}
+func (UnimplementedHaifyControllerServer) ShipResource(context.Context, *ShipResourceRequest) (*StorageJobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ShipResource not implemented")
+}
+func (UnimplementedHaifyControllerServer) PrepareShipReceive(context.Context, *PrepareShipReceiveRequest) (*PrepareShipReceiveResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PrepareShipReceive not implemented")
+}
+func (UnimplementedHaifyControllerServer) FinishShipReceive(context.Context, *FinishShipReceiveRequest) (*FinishShipReceiveResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FinishShipReceive not implemented")
 }
 func (UnimplementedHaifyControllerServer) RemovePoolDisk(context.Context, *RemovePoolDiskRequest) (*StorageJobResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RemovePoolDisk not implemented")
@@ -3461,6 +3519,60 @@ func _HaifyController_ListNodeDisks_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HaifyControllerServer).ListNodeDisks(ctx, req.(*ListNodeDisksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_ShipResource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ShipResourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).ShipResource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_ShipResource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).ShipResource(ctx, req.(*ShipResourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_PrepareShipReceive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareShipReceiveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).PrepareShipReceive(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_PrepareShipReceive_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).PrepareShipReceive(ctx, req.(*PrepareShipReceiveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_FinishShipReceive_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FinishShipReceiveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).FinishShipReceive(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_FinishShipReceive_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).FinishShipReceive(ctx, req.(*FinishShipReceiveRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6678,6 +6790,18 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListNodeDisks",
 			Handler:    _HaifyController_ListNodeDisks_Handler,
+		},
+		{
+			MethodName: "ShipResource",
+			Handler:    _HaifyController_ShipResource_Handler,
+		},
+		{
+			MethodName: "PrepareShipReceive",
+			Handler:    _HaifyController_PrepareShipReceive_Handler,
+		},
+		{
+			MethodName: "FinishShipReceive",
+			Handler:    _HaifyController_FinishShipReceive_Handler,
 		},
 		{
 			MethodName: "RemovePoolDisk",

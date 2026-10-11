@@ -34,6 +34,8 @@ func TestClassify(t *testing.T) {
 		{"/v1.HaifyController/CreateBackup", "backup", ActWrite},
 		{"/v1.HaifyController/RestoreBackup", "backup", ActWrite},
 		{"/v1.HaifyController/AddBackupTarget", "backup", ActWrite},
+		{"/v1.HaifyController/ShipResource", "backup", ActWrite},
+		{"/v1.HaifyController/PrepareShipReceive", "backup", ActWrite},
 		{"/v1.HaifyController/ListBackups", "backup", ActRead},
 		{"/v1.HaifyController/ListBackupTargets", "backup", ActRead},
 		// Database applications are their own object; SnapshotApp is not a

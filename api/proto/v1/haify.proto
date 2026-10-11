@@ -33,6 +33,20 @@ service HaifyController {
   rpc ListNodeDisks(ListNodeDisksRequest) returns (ListNodeDisksResponse) {
     option (google.api.http) = { get: "/v1/storage/node-disks"; };
   }
+  // ShipResource copies a resource to another Haify cluster: a snapshot of
+  // every volume streams straight into a new resource there. It runs as a
+  // storage job.
+  rpc ShipResource(ShipResourceRequest) returns (StorageJobResponse) {
+    option (google.api.http) = { post: "/v1/resources/{resource}/ship"; body: "*"; };
+  }
+  // PrepareShipReceive and FinishShipReceive are the receiving cluster's half
+  // of a ship, called by the sending controller.
+  rpc PrepareShipReceive(PrepareShipReceiveRequest) returns (PrepareShipReceiveResponse) {
+    option (google.api.http) = { post: "/v1/ship/prepare"; body: "*"; };
+  }
+  rpc FinishShipReceive(FinishShipReceiveRequest) returns (FinishShipReceiveResponse) {
+    option (google.api.http) = { post: "/v1/ship/finish"; body: "*"; };
+  }
   rpc RemovePoolDisk(RemovePoolDiskRequest) returns (StorageJobResponse) {
     option (google.api.http) = { post: "/v1/storage/disks/remove"; body: "*"; };
   }
@@ -3888,6 +3902,52 @@ message ListNodeDisksResponse {
   bool success = 1;
   string message = 2;
   repeated NodeDiskInfo disks = 3;
+}
+
+message ShipResourceRequest {
+  string resource = 1;
+  // target is the receiving controller's gRPC address (host:port).
+  string target = 2;
+  // target_token is an API token of the receiving controller, when it
+  // requires one.
+  string target_token = 3;
+  // name is the resource's name there; empty keeps the same name.
+  string name = 4;
+  // pool and replicas place it there; replicas 0 keeps the source's count.
+  string pool = 5;
+  uint32 replicas = 6;
+}
+
+message PrepareShipReceiveRequest {
+  string resource = 1;
+  uint32 volume_id = 2;
+  // token is the one-time token the sender will present.
+  string token = 3;
+}
+
+message PrepareShipReceiveResponse {
+  bool success = 1;
+  string message = 2;
+  // address:port the sender connects to, and the certificate fingerprint it
+  // must see there.
+  string address = 3;
+  uint32 port = 4;
+  string fingerprint = 5;
+  string node = 6;
+}
+
+message FinishShipReceiveRequest {
+  string resource = 1;
+  uint32 volume_id = 2;
+  // last releases the resource (demotes it) once this volume is in.
+  bool last = 3;
+}
+
+message FinishShipReceiveResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 bytes = 3;
+  string sha256 = 4;
 }
 
 message RemovePoolDiskRequest {

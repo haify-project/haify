@@ -136,6 +136,7 @@ func (s *Server) MCPServer() *mcp.Server {
 	s.registerStorageTools(srv)
 	s.registerNodeDiskTools(srv)
 	s.registerNodePathTools(srv)
+	s.registerShipTools(srv)
 	s.registerResourceTools(srv)
 	s.registerSnapshotTools(srv)
 	s.registerGatewayTools(srv)

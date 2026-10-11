@@ -1245,6 +1245,35 @@ Know the limits before you build a policy on this:
   `backup delete --force` drops a record whose objects can no longer be
   removed.
 
+### Copying a resource to another cluster
+
+`resource ship` copies a resource straight into another Haify cluster, with no
+backup target in between: to seed a second site, move a workload, or keep a
+copy somewhere the first cluster's failure cannot reach.
+
+```bash
+haify resource ship db --to 10.1.0.10:3374 --token-file ~/.haify/dr-token
+haify resource ship db --to 10.1.0.10:3374 --as db-copy --pool vg0 --replicas 2
+haify pool jobs                     # progress, then done or failed
+```
+
+Every volume is snapshotted at the same moment on one replica, so the copy is
+crash-consistent. The other cluster creates the resource, and each volume
+streams from a node here to a node there over TLS, keyed for that one transfer.
+Both ends checksum the bytes; if they differ, or anything fails, the copy there
+is deleted. The resource here keeps serving throughout.
+
+- The other cluster's nodes must accept connections from this cluster's nodes,
+  on a port chosen for each transfer.
+- The nodes on both sides need a current `haify` (`/usr/local/bin/haify`);
+  `scripts/deploy-all.sh` installs it.
+- LVM-backed, unencrypted resources only. Encrypted resources hold ciphertext
+  that the other cluster's keys cannot read; back them up and restore them
+  there instead.
+- The name must be free on the other cluster. A job interrupted by a
+  controller restart is marked failed; delete the partial copy there and ship
+  again.
+
 ---
 
 ## 10. Gateways — exporting to clients
