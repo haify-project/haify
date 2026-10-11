@@ -1,0 +1,18 @@
+[Unit]
+Description=Haify Docker volume plugin
+Documentation=https://haify-project.github.io/haify/
+# Up before Docker, which mounts the volumes of containers it restarts at boot.
+Before=docker.service
+After=network-online.target drbd.service
+Wants=network-online.target
+
+[Service]
+# Set the controller and the default pool in /etc/default/haify-docker:
+#   HAIFY_DOCKER_ARGS="--controller 192.168.1.10:3374 --pool vg0"
+EnvironmentFile=-/etc/default/haify-docker
+ExecStart=/usr/local/bin/haify-docker $HAIFY_DOCKER_ARGS
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

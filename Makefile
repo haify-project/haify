@@ -40,6 +40,7 @@ build: ui-sync
 	GOOS=linux go build -o bin/service-ip ./cmd/service-ip
 	go build -o bin/csi-controller ./cmd/csi-controller
 	go build -o bin/csi-node ./cmd/csi-node
+	go build -o bin/haify-docker ./cmd/haify-docker
 
 # Run tests
 test: ui-ensure
