@@ -41,8 +41,15 @@ restart_libvirt() {
 	echo "no running virtqemud or libvirtd; the hook loads when it starts"
 }
 
+# drbd-utils' drbd-graceful-disconnect.service disconnects every resource when
+# the network goes down, which on shutdown can come before libvirt-guests has
+# stopped the guests: a guest still writing then splits from the copy it
+# restarts on elsewhere. Order the disconnect after the guests.
+DRBD_ORDER=/etc/systemd/system/drbd-graceful-disconnect.service.d/haify-libvirt.conf
+
 if [ -n "$uninstall" ]; then
-	rm -f "$HOOK"
+	rm -f "$HOOK" "$DRBD_ORDER"
+	systemctl daemon-reload
 	restart_libvirt
 	echo "removed $HOOK ($CONF kept)"
 	exit 0
@@ -71,4 +78,9 @@ fi
 install -d -m 0755 "$HOOK_DIR"
 install -m 0755 "$HERE/haify-hook.py" "$HOOK"
 echo "installed $HOOK"
+install -d -m 0755 "$(dirname "$DRBD_ORDER")"
+printf '%s\n' '# Installed by the Haify libvirt hook: disconnect DRBD only after the guests stop.' \
+	'[Unit]' 'Before=libvirt-guests.service' >"$DRBD_ORDER"
+systemctl daemon-reload
+echo "DRBD disconnects only after the guests have stopped on shutdown"
 restart_libvirt

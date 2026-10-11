@@ -381,6 +381,16 @@ new node, and the promotion there is quorum-guarded: Haify force-promotes only
 if that node holds DRBD quorum and refuses otherwise. A partitioned node
 therefore cannot take over, so HA failover cannot split-brain. The trade-off is
 deliberate: a resource that has lost quorum will not fail over automatically.
+Nor does a node take over with an Outdated copy, one a peer marked as missing
+writes, while the node holding those writes is away: the guest waits for that
+node to come back rather than start on old data.
+
+Rebooting a node with guests running is safe: the installer orders drbd-utils'
+`drbd-graceful-disconnect.service` after `pve-guests` and `pve-ha-lrm`, so the
+guests are stopped and their disks demoted before DRBD disconnects. Without
+that order the disconnect came first, a guest kept writing to a copy its peers
+had just been told was the only current one, and HA started it on another node
+with the older data.
 
 PVE decides where a guest runs, and with it where its disks are Primary.
 `haify ha create` and the Haify gateways would put a drbd-reactor promoter on

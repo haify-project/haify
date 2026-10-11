@@ -41,6 +41,23 @@ fi
 # PVE's own upgrades restart the same set.
 PVE_DAEMONS="pvedaemon pveproxy pvestatd pvescheduler pve-ha-crm pve-ha-lrm"
 
+# drbd-utils' drbd-graceful-disconnect.service disconnects every resource when
+# the network goes down, which on shutdown is before PVE has stopped its guests.
+# A VM still running on the node then keeps writing to a resource whose peers
+# were just told they are Outdated, and when HA starts it elsewhere the two
+# copies split. Ordering the disconnect after the guests stop closes that.
+DRBD_ORDER=/etc/systemd/system/drbd-graceful-disconnect.service.d/haify-pve.conf
+
+order_drbd_shutdown() {
+    mkdir -p "$(dirname "$DRBD_ORDER")"
+    cat >"$DRBD_ORDER" <<'UNIT'
+# Installed by the Haify PVE plugin: disconnect DRBD only after the guests stop.
+[Unit]
+Before=pve-guests.service pve-ha-lrm.service
+UNIT
+    systemctl daemon-reload
+}
+
 reload_pve() {
     # try-restart: a daemon that is not running (HA on a node outside any HA
     # group never starts its LRM) is left alone.
@@ -57,7 +74,8 @@ if [ "${1:-}" = "--uninstall" ]; then
     done
     rmdir "$HELPER_DIR" 2>/dev/null || true
     [ -x "$GUI_PATCH" ] && "$GUI_PATCH" --remove
-    rm -f "$GUI_JS" "$GUI_PATCH" "$APT_HOOK"
+    rm -f "$GUI_JS" "$GUI_PATCH" "$APT_HOOK" "$DRBD_ORDER"
+    systemctl daemon-reload
     echo "Removed the Haify storage dialog from the web interface"
     echo "Remove any 'haify:' entries from /etc/pve/storage.cfg before reloading."
     reload_pve
@@ -105,6 +123,9 @@ if [ "${HAIFY_SKIP_LVM_FILTER:-0}" != "1" ]; then
         echo "WARNING: the LVM filter was not added; a guest's LVM inside its disk can be activated on this host" >&2
     fi
 fi
+
+order_drbd_shutdown
+echo "DRBD disconnects only after the guests have stopped on shutdown"
 
 reload_pve
 echo "Restarted $PVE_DAEMONS"
