@@ -29,9 +29,9 @@ const LABEL_HALF = 40;
 const LEG_GUTTER = 56;
 const STACK_GAP = 64;
 
-// SVG text scales with the viewBox; 1.6× of the natural geometry is as far as
-// it may grow before the labels stop reading as labels.
-const MAX_UPSCALE = 1.6;
+// SVG text scales with the viewBox, so the diagram is never drawn larger than
+// its natural size: scaled up, its labels outgrow the page's own text.
+const MAX_UPSCALE = 1;
 
 /** Dot paths for an edge, each drawn in the direction its data travels. */
 function runsOf(edge: FlowEdge | undefined, fwd: string, back: string, a: string): FlowRun[] {
