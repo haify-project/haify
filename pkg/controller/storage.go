@@ -194,10 +194,28 @@ func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node s
 		}
 	}
 
-	disks, err = sm.prepareDisks(ctx, address, node, disks, wipe)
+	// Disks are checked before anything is touched; file: devices become
+	// loop devices (pool_file.go), and are recorded as given so delete can
+	// remove them.
+	var real, files []string
+	for _, d := range disks {
+		if isFileDevice(d) {
+			files = append(files, d)
+		} else {
+			real = append(real, d)
+		}
+	}
+	if len(real) > 0 {
+		if real, err = sm.prepareDisks(ctx, address, node, real, wipe); err != nil {
+			return err
+		}
+	}
+	loops, err := sm.attachFileDevices(ctx, address, node, name, files, isThinPoolType(normalizedType))
 	if err != nil {
 		return err
 	}
+	recorded := append(append([]string(nil), real...), files...)
+	disks = append(real, loops...)
 
 	// Create PVs first
 	for _, disk := range disks {
@@ -252,7 +270,7 @@ func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node s
 			Name:    name,
 			Type:    normalizedType,
 			Node:    node,
-			Devices: strings.Join(disks, ","),
+			Devices: strings.Join(recorded, ","),
 		}
 		if err := sm.controller.db.SavePool(ctx, dbPool); err != nil {
 			sm.controller.logger.Warn("Failed to save pool to database",
@@ -477,9 +495,10 @@ if vgs "$vg" >/dev/null 2>&1; then
   pvs=$(pvs --noheadings -o pv_name -S vg_name="$vg")
   vgremove -f "$vg"
   for pv in $pvs; do pvremove -y "$pv" >/dev/null; done
+  %[2]s
 else
   exit 4
-fi`, name)) + " | base64 -d | sudo /bin/bash"
+fi`, name, fileTeardownScript(name))) + " | base64 -d | sudo /bin/bash"
 	result, err := sm.controller.deployment.Exec(ctx, []string{address}, cmd)
 	if err == nil && !result.AllSuccess() && strings.Contains(result.FailureDetails(), "still holds volumes") {
 		return errors.New(result.FailureDetails())

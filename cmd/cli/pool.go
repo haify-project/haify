@@ -154,7 +154,7 @@ func poolCreate() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Pool name")
 	cmd.Flags().StringVar(&poolType, "type", "", "Pool type: lvm-thin (snapshot-capable), lvm-thin-vdo (thin on VDO: dedup+compression), lvm, zfs (default: the controller's storage.default_pool_type)")
 	cmd.Flags().StringVar(&nodes, "nodes", "", "Comma-separated nodes where to create the pool")
-	cmd.Flags().StringVar(&devices, "devices", "", "Comma-separated list of devices")
+	cmd.Flags().StringVar(&devices, "devices", "", "Comma-separated list of devices (haify node disks); file:PATH:SIZE builds the pool on an image file instead, e.g. file:/var/lib/haify-pools/data.img:50G")
 	cmd.Flags().StringVar(&size, "size", "", "Pool size (e.g., 10G, 10GB, 10GiB, 1T, 1TB)")
 	cmd.Flags().StringVar(&compression, "compression", "", "ZFS only: compression algorithm (lz4, zstd, zstd-N, gzip-N, off, ...); default: OpenZFS's (lz4 from 2.2)")
 	cmd.Flags().BoolVar(&dedup, "dedup", false, "ZFS only: deduplicate (costs RAM on every write; for data known to repeat)")
