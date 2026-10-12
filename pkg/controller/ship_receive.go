@@ -31,22 +31,22 @@ func shipStateDir(kind, resource string, vol uint32) string {
 }
 
 // shipStartScript starts `haify ship <kind>` as a transient unit with its
-// token in a root-only file, and waits for it to say it is ready.
-func shipStartScript(kind, resource string, vol uint32, token string, args []string, ready string) string {
+// token in a root-only file, and waits for it to say it is ready. haify is
+// the node's CLI as ensureHaifyCLI found or installed it.
+func shipStartScript(haify, kind, resource string, vol uint32, token string, args []string, ready string) string {
 	d, unit := shipStateDir(kind, resource, vol), shipUnitName(kind, resource, vol)
 	return fmt.Sprintf(`set -e
-test -x /usr/local/bin/haify || { echo "haify is not installed in /usr/local/bin on this node" >&2; exit 1; }
-/usr/local/bin/haify ship --help >/dev/null 2>&1 || { echo "the haify on this node is too old to ship; update it" >&2; exit 1; }
+%[7]s ship --help >/dev/null 2>&1 || { echo "%[7]s on this node cannot ship; update it" >&2; exit 1; }
 systemctl stop %[2]s >/dev/null 2>&1 || true
 systemctl reset-failed %[2]s >/dev/null 2>&1 || true
 rm -rf %[1]s
 mkdir -p -m 0700 %[1]s
 umask 077
 printf %%s %[3]s > %[1]s/token
-systemd-run --quiet `+collectFlag+` --unit=%[2]s /usr/local/bin/haify ship %[4]s --token-file %[1]s/token --state-dir %[1]s %[5]s
+systemd-run --quiet `+collectFlag+` --unit=%[2]s %[7]s ship %[4]s --token-file %[1]s/token --state-dir %[1]s %[5]s
 for i in $(seq 1 120); do [ -s %[1]s/%[6]s ] && break; [ -s %[1]s/result.json ] && break; sleep 0.5; done
 cat %[1]s/%[6]s 2>/dev/null || cat %[1]s/result.json 2>/dev/null || echo "no answer from the %[4]s unit" >&2
-`, d, unit, token, kind, strings.Join(args, " "), ready)
+`, d, unit, token, kind, strings.Join(args, " "), ready, haify)
 }
 
 // shipCleanupScript stops the unit and removes its state.
@@ -78,12 +78,16 @@ func (rm *ResourceManager) PrepareShipReceive(ctx context.Context, resource stri
 	if err != nil {
 		return nil, err
 	}
+	haify, err := rm.ensureHaifyCLI(ctx, host)
+	if err != nil {
+		return nil, err
+	}
 	if err := rm.SetPrimary(ctx, resource, node, false); err != nil {
 		return nil, fmt.Errorf("make %s Primary on %s to receive: %w", resource, node, err)
 	}
 	args := []string{"--device", fmt.Sprintf("/dev/drbd/by-res/%s/%d", resource, vol), "--listen", "0.0.0.0:0"}
 	res, err := rm.deployment.Exec(ctx, []string{host},
-		"echo "+base64Std(shipStartScript("recv", resource, vol, token, args, "ready"))+" | base64 -d | sudo /bin/bash")
+		"echo "+base64Std(shipStartScript(haify, "recv", resource, vol, token, args, "ready"))+" | base64 -d | sudo /bin/bash")
 	if err := execFailure(res, err); err != nil {
 		return nil, fmt.Errorf("start the receiver on %s: %w", node, err)
 	}

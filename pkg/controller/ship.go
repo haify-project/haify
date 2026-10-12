@@ -66,6 +66,8 @@ type shipPlan struct {
 	node  string
 	host  string
 	sizes map[uint32]uint64
+	// haify is the CLI on host that runs the sender.
+	haify string
 }
 
 // StartShip checks everything a ship needs, then runs it as a storage job.
@@ -120,6 +122,10 @@ func (bm *BackupManager) StartShip(ctx context.Context, req ShipRequest) (string
 		return "", err
 	}
 	host := c.ResolveHost(node)
+	haify, err := c.resources.ensureHaifyCLI(ctx, host)
+	if err != nil {
+		return "", err
+	}
 	sizes := make(map[uint32]uint64, len(info.Volumes))
 	for _, v := range info.Volumes {
 		n, err := bm.drbdDeviceBytes(ctx, host, req.Resource, v.VolumeID)
@@ -135,7 +141,7 @@ func (bm *BackupManager) StartShip(ctx context.Context, req ShipRequest) (string
 	if err := c.db.SaveStorageJob(ctx, j); err != nil {
 		return "", err
 	}
-	go bm.runShip(c.ctx, j, shipPlan{req: req, info: info, node: node, host: host, sizes: sizes})
+	go bm.runShip(c.ctx, j, shipPlan{req: req, info: info, node: node, host: host, sizes: sizes, haify: haify})
 	return j.ID, nil
 }
 
@@ -228,7 +234,7 @@ func (bm *BackupManager) shipVolume(ctx context.Context, j *database.StorageJob,
 			"sudo sh -c '"+shipCleanupScript("send", p.req.Resource, vol)+"'")
 	}()
 	res, err := rm.deployment.Exec(ctx, []string{p.host},
-		"echo "+base64Std(shipStartScript("send", p.req.Resource, vol, token, args, "progress"))+" | base64 -d | sudo /bin/bash")
+		"echo "+base64Std(shipStartScript(p.haify, "send", p.req.Resource, vol, token, args, "progress"))+" | base64 -d | sudo /bin/bash")
 	if err := execFailure(res, err); err != nil {
 		_, _ = target.FinishShipReceive(ctx, p.req.Name, vol, last)
 		return fmt.Errorf("start sending volume %d from %s: %w", vol, p.node, err)

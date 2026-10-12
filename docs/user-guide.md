@@ -1289,8 +1289,14 @@ fails, the copy on the other cluster is deleted. The resource here keeps serving
 
 - The other cluster's nodes must accept connections from this cluster's nodes,
   on a port chosen for each transfer.
-- The nodes on both sides need a current `haify` (`/usr/local/bin/haify`);
-  `scripts/deploy-all.sh` installs it.
+- The transfer runs `haify` on one node of each cluster. Each controller uses
+  the node's own `/usr/local/bin/haify` or `/usr/bin/haify` when it can ship.
+  When the node has neither, the controller installs its own copy at
+  `/opt/haify/bin/haify`. That copy comes from beside `haify-controller`, from
+  `/usr/local/bin/haify` or from `/usr/bin/haify` on the controller's host. A
+  node of another architecture needs a build for it beside `haify-controller`,
+  named `haify-<goarch>` (for example `/opt/haify/bin/haify-arm64`). Without
+  one, the ship stops and names the node and what to install there.
 - LVM-backed, unencrypted resources only. Encrypted resources hold ciphertext
   that the other cluster's keys cannot read; back them up and restore them
   there instead.

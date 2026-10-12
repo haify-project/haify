@@ -257,7 +257,9 @@ The package differs from the manual install below in three places:
   belongs to the administrator. Remove copies left there by a manual install
   (`/usr/local/bin/haify`, `haify-cli`, `haify-mcp`); they come first in `PATH`.
   Unit files copied to `/etc/systemd/system/` by hand likewise override the
-  packaged ones.
+  packaged ones. `resource ship`, which runs `haify` on a storage node, uses
+  either path. On a node with neither, the controller installs its own
+  `/usr/bin/haify` there as `/opt/haify/bin/haify`.
 - The packaged `service-ip@.service` runs `/opt/haify/bin/service-ip`. The
   package does not change what the controller does on HA nodes: it still
   installs `/usr/local/bin/service-ip` and its own

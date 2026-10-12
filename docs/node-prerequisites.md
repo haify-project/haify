@@ -209,7 +209,7 @@ node: `ssh-keygen -R <ip> -f /root/.ssh/known_hosts`.
 | --- | --- | --- |
 | `haify-controller` | `/opt/haify/bin/` on the controller node; on every Self-HA node | unit `configs/haify-controller.service`, config `/etc/haify/controller.toml` |
 | `service-ip` | `/usr/local/bin/` | installed automatically where needed (§4) |
-| `haify` | `/usr/local/bin/` (any node or workstation); `/usr/bin/` from the Debian package | |
+| `haify` | `/usr/local/bin/` (any node or workstation); `/usr/bin/` from the Debian package | `resource ship` installs it at `/opt/haify/bin/haify` on a node that has neither (`haify-<goarch>` beside the controller for another architecture) |
 | `haify-ai`, `haify-mcp` | `/opt/haify/bin/` on every Self-HA node | only with the AI Copilot (§10) |
 | `haify-proxy` | `/usr/local/bin/` on WAN nodes | pushed by the controller when it has a matching binary |
 

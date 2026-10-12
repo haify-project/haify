@@ -71,10 +71,8 @@ func serviceIPSource() (string, error) {
 	if serviceIPSourceOverride == "" {
 		candidates = append(candidates, serviceIPBinaryPath)
 	}
-	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0111 != 0 {
-			return c, nil
-		}
+	if c := firstExecutable(candidates); c != "" {
+		return c, nil
 	}
 	return "", fmt.Errorf("looked in %s", strings.Join(candidates, " and "))
 }

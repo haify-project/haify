@@ -35,11 +35,23 @@ func TestCheckShipTarget(t *testing.T) {
 // file and the unit reads it from there.
 func TestShipStartScriptKeepsTheTokenOffTheCommandLine(t *testing.T) {
 	tok := strings.Repeat("ab", 32)
-	s := shipStartScript("recv", "db", 0, tok, []string{"--device", "/dev/drbd/by-res/db/0"}, "ready")
+	s := shipStartScript("/usr/bin/haify", "recv", "db", 0, tok, []string{"--device", "/dev/drbd/by-res/db/0"}, "ready")
 	assert.Contains(t, s, "umask 077")
 	assert.Contains(t, s, "printf %s "+tok+" > /run/haify-ship/recv-db-0/token")
 	run := s[strings.Index(s, "systemd-run"):]
 	run = run[:strings.Index(run, "\n")]
 	assert.NotContains(t, run, tok)
 	assert.Contains(t, run, "--token-file /run/haify-ship/recv-db-0/token")
+}
+
+// The unit runs the haify ensureHaifyCLI chose, whichever path that is.
+func TestShipStartScriptRunsTheGivenHaify(t *testing.T) {
+	for _, haify := range []string{"/usr/bin/haify", haifyCLIInstallPath} {
+		s := shipStartScript(haify, "send", "db", 1, strings.Repeat("cd", 32), []string{"--device", "/dev/vg0/snap"}, "progress")
+		assert.NotContains(t, s, "/usr/local/bin/haify")
+		assert.Contains(t, s, haify+" ship --help >/dev/null")
+		run := s[strings.Index(s, "systemd-run"):]
+		run = run[:strings.Index(run, "\n")]
+		assert.Contains(t, run, "--unit=haify-ship-send-db-1 "+haify+" ship send --token-file")
+	}
 }
