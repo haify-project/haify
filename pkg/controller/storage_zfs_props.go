@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -18,6 +19,7 @@ import (
 // OpenZFS 2.2 and later compress by default, so a ZFS pool is very likely
 // compressing already; without this nothing said whether, or how well.
 func (sm *StorageManager) fillZFSCompression(ctx context.Context, pools []*PoolInfo, addrs map[string]string) {
+	log := ctrlLogOrGlobal(sm.controller)
 	byHost := map[string][]*PoolInfo{}
 	for _, p := range pools {
 		if addr := addrs[p.Node]; addr != "" {
@@ -25,26 +27,35 @@ func (sm *StorageManager) fillZFSCompression(ctx context.Context, pools []*PoolI
 		}
 	}
 	if len(byHost) == 0 {
+		log.Debug("fillZFSCompression: no pool on a known host, nothing to read", zap.Int("pools", len(pools)))
 		return
 	}
 	hosts := make([]string, 0, len(byHost))
 	for h := range byHost {
 		hosts = append(hosts, h)
 	}
+	log.Debug("fillZFSCompression: reading pool properties", zap.Strings("hosts", hosts), zap.Int("pools", len(pools)))
+	start := time.Now()
 	res, err := sm.controller.deployment.Exec(ctx, hosts,
 		"echo "+base64Std(deployment.ZFSPoolPropertiesScript)+" | base64 -d | sudo /bin/sh")
 	if err != nil || res == nil {
 		sm.controller.logger.Debug("Could not read ZFS pool compression", zap.Error(err))
 		return
 	}
+	log.Debug("fillZFSCompression: properties read", zap.Strings("failed_hosts", res.FailedHosts()), zap.Duration("took", time.Since(start)))
 	for host, hr := range res.Hosts {
 		if hr == nil || !hr.Success {
+			log.Debug("fillZFSCompression: host did not answer", zap.String("host", host))
 			continue
 		}
 		props := parseZFSPoolProperties(hr.Output)
 		for _, p := range byHost[host] {
 			if v, ok := props[p.Name]; ok {
 				p.Compression, p.CompressRatio = v.compression, v.ratio
+				log.Debug("fillZFSCompression: pool", zap.String("host", host), zap.String("pool", p.Name),
+					zap.String("compression", v.compression), zap.Float64("ratio", v.ratio))
+			} else {
+				log.Debug("fillZFSCompression: pool not in the properties", zap.String("host", host), zap.String("pool", p.Name))
 			}
 		}
 	}
@@ -78,5 +89,6 @@ func parseZFSPoolProperties(out string) map[string]zfsPoolProps {
 		}
 		props[f[0]] = v
 	}
+	zap.L().Debug("parseZFSPoolProperties: parsed", zap.Int("datasets", len(props)))
 	return props
 }

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/haify-project/haify/pkg/deployment"
 	"go.uber.org/zap"
@@ -62,6 +63,7 @@ func unameMachine(goarch string) string {
 // the one installed next to the controller (make install puts both in the same
 // directory), else the one this node runs itself.
 func serviceIPSource() (string, error) {
+	log := zap.L()
 	var candidates []string
 	if serviceIPSourceOverride != "" {
 		candidates = append(candidates, serviceIPSourceOverride)
@@ -71,9 +73,13 @@ func serviceIPSource() (string, error) {
 	if serviceIPSourceOverride == "" {
 		candidates = append(candidates, serviceIPBinaryPath)
 	}
+	log.Debug("serviceIPSource: looking for service-ip", zap.Strings("candidates", candidates),
+		zap.Bool("override", serviceIPSourceOverride != ""))
 	if c := firstExecutable(candidates); c != "" {
+		log.Debug("serviceIPSource: found", zap.String("path", c))
 		return c, nil
 	}
+	log.Debug("serviceIPSource: none executable")
 	return "", fmt.Errorf("looked in %s", strings.Join(candidates, " and "))
 }
 
@@ -82,46 +88,61 @@ func serviceIPSource() (string, error) {
 // a host of a different architecture is refused rather than handed a program
 // it cannot run — the VIP would fail only at the first failover.
 func (rm *ResourceManager) ensureServiceIP(ctx context.Context, hosts []string) error {
+	log := ctrlLogOrGlobal(rm.controller)
+	log.Debug("ensureServiceIP: probing", zap.Strings("hosts", hosts))
 	// Silent on a node that has both; otherwise it names the node's machine.
 	probe := fmt.Sprintf("[ -x %s ] && [ -f %s ] || uname -m", serviceIPBinaryPath, serviceIPUnitPath)
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, hosts, probe)
 	if err != nil {
+		log.Debug("ensureServiceIP: probe errored", zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("check for service-ip: %w", err)
 	}
+	log.Debug("ensureServiceIP: probe answered", zap.Duration("took", time.Since(start)))
 
 	want := unameMachine(runtime.GOARCH)
 	var missing, foreign []string
 	for _, h := range hosts {
 		hr := res.Hosts[h]
 		if hr == nil || !hr.Success {
+			log.Debug("ensureServiceIP: probe failed on host", zap.String("host", h))
 			return fmt.Errorf("check for service-ip on %s: %s", rm.nodeLabel(h), hostFailure(hr))
 		}
 		switch out := strings.TrimSpace(hr.Output); out {
 		case "":
+			log.Debug("ensureServiceIP: already installed", zap.String("host", h))
 		case want:
+			log.Debug("ensureServiceIP: missing, same architecture", zap.String("host", h), zap.String("machine", out))
 			missing = append(missing, h)
 		default:
+			log.Debug("ensureServiceIP: missing, other architecture", zap.String("host", h), zap.String("machine", out),
+				zap.String("want", want))
 			foreign = append(foreign, fmt.Sprintf("%s (%s)", rm.nodeLabel(h), out))
 		}
 	}
 	if len(foreign) > 0 {
 		sort.Strings(foreign)
+		log.Debug("ensureServiceIP: cannot install on foreign architectures", zap.Strings("hosts", foreign))
 		return fmt.Errorf("service-ip is not installed on %s, and this controller only carries it built for %s; install it at %s there",
 			strings.Join(foreign, ", "), want, serviceIPBinaryPath)
 	}
 	if len(missing) == 0 {
+		log.Debug("ensureServiceIP: installed everywhere")
 		return nil
 	}
 
 	src, err := serviceIPSource()
 	if err != nil {
+		log.Debug("ensureServiceIP: no local copy to install", zap.Strings("hosts", missing), zap.Error(err))
 		return fmt.Errorf("service-ip is not installed on %s and this controller has no copy to install (%v); install it at %s",
 			rm.nodeLabels(missing), err, serviceIPBinaryPath)
 	}
 	rm.controller.logger.Info("Installing service-ip",
 		zap.Strings("hosts", missing), zap.String("source", src))
+	start = time.Now()
 	inst, err := rm.deployment.InstallFile(ctx, missing, src, serviceIPBinaryPath, 0755)
 	if err != nil {
+		log.Debug("ensureServiceIP: install errored", zap.Strings("hosts", missing), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("install service-ip: %w", err)
 	}
 	if !inst.Success {
@@ -132,12 +153,16 @@ func (rm *ResourceManager) ensureServiceIP(ctx context.Context, hosts []string) 
 			}
 		}
 		sort.Strings(failed)
+		log.Debug("ensureServiceIP: install failed", zap.Strings("failed", failed), zap.Duration("took", time.Since(start)))
 		return fmt.Errorf("install service-ip: %s", strings.Join(failed, "; "))
 	}
+	log.Debug("ensureServiceIP: binary installed", zap.Strings("hosts", missing), zap.Duration("took", time.Since(start)))
 	if err := rm.distributeToAll(ctx, missing, serviceIPUnit, serviceIPUnitPath,
 		"sudo systemctl daemon-reload"); err != nil {
+		log.Debug("ensureServiceIP: unit install failed", zap.Error(err))
 		return fmt.Errorf("install the service-ip@ unit: %w", err)
 	}
+	log.Debug("ensureServiceIP: installed", zap.Strings("hosts", missing))
 	return nil
 }
 
@@ -175,6 +200,7 @@ func hostFailure(hr *deployment.HostResult) string {
 // started last (see generatePromoterConfig). Persisted in sysctl.d so a reboot
 // keeps it; the IPv6 knob is set where the kernel has it.
 func (rm *ResourceManager) ensureNonlocalBind(ctx context.Context, hosts []string) error {
+	ctrlLogOrGlobal(rm.controller).Debug("ensureNonlocalBind: setting ip_nonlocal_bind", zap.Strings("hosts", hosts))
 	script := `f=/etc/sysctl.d/90-haify-ha-vip.conf
 want='# Haify HA: services may bind to the VIP, which starts after them.
 net.ipv4.ip_nonlocal_bind = 1

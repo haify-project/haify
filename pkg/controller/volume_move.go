@@ -36,9 +36,12 @@ const (
 // is resumed by asking again with the same pool.
 func (rm *ResourceManager) MoveVolume(ctx context.Context, resource string, volID int, pool string) (string, error) {
 	c := rm.controller
+	log := ctrlLogOrGlobal(c)
+	log.Debug("MoveVolume: checking", zap.String("resource", resource), zap.Int("volume", volID), zap.String("pool", pool))
 	pool = normalizeManagedName(pool)
 	r, err := c.db.GetResource(ctx, resource)
 	if err != nil || r == nil {
+		log.Debug("MoveVolume: resource not found", zap.String("resource", resource), zap.Error(err))
 		return "", fmt.Errorf("resource %q not found", resource)
 	}
 	vol, err := rm.dbVolume(ctx, resource, volID)
@@ -48,22 +51,30 @@ func (rm *ResourceManager) MoveVolume(ctx context.Context, resource string, volI
 	nodes := splitCSV(r.Nodes)
 	switch {
 	case vol.Pool == pool:
+		log.Debug("MoveVolume: already in the pool", zap.String("pool", pool))
 		return "", fmt.Errorf("volume %d of %s is already in %s", volID, resource, pool)
 	case r.Encrypted:
+		log.Debug("MoveVolume: encrypted, refusing", zap.String("resource", resource))
 		return "", fmt.Errorf("%s is encrypted; moving an encrypted volume is not supported", resource)
 	case r.MoveFrom != "":
+		log.Debug("MoveVolume: a replica move is under way, refusing", zap.String("from", r.MoveFrom), zap.String("to", r.MoveTo))
 		return "", fmt.Errorf("%s is moving a replica (%s → %s); wait for it to finish", resource, r.MoveFrom, r.MoveTo)
 	case len(nodes) < 2:
+		log.Debug("MoveVolume: one copy only, refusing", zap.Strings("nodes", nodes))
 		return "", fmt.Errorf("%s has one copy; its data would have nowhere to come back from", resource)
 	}
 	if err := c.assertResourceUnlocked(ctx, resource, "moving the volume to another pool"); err != nil {
 		return "", err
 	}
 	for _, n := range nodes {
+		start := time.Now()
 		res, err := rm.deployment.Exec(ctx, []string{c.ResolveHost(n)}, "sudo vgs "+pool)
 		if err != nil || !res.AllSuccess() {
+			log.Debug("MoveVolume: target pool missing on node", zap.String("node", n), zap.String("pool", pool),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
 			return "", fmt.Errorf("pool %s does not exist on %s", pool, n)
 		}
+		log.Debug("MoveVolume: target pool present", zap.String("node", n), zap.Duration("took", time.Since(start)))
 	}
 	jobs, _ := c.db.ListStorageJobs(ctx)
 	var done []string
@@ -72,9 +83,11 @@ func (rm *ResourceManager) MoveVolume(ctx context.Context, resource string, volI
 			continue
 		}
 		if j.State == database.JobRunning {
+			log.Debug("MoveVolume: a move is already running", zap.String("job", j.ID))
 			return "", fmt.Errorf("job %s is already moving a volume of %s", j.ID, resource)
 		}
 		if j.State == database.JobFailed && j.VolumeID == volID && j.TargetPool == pool && len(done) == 0 {
+			log.Debug("MoveVolume: resuming a failed move", zap.String("job", j.ID), zap.Strings("done", j.Done))
 			done = j.Done // pick up where the last attempt stopped
 		}
 	}
@@ -82,22 +95,29 @@ func (rm *ResourceManager) MoveVolume(ctx context.Context, resource string, volI
 		Resource: resource, VolumeID: volID, FromPool: vol.Pool, TargetPool: pool,
 		Nodes: rm.secondariesFirst(ctx, resource, nodes), Done: done, Progress: "starting", StartedAt: time.Now()}
 	if err := c.db.SaveStorageJob(ctx, j); err != nil {
+		log.Debug("MoveVolume: job not saved", zap.Error(err))
 		return "", err
 	}
+	log.Debug("MoveVolume: job started", zap.String("job", j.ID), zap.String("from_pool", vol.Pool), zap.String("pool", pool),
+		zap.Strings("order", j.Nodes))
 	go rm.runVolumeMove(c.ctx, j)
 	return j.ID, nil
 }
 
 func (rm *ResourceManager) dbVolume(ctx context.Context, resource string, volID int) (*database.Volume, error) {
+	log := ctrlLogOrGlobal(rm.controller)
 	vols, err := rm.controller.db.ListVolumes(ctx, resource)
 	if err != nil {
+		log.Debug("dbVolume: volume list failed", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 	for _, v := range vols {
 		if v.VolumeID == volID {
+			log.Debug("dbVolume: found", zap.String("resource", resource), zap.Int("volume", volID), zap.String("pool", v.Pool))
 			return v, nil
 		}
 	}
+	log.Debug("dbVolume: no such volume", zap.String("resource", resource), zap.Int("volume", volID))
 	return nil, fmt.Errorf("%s has no volume %d", resource, volID)
 }
 
@@ -121,23 +141,33 @@ func (rm *ResourceManager) secondariesFirst(ctx context.Context, resource string
 	if contains(nodes, primary) {
 		out = append(out, primary)
 	}
+	ctrlLogOrGlobal(rm.controller).Debug("secondariesFirst: order", zap.String("resource", resource), zap.String("primary", primary),
+		zap.Strings("order", out))
 	return out
 }
 
 func (rm *ResourceManager) runVolumeMove(ctx context.Context, j *database.StorageJob) {
 	c := rm.controller
+	log := ctrlLogOrGlobal(c)
+	log.Debug("runVolumeMove: running", zap.String("job", j.ID), zap.String("resource", j.Resource), zap.Int("volume", j.VolumeID),
+		zap.Strings("nodes", j.Nodes), zap.Strings("done", j.Done))
 	for _, n := range j.Nodes {
 		if contains(j.Done, n) {
+			log.Debug("runVolumeMove: node already done", zap.String("node", n))
 			continue
 		}
 		j.Progress = fmt.Sprintf("moving %s (%d of %d)", n, len(j.Done)+1, len(j.Nodes))
 		_ = c.db.SaveStorageJob(ctx, j)
+		start := time.Now()
+		log.Debug("runVolumeMove: moving node", zap.String("node", n), zap.String("progress", j.Progress))
 		if err := rm.moveVolumeOnNode(ctx, j, n); err != nil {
+			log.Debug("runVolumeMove: node failed", zap.String("node", n), zap.Duration("took", time.Since(start)), zap.Error(err))
 			rm.finishVolumeMove(ctx, j, fmt.Errorf("on %s: %w", n, err))
 			return
 		}
 		j.Done = append(j.Done, n)
 		_ = c.db.SaveStorageJob(ctx, j)
+		log.Debug("runVolumeMove: node moved", zap.String("node", n), zap.Duration("took", time.Since(start)))
 	}
 	rm.finishVolumeMove(ctx, j, rm.commitVolumeMove(ctx, j))
 }
@@ -146,38 +176,51 @@ func (rm *ResourceManager) runVolumeMove(ctx context.Context, j *database.Storag
 // pool and waits for DRBD to fill it.
 func (rm *ResourceManager) moveVolumeOnNode(ctx context.Context, j *database.StorageJob, node string) error {
 	c := rm.controller
+	log := ctrlLogOrGlobal(c)
 	host := c.ResolveHost(node)
 	vol, err := rm.dbVolume(ctx, j.Resource, j.VolumeID)
 	if err != nil {
 		return err
 	}
 	target := fmt.Sprintf("%s/%d", j.Resource, j.VolumeID)
+	log.Debug("moveVolumeOnNode: waiting for a peer to be UpToDate", zap.String("node", node), zap.String("target", target))
 	if err := rm.waitPeerUpToDate(ctx, j.Resource, j.VolumeID, node); err != nil {
 		return err
 	}
 	size, err := rm.deployment.LVSizeBytes(ctx, host, j.FromPool, vol.VolumeName)
 	if err != nil {
+		log.Debug("moveVolumeOnNode: old size not read", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("read the size of %s/%s: %w", j.FromPool, vol.VolumeName, err)
 	}
 	// A little larger than the old volume: fresh metadata may be sized for
 	// more peers than the old copy's, and a copy smaller than its peers is
 	// refused when it connects.
+	newSize := size + size/256 + 64<<20
+	log.Debug("moveVolumeOnNode: creating the new copy", zap.String("host", host), zap.String("pool", j.TargetPool),
+		zap.String("volume", vol.VolumeName), zap.Uint64("old_size_bytes", size), zap.Uint64("size_bytes", newSize))
 	if err := rm.createBackingVolumeOn(ctx, host, j.TargetPool, vol.VolumeName, size+size/256+64<<20); err != nil {
+		log.Debug("moveVolumeOnNode: new copy not created", zap.Error(err))
 		return fmt.Errorf("create %s/%s: %w", j.TargetPool, vol.VolumeName, err)
 	}
 	if err := execFailure(rm.deployment.DRBDDetach(ctx, host, target)); err != nil {
+		log.Debug("moveVolumeOnNode: detach failed", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("detach: %w", err)
 	}
+	log.Debug("moveVolumeOnNode: detached, pointing the config at the new copy", zap.String("host", host))
 	if err := rm.writeHostVolumeDisk(ctx, j, node, "/dev/"+j.TargetPool+"/"+vol.VolumeName); err != nil {
+		log.Debug("moveVolumeOnNode: config not rewritten", zap.Error(err))
 		return err
 	}
 	if err := execFailure(rm.deployment.Exec(ctx, []string{host},
 		fmt.Sprintf("sudo drbdadm create-md --max-peers=%d --force %s", deployment.DefaultMaxPeers, target))); err != nil {
+		log.Debug("moveVolumeOnNode: create-md failed", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("create metadata: %w", err)
 	}
 	if err := execFailure(rm.deployment.DRBDAttach(ctx, host, target)); err != nil {
+		log.Debug("moveVolumeOnNode: attach failed", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("attach: %w", err)
 	}
+	log.Debug("moveVolumeOnNode: attached, waiting for the resync", zap.String("host", host), zap.String("target", target))
 	if err := rm.waitLocalUpToDate(ctx, host, target); err != nil {
 		return err
 	}
@@ -186,6 +229,8 @@ func (rm *ResourceManager) moveVolumeOnNode(ctx context.Context, j *database.Sto
 		vol.VolumeName, j.FromPool, j.FromPool, j.FromPool, vol.VolumeName)
 	if err := execFailure(rm.deployment.Exec(ctx, []string{host}, old)); err != nil {
 		c.logger.Warn("Volume moved, but the old copy could not be removed", zap.String("node", node), zap.Error(err))
+	} else {
+		log.Debug("moveVolumeOnNode: old copy removed", zap.String("host", host), zap.String("pool", j.FromPool))
 	}
 	return nil
 }
@@ -193,6 +238,8 @@ func (rm *ResourceManager) moveVolumeOnNode(ctx context.Context, j *database.Sto
 // writeHostVolumeDisk points node's copy at disk in the config every member
 // holds.
 func (rm *ResourceManager) writeHostVolumeDisk(ctx context.Context, j *database.StorageJob, node, disk string) error {
+	ctrlLogOrGlobal(rm.controller).Debug("writeHostVolumeDisk: rewriting", zap.String("resource", j.Resource),
+		zap.String("node", node), zap.Int("volume", j.VolumeID), zap.String("disk", disk))
 	return rm.editResourceConfig(ctx, j.Resource, func(conf string) (string, error) {
 		minor := -1
 		for _, v := range parseResourceConfigVolumes(conf) {
@@ -201,6 +248,7 @@ func (rm *ResourceManager) writeHostVolumeDisk(ctx context.Context, j *database.
 			}
 		}
 		if minor < 0 {
+			ctrlLogOrGlobal(rm.controller).Debug("writeHostVolumeDisk: volume not in the config", zap.Int("volume", j.VolumeID))
 			return "", fmt.Errorf("volume %d is not in the config", j.VolumeID)
 		}
 		return setHostVolumeDisk(conf, rm.controller.nodes.GetDRBDNameByRef(node), j.VolumeID, minor, disk)
@@ -209,8 +257,10 @@ func (rm *ResourceManager) writeHostVolumeDisk(ctx context.Context, j *database.
 
 // editResourceConfig rewrites a resource's .res on every member.
 func (rm *ResourceManager) editResourceConfig(ctx context.Context, resource string, edit func(string) (string, error)) error {
+	log := ctrlLogOrGlobal(rm.controller)
 	r, err := rm.controller.db.GetResource(ctx, resource)
 	if err != nil || r == nil {
+		log.Debug("editResourceConfig: resource not found", zap.String("resource", resource), zap.Error(err))
 		return fmt.Errorf("resource %q not found", resource)
 	}
 	var hosts []string
@@ -220,36 +270,50 @@ func (rm *ResourceManager) editResourceConfig(ctx context.Context, resource stri
 	path := "/etc/drbd.d/" + resource + ".res"
 	conf, err := rm.readResourceConfig(ctx, hosts, path, resource)
 	if err != nil {
+		log.Debug("editResourceConfig: config not read", zap.Error(err))
 		return err
 	}
 	conf, err = edit(conf)
 	if err != nil {
+		log.Debug("editResourceConfig: edit refused", zap.Error(err))
 		return err
 	}
 	targets := append(hosts, rm.disklessParticipantHosts(ctx, resource)...)
+	start := time.Now()
 	if _, err := rm.deployment.DistributeConfig(ctx, targets, conf, path); err != nil {
+		log.Debug("editResourceConfig: distribution failed", zap.Strings("hosts", targets), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("distribute the config: %w", err)
 	}
+	// The config body is not traced: it can hold a shared-secret.
+	log.Debug("editResourceConfig: distributed", zap.String("resource", resource), zap.Strings("hosts", targets),
+		zap.Int("bytes", len(conf)), zap.Duration("took", time.Since(start)))
 	return nil
 }
 
 // waitPeerUpToDate waits until a member other than node has the volume
 // UpToDate, the copy node's will be rebuilt from.
 func (rm *ResourceManager) waitPeerUpToDate(ctx context.Context, resource string, vol int, node string) error {
+	log := ctrlLogOrGlobal(rm.controller)
 	deadline := time.Now().Add(10 * time.Minute)
 	for {
 		if info, err := rm.GetResource(ctx, resource); err == nil {
 			for n, st := range info.NodeStates {
 				if rm.controller.NodeName(n) != node && st.DiskState == "UpToDate" {
+					log.Debug("waitPeerUpToDate: peer UpToDate", zap.String("resource", resource), zap.String("peer", n))
 					return nil
 				}
 			}
+			log.Debug("waitPeerUpToDate: no peer UpToDate yet", zap.String("resource", resource), zap.String("node", node))
+		} else {
+			log.Debug("waitPeerUpToDate: status not read", zap.String("resource", resource), zap.Error(err))
 		}
 		if time.Now().After(deadline) {
+			log.Debug("waitPeerUpToDate: deadline passed", zap.String("resource", resource))
 			return fmt.Errorf("no other copy of %s is UpToDate to rebuild from", resource)
 		}
 		select {
 		case <-ctx.Done():
+			log.Debug("waitPeerUpToDate: cancelled", zap.Error(ctx.Err()))
 			return ctx.Err()
 		case <-time.After(volumeMovePoll):
 		}
@@ -259,19 +323,27 @@ func (rm *ResourceManager) waitPeerUpToDate(ctx context.Context, resource string
 // waitLocalUpToDate waits for host's copy of target (res/vol) to finish its
 // resync.
 func (rm *ResourceManager) waitLocalUpToDate(ctx context.Context, host, target string) error {
+	log := ctrlLogOrGlobal(rm.controller)
 	deadline := time.Now().Add(volumeMoveTimeout)
 	for {
 		res, err := rm.deployment.Exec(ctx, []string{host}, "sudo drbdadm dstate "+target)
 		if err == nil && res.Hosts[host] != nil {
-			if strings.HasPrefix(strings.TrimSpace(res.Hosts[host].Output), "UpToDate/") {
+			dstate := strings.TrimSpace(res.Hosts[host].Output)
+			if strings.HasPrefix(dstate, "UpToDate/") {
+				log.Debug("waitLocalUpToDate: UpToDate", zap.String("host", host), zap.String("target", target))
 				return nil
 			}
+			log.Debug("waitLocalUpToDate: still syncing", zap.String("host", host), zap.String("target", target), zap.String("dstate", dstate))
+		} else {
+			log.Debug("waitLocalUpToDate: dstate not read", zap.String("host", host), zap.Error(err))
 		}
 		if time.Now().After(deadline) {
+			log.Debug("waitLocalUpToDate: deadline passed", zap.String("host", host), zap.String("target", target))
 			return fmt.Errorf("the new copy did not finish syncing within %s", volumeMoveTimeout)
 		}
 		select {
 		case <-ctx.Done():
+			log.Debug("waitLocalUpToDate: cancelled", zap.Error(ctx.Err()))
 			return ctx.Err()
 		case <-time.After(volumeMovePoll):
 		}
@@ -280,6 +352,8 @@ func (rm *ResourceManager) waitLocalUpToDate(ctx context.Context, host, target s
 
 // commitVolumeMove makes the new pool the volume's pool for every node.
 func (rm *ResourceManager) commitVolumeMove(ctx context.Context, j *database.StorageJob) error {
+	log := ctrlLogOrGlobal(rm.controller)
+	log.Debug("commitVolumeMove: committing", zap.String("job", j.ID), zap.String("resource", j.Resource), zap.String("pool", j.TargetPool))
 	vol, err := rm.dbVolume(ctx, j.Resource, j.VolumeID)
 	if err != nil {
 		return err
@@ -296,10 +370,13 @@ func (rm *ResourceManager) commitVolumeMove(ctx context.Context, j *database.Sto
 		return out, nil
 	})
 	if err != nil {
+		log.Debug("commitVolumeMove: config not committed", zap.Error(err))
 		return err
 	}
 	vol.Pool, vol.Device = j.TargetPool, disk
-	return rm.controller.db.SaveVolume(ctx, vol)
+	err = rm.controller.db.SaveVolume(ctx, vol)
+	log.Debug("commitVolumeMove: volume record saved", zap.String("disk", disk), zap.Error(err))
+	return err
 }
 
 func (rm *ResourceManager) finishVolumeMove(ctx context.Context, j *database.StorageJob, err error) {
@@ -314,7 +391,8 @@ func (rm *ResourceManager) finishVolumeMove(ctx context.Context, j *database.Sto
 		j.Message = fmt.Sprintf("moving volume %d of %s to %s stopped %v; moved so far: %s. Ask again to carry on from there",
 			j.VolumeID, j.Resource, j.TargetPool, err, strings.Join(j.Done, ", "))
 	}
-	_ = c.db.SaveStorageJob(context.WithoutCancel(ctx), j)
+	serr := c.db.SaveStorageJob(context.WithoutCancel(ctx), j)
+	ctrlLogOrGlobal(c).Debug("finishVolumeMove: job saved", zap.String("job", j.ID), zap.String("state", j.State), zap.Error(serr))
 	c.logger.Info("Volume move finished", zap.String("job", j.ID), zap.String("state", j.State), zap.String("message", j.Message))
 	if c.events != nil {
 		c.events.Publish(event.Event{Type: event.TypeVolumeMoved, Severity: sev, Status: event.StatusInfo,
@@ -324,13 +402,19 @@ func (rm *ResourceManager) finishVolumeMove(ctx context.Context, j *database.Sto
 
 // resumeVolumeMoves carries on with the moves a previous controller started.
 func (rm *ResourceManager) resumeVolumeMoves(ctx context.Context) {
+	log := ctrlLogOrGlobal(rm.controller)
 	jobs, err := rm.controller.db.ListStorageJobs(ctx)
 	if err != nil {
+		log.Debug("resumeVolumeMoves: job list failed", zap.Error(err))
 		return
 	}
+	resumed := 0
 	for _, j := range jobs {
 		if j.Kind == database.JobMoveVolume && j.State == database.JobRunning {
+			log.Debug("resumeVolumeMoves: resuming", zap.String("job", j.ID), zap.String("resource", j.Resource))
+			resumed++
 			go rm.runVolumeMove(rm.controller.ctx, j)
 		}
 	}
+	log.Debug("resumeVolumeMoves: done", zap.Int("resumed", resumed))
 }

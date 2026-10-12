@@ -41,15 +41,26 @@ const snapshotsKeptUnderPressure = 2
 // left raises a critical event, because its replica is next.
 func (sm *ScheduleManager) relieveThinPool(ctx context.Context, host, node, resource string, vol *ResourceVolumeInfo, lock time.Duration) {
 	if isZFSDevice(vol.Device) || sm.controller.storage == nil {
+		ctrlLogOrGlobal(sm.controller).Debug("relieveThinPool: ZFS volume or no storage manager, nothing to relieve",
+			zap.String("resource", resource), zap.String("device", vol.Device))
 		return
 	}
-	log := sm.controller.logger
+	log := ctrlLogOrGlobal(sm.controller)
+	log.Debug("relieveThinPool: checking pool", zap.String("node", node), zap.String("pool", vol.Pool),
+		zap.String("resource", resource), zap.Duration("lock", lock))
 	usage, err := sm.controller.storage.readThinUsage(ctx, host, vol.Pool)
 	if err != nil || usage == nil || !overThinThreshold(usage) {
+		if usage != nil {
+			log.Debug("relieveThinPool: pool below threshold", zap.String("pool", vol.Pool),
+				zap.Float64("data_percent", usage.DataPercent), zap.Float64("metadata_percent", usage.MetaPercent))
+		} else {
+			log.Debug("relieveThinPool: pool usage not read", zap.String("pool", vol.Pool), zap.Error(err))
+		}
 		return
 	}
 	snaps, err := sm.listScheduledSnaps(ctx, host, vol)
 	if err != nil {
+		log.Debug("relieveThinPool: scheduled snapshots not listed", zap.String("pool", vol.Pool), zap.Error(err))
 		return
 	}
 	sort.Slice(snaps, func(i, j int) bool { return snaps[i].TS.Before(snaps[j].TS) })
@@ -59,13 +70,18 @@ func (sm *ScheduleManager) relieveThinPool(ctx context.Context, host, node, reso
 		keep = 0
 	}
 	candidates := unlockedSnaps(snaps[:keep], lock, lockNow())
+	log.Debug("relieveThinPool: pool over threshold", zap.String("pool", vol.Pool), zap.Float64("data_percent", usage.DataPercent),
+		zap.Float64("metadata_percent", usage.MetaPercent), zap.Int("snapshots", len(snaps)), zap.Int("candidates", len(candidates)))
 	for len(candidates) > 0 && overThinThreshold(usage) {
 		oldest := candidates[0]
+		start := time.Now()
 		if _, err := sm.controller.deployment.LVRemoveSnapshot(ctx, []string{host}, vol.Pool, oldest.Name); err != nil {
 			log.Warn("Snapshot schedule: could not remove a snapshot to free a full pool",
 				zap.String("node", node), zap.String("snapshot", oldest.Name), zap.Error(err))
 			return
 		}
+		log.Debug("relieveThinPool: lvremove done", zap.String("host", host), zap.String("snapshot", oldest.Name),
+			zap.Duration("took", time.Since(start)))
 		log.Warn("Snapshot schedule: removed the oldest snapshot to free a full thin pool",
 			zap.String("node", node), zap.String("pool", vol.Pool), zap.String("snapshot", oldest.Name),
 			zap.Float64("data_percent", usage.DataPercent), zap.Float64("metadata_percent", usage.MetaPercent))
@@ -75,21 +91,29 @@ func (sm *ScheduleManager) relieveThinPool(ctx context.Context, host, node, reso
 				vol.Pool, node, usage.DataPercent, oldest.Name, resource))
 		candidates = candidates[1:]
 		if usage, err = sm.controller.storage.readThinUsage(ctx, host, vol.Pool); err != nil || usage == nil {
+			log.Debug("relieveThinPool: pool usage not re-read, stopping", zap.String("pool", vol.Pool), zap.Error(err))
 			return
 		}
 	}
 	if overThinThreshold(usage) && lock > 0 {
+		log.Debug("relieveThinPool: still full with only locked or newest snapshots left", zap.String("pool", vol.Pool),
+			zap.Float64("data_percent", usage.DataPercent))
 		sm.publishPoolEvent(event.TypePoolSnapshotsLocked, event.StatusInfo, event.SeverityCritical, node, vol.Pool, resource,
 			fmt.Sprintf("thin pool %s on %s is %.0f%% full and the snapshots of %s left are locked or the newest; "+
 				"extend the pool now, or its replica's writes will fail and DRBD will drop it",
 				vol.Pool, node, usage.DataPercent, resource))
+		return
 	}
+	log.Debug("relieveThinPool: done", zap.String("pool", vol.Pool), zap.Bool("still_full", overThinThreshold(usage)))
 }
 
 func (sm *ScheduleManager) publishPoolEvent(t event.Type, status event.Status, sev event.Severity, node, pool, resource, msg string) {
 	if sm.controller.events == nil {
+		ctrlLogOrGlobal(sm.controller).Debug("publishPoolEvent: no event bus, dropped", zap.String("type", string(t)))
 		return
 	}
+	ctrlLogOrGlobal(sm.controller).Debug("publishPoolEvent: publishing", zap.String("type", string(t)),
+		zap.String("severity", string(sev)), zap.String("node", node), zap.String("pool", pool), zap.String("resource", resource))
 	sm.controller.events.Publish(event.Event{
 		Type: t, Severity: sev, Status: status, Resource: pool, Node: node, Message: msg,
 		Details: map[string]string{"resource": resource},

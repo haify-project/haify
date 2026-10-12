@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -62,45 +63,61 @@ if [ -n "$missing" ]; then echo "missing:$missing"; exit 1; fi`
 
 // assertVDOSupported probes the node a VDO-backed pool is about to be built on.
 func (sm *StorageManager) assertVDOSupported(ctx context.Context, address, node string) error {
+	log := ctrlLogOrGlobal(sm.controller)
+	log.Debug("assertVDOSupported: probing", zap.String("node", node), zap.String("host", address))
 	cmd := "echo " + base64Std(vdoProbeScript) + " | base64 -d | sudo /bin/bash"
+	start := time.Now()
 	res, err := sm.controller.deployment.Exec(ctx, []string{address}, cmd)
 	if err != nil {
+		log.Debug("assertVDOSupported: probe errored", zap.String("host", address), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("probe VDO support on %s: %w", node, err)
 	}
 	if !res.AllSuccess() {
+		log.Debug("assertVDOSupported: node lacks VDO support", zap.String("host", address), zap.Duration("took", time.Since(start)))
 		return fmt.Errorf("node %s cannot build a VDO-backed thin pool (%s); "+
 			"it needs the dm-vdo kernel module (kernel 6.9+ or kmod-kvdo), the vdo package "+
 			"for vdoformat, and lvm2 2.03.24 or later", node, strings.TrimSpace(res.FailureDetails()))
 	}
+	log.Debug("assertVDOSupported: supported", zap.String("host", address), zap.Duration("took", time.Since(start)))
 	return nil
 }
 
 // createVDOThinPool creates the thin pool, with its data area on VDO, in the
 // group just built. size is an lvcreate size ("95%FREE" or "<n>G").
 func (sm *StorageManager) createVDOThinPool(ctx context.Context, address, vg, size string) error {
+	log := ctrlLogOrGlobal(sm.controller)
 	flag := "-L"
 	if strings.Contains(size, "%") {
 		flag = "-l"
 	}
+	log.Debug("createVDOThinPool: creating", zap.String("host", address), zap.String("pool", vg), zap.String("size", size),
+		zap.String("size_flag", flag))
 	cmd := fmt.Sprintf("sudo lvcreate -y --type thin-pool --pooldatavdo y %s %s -n %s_thin %s", flag, size, vg, vg)
+	start := time.Now()
 	res, err := sm.controller.deployment.Exec(ctx, []string{address}, cmd)
 	if err != nil {
+		log.Debug("createVDOThinPool: lvcreate errored", zap.String("host", address), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to create VDO thin pool: %w", err)
 	}
 	if !res.AllSuccess() {
+		log.Debug("createVDOThinPool: lvcreate failed", zap.String("host", address), zap.Duration("took", time.Since(start)))
 		return fmt.Errorf("failed to create VDO thin pool: %s", res.FailureDetails())
 	}
+	log.Debug("createVDOThinPool: created", zap.String("pool", vg), zap.Duration("took", time.Since(start)))
 	return nil
 }
 
 // vdoPoolNames returns the names of the pools recorded as VDO-backed.
 func (sm *StorageManager) vdoPoolNames(ctx context.Context) map[string]bool {
+	log := ctrlLogOrGlobal(sm.controller)
 	out := map[string]bool{}
 	if sm.controller.db == nil {
+		log.Debug("vdoPoolNames: no database")
 		return out
 	}
 	pools, err := sm.controller.db.ListPools(ctx)
 	if err != nil {
+		log.Debug("vdoPoolNames: pool list failed", zap.Error(err))
 		return out
 	}
 	for _, p := range pools {
@@ -108,6 +125,7 @@ func (sm *StorageManager) vdoPoolNames(ctx context.Context) map[string]bool {
 			out[p.Name] = true
 		}
 	}
+	log.Debug("vdoPoolNames: VDO pools", zap.Int("count", len(out)))
 	return out
 }
 
@@ -136,6 +154,7 @@ func parseVDOReport(output string) map[string]*PoolVDOInfo {
 		}
 		out[vg] = info
 	}
+	zap.L().Debug("parseVDOReport: parsed", zap.Int("groups", len(out)))
 	return out
 }
 
@@ -144,8 +163,10 @@ func parseVDOReport(output string) map[string]*PoolVDOInfo {
 // is VDO-backed. A host that does not answer leaves its pools without the
 // figure rather than failing the listing.
 func (sm *StorageManager) attachVDOUsage(ctx context.Context, pools map[string]*PoolInfo) {
+	log := ctrlLogOrGlobal(sm.controller)
 	vdo := sm.vdoPoolNames(ctx)
 	if len(vdo) == 0 {
+		log.Debug("attachVDOUsage: no VDO pools")
 		return
 	}
 	var hosts []string
@@ -157,13 +178,17 @@ func (sm *StorageManager) attachVDOUsage(ctx context.Context, pools map[string]*
 		}
 	}
 	if len(hosts) == 0 {
+		log.Debug("attachVDOUsage: no VDO pool in this listing")
 		return
 	}
+	start := time.Now()
 	res, err := sm.controller.deployment.Exec(ctx, hosts, vdoUsageQuery)
 	if err != nil {
 		sm.controller.logger.Warn("Failed to read VDO pool usage", zap.Error(err))
 		return
 	}
+	log.Debug("attachVDOUsage: lvs answered", zap.Strings("hosts", hosts), zap.Strings("failed_hosts", res.FailedHosts()),
+		zap.Duration("took", time.Since(start)))
 	byHost := map[string]map[string]*PoolVDOInfo{}
 	for host, r := range res.Hosts {
 		if !r.Success {
@@ -181,6 +206,10 @@ func (sm *StorageManager) attachVDOUsage(ctx context.Context, pools map[string]*
 		}
 		if byVG, ok := byHost[p.Node]; ok {
 			p.VDO = byVG[p.Name]
+			if p.VDO != nil {
+				log.Debug("attachVDOUsage: pool", zap.String("node", p.Node), zap.String("pool", p.Name),
+					zap.Float64("physical_percent", p.VDO.PhysicalPercent), zap.Float64("saving_percent", p.VDO.SavingPercent))
+			}
 		}
 	}
 }
@@ -191,6 +220,8 @@ func (sm *StorageManager) attachVDOUsage(ctx context.Context, pools map[string]*
 // on the dedup rate), so the disk joins the group and the growing is left to
 // the operator, as the user guide describes.
 func errVDONotGrown(pool, disk, node string) error {
+	zap.L().Debug("errVDONotGrown: VDO pool not grown automatically", zap.String("pool", pool), zap.String("disk", disk),
+		zap.String("node", node))
 	return fmt.Errorf("disk %s added to %s on %s, but %s is VDO-backed and is not grown automatically: "+
 		"extend its VDO pool (physical) and then its thin pool (logical) with lvextend; see the user guide",
 		disk, pool, node, pool)
@@ -199,10 +230,13 @@ func errVDONotGrown(pool, disk, node string) error {
 // poolIsVDO reports whether pool is recorded as VDO-backed.
 func (rm *ResourceManager) poolIsVDO(ctx context.Context, pool string) bool {
 	if rm.controller.db == nil {
+		ctrlLogOrGlobal(rm.controller).Debug("poolIsVDO: no database", zap.String("pool", pool))
 		return false
 	}
 	p, err := rm.controller.db.GetPool(ctx, normalizeManagedName(pool))
-	return err == nil && p != nil && p.Type == vdoPoolType
+	vdo := err == nil && p != nil && p.Type == vdoPoolType
+	ctrlLogOrGlobal(rm.controller).Debug("poolIsVDO: checked", zap.String("pool", pool), zap.Bool("vdo", vdo), zap.Error(err))
+	return vdo
 }
 
 // assertEncryptableVDO refuses encryption on a VDO-backed pool: dm-crypt
@@ -210,6 +244,7 @@ func (rm *ResourceManager) poolIsVDO(ctx context.Context, pool string) bool {
 func (rm *ResourceManager) assertEncryptableVDO(ctx context.Context, pools ...string) error {
 	for _, pool := range pools {
 		if rm.poolIsVDO(ctx, pool) {
+			ctrlLogOrGlobal(rm.controller).Debug("assertEncryptableVDO: refusing encryption on VDO pool", zap.String("pool", pool))
 			return fmt.Errorf("pool %s is VDO-backed: encryption above VDO defeats its "+
 				"deduplication and compression; use a plain lvm-thin pool for encrypted resources", pool)
 		}

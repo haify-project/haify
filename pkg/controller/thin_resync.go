@@ -4,6 +4,8 @@ import (
 	"context"
 	"maps"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // rsDiscardGranularity is what a resource on thin storage resyncs with. A
@@ -22,8 +24,12 @@ const rsDiscardGranularity = "65536"
 // it. The caller's map is not modified. Thick volumes are left alone: on them
 // a discard can reach a device that does not read back zeros afterwards.
 func (rm *ResourceManager) withThinResyncDefaults(ctx context.Context, options map[string]string, storageType string, volumes []resolvedVolume) map[string]string {
+	log := ctrlLogOrGlobal(rm.controller)
+	log.Debug("withThinResyncDefaults: checking", zap.String("storage_type", storageType), zap.Int("volumes", len(volumes)),
+		zap.Int("options", len(options)))
 	for k := range options {
 		if strings.TrimPrefix(strings.ToLower(k), "disk/") == "rs-discard-granularity" {
+			log.Debug("withThinResyncDefaults: caller set it, left alone", zap.String("option", k))
 			return options
 		}
 	}
@@ -33,13 +39,16 @@ func (rm *ResourceManager) withThinResyncDefaults(ctx context.Context, options m
 			break
 		}
 		thin = rm.poolRecordedThin(ctx, v.pool) || rm.poolRecordedThin(ctx, normalizeManagedName(v.pool))
+		log.Debug("withThinResyncDefaults: volume pool", zap.String("pool", v.pool), zap.Bool("thin", thin))
 	}
 	if !thin {
+		log.Debug("withThinResyncDefaults: thick storage, no discard granularity")
 		return options
 	}
 	out := make(map[string]string, len(options)+1)
 	maps.Copy(out, options)
 	out["disk/rs-discard-granularity"] = rsDiscardGranularity
+	log.Debug("withThinResyncDefaults: thin storage, discard granularity added", zap.String("value", rsDiscardGranularity))
 	return out
 }
 

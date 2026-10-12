@@ -141,6 +141,9 @@ func newWriteAnomalyDetector(c *Controller) *writeAnomalyDetector {
 	if c.db != nil {
 		d.store = c.db
 	}
+	ctrlLogOrGlobal(c).Debug("newWriteAnomalyDetector: built", zap.Bool("enabled", d.cfg.Enabled), zap.Float64("factor", d.cfg.Factor),
+		zap.Float64("min_mbps", d.cfg.MinMBps), zap.Int("freeze_hours", d.cfg.FreezeHours),
+		zap.Bool("has_actions", d.actions != nil), zap.Bool("has_store", d.store != nil))
 	return d
 }
 
@@ -148,24 +151,30 @@ func newWriteAnomalyDetector(c *Controller) *writeAnomalyDetector {
 func (d *writeAnomalyDetector) Observed(obs alert.Observation) {
 	res := obs.Resources
 	if !res.Enabled || !res.OK {
+		d.log.Debug("writeAnomalyDetector.Observed: no resource reading this poll", zap.Bool("enabled", res.Enabled), zap.Bool("ok", res.OK))
 		return
 	}
 	now := d.now()
+	d.log.Debug("writeAnomalyDetector.Observed: poll", zap.Int("resources", len(res.Items)), zap.Time("at", now))
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, item := range res.Items {
 		node, kib, ok := writtenReading(item)
 		if !ok {
+			d.log.Debug("writeAnomalyDetector.Observed: no usable reading (resyncing or no counter)", zap.String("resource", item.Name))
 			continue
 		}
 		t := d.track(item.Name)
 		rate, ok := t.sample(node, kib, now)
 		if !ok {
+			d.log.Debug("writeAnomalyDetector.Observed: first or restarted reading, no rate yet", zap.String("resource", item.Name),
+				zap.String("node", node), zap.Uint64("written_kib", kib))
 			continue
 		}
 		d.judge(item.Name, t, rate, now)
 	}
 	if now.Sub(d.lastSave) >= writeSaveEvery {
+		d.log.Debug("writeAnomalyDetector.Observed: saving baselines", zap.Int("resources", len(d.tracks)))
 		d.save()
 		d.lastSave = now
 	}
@@ -195,7 +204,11 @@ func (d *writeAnomalyDetector) track(resource string) *writeTrack {
 	if !t.loaded && d.store != nil {
 		t.loaded = true
 		if data, err := d.store.LoadWriteBaseline(d.ctx, resource); err == nil && len(data) > 0 {
-			_ = json.Unmarshal(data, &t.base)
+			uerr := json.Unmarshal(data, &t.base)
+			d.log.Debug("writeAnomalyDetector.track: baseline loaded", zap.String("resource", resource),
+				zap.Int("samples", t.base.Global.N), zap.Error(uerr))
+		} else {
+			d.log.Debug("writeAnomalyDetector.track: no stored baseline", zap.String("resource", resource), zap.Error(err))
 		}
 	}
 	return t
@@ -219,9 +232,13 @@ func (t *writeTrack) sample(node string, kib uint64, now time.Time) (float64, bo
 func (d *writeAnomalyDetector) judge(resource string, t *writeTrack, rate float64, now time.Time) {
 	expected, trained := t.base.expected(now)
 	limit := max(d.cfg.Factor*expected, d.cfg.MinMBps*1024*1024)
+	d.log.Debug("writeAnomalyDetector.judge: rate", zap.String("resource", resource), zap.Float64("bytes_per_sec", rate),
+		zap.Float64("expected", expected), zap.Float64("limit", limit), zap.Bool("trained", trained),
+		zap.Int("samples", t.base.Global.N), zap.Bool("firing", t.firing))
 	if trained && rate > limit {
 		t.over++
 		t.calm = 0
+		d.log.Debug("writeAnomalyDetector.judge: over the limit", zap.String("resource", resource), zap.Int("over", t.over))
 		if t.over >= writeConfirmPolls && !t.firing {
 			t.firing = true
 			d.fire(resource, rate, expected)
@@ -234,6 +251,7 @@ func (d *writeAnomalyDetector) judge(resource string, t *writeTrack, rate float6
 	t.base.Global.add(rate, writeGlobalAlpha)
 	t.base.Hours[hourOfWeek(now)].add(rate, writeHourAlpha)
 	if t.firing {
+		d.log.Debug("writeAnomalyDetector.judge: calm poll while firing", zap.String("resource", resource), zap.Int("calm", t.calm+1))
 		if t.calm++; t.calm >= writeCalmPolls {
 			t.firing, t.calm = false, 0
 			d.publish(resource, event.StatusResolved, fmt.Sprintf("%s writes at its usual rate again (%s); "+
@@ -247,12 +265,15 @@ func (d *writeAnomalyDetector) fire(resource string, rate, expected float64) {
 	msg := fmt.Sprintf("%s is being written at %s, %.0fx its usual %s for this hour: a volume being rewritten "+
 		"wholesale, which is what encryption by ransomware looks like (a bulk import or a reindex looks the same)",
 		resource, mbps(rate), rate/max(expected, 1), mbps(expected))
+	d.log.Debug("writeAnomalyDetector.fire: firing", zap.String("resource", resource), zap.Float64("bytes_per_sec", rate),
+		zap.Float64("expected", expected), zap.Duration("freeze", freeze), zap.Bool("has_actions", d.actions != nil))
 	if d.actions == nil {
 		d.publish(resource, event.StatusFiring, msg)
 		return
 	}
 	until, err := d.actions.FreezeSchedule(d.ctx, resource, freeze, "write anomaly at "+d.now().UTC().Format(time.RFC3339))
 	if err != nil {
+		d.log.Debug("writeAnomalyDetector.fire: freeze failed", zap.String("resource", resource), zap.Error(err))
 		msg += fmt.Sprintf(". Its snapshots could not be frozen: %v", err)
 		d.publish(resource, event.StatusFiring, msg)
 		return
@@ -265,12 +286,16 @@ func (d *writeAnomalyDetector) fire(resource string, rate, expected float64) {
 		defer cancel()
 		if err := d.actions.SnapshotNow(ctx, resource); err != nil {
 			d.log.Warn("Write anomaly: snapshot failed", zap.String("resource", resource), zap.Error(err))
+		} else {
+			d.log.Debug("writeAnomalyDetector.fire: snapshot taken", zap.String("resource", resource))
 		}
 	}()
 }
 
 func (d *writeAnomalyDetector) publish(resource string, st event.Status, msg string) {
 	d.log.Warn(msg, zap.String("resource", resource))
+	d.log.Debug("writeAnomalyDetector.publish: event", zap.String("resource", resource), zap.String("status", string(st)),
+		zap.Bool("has_bus", d.events != nil))
 	if d.events != nil {
 		d.events.Publish(event.Event{Type: event.TypeResourceWriteAnomaly, Severity: event.SeverityCritical,
 			Status: st, Resource: resource, Message: msg})
@@ -279,15 +304,19 @@ func (d *writeAnomalyDetector) publish(resource string, st event.Status, msg str
 
 func (d *writeAnomalyDetector) save() {
 	if d.store == nil {
+		d.log.Debug("writeAnomalyDetector.save: no store, baselines kept in memory only")
 		return
 	}
 	for resource, t := range d.tracks {
 		data, err := json.Marshal(t.base)
 		if err != nil {
+			d.log.Debug("writeAnomalyDetector.save: baseline not encoded", zap.String("resource", resource), zap.Error(err))
 			continue
 		}
 		if err := d.store.SaveWriteBaseline(d.ctx, resource, data); err != nil {
 			d.log.Debug("Saving a write baseline failed", zap.String("resource", resource), zap.Error(err))
+		} else {
+			d.log.Debug("writeAnomalyDetector.save: baseline saved", zap.String("resource", resource), zap.Int("samples", t.base.Global.N))
 		}
 	}
 }

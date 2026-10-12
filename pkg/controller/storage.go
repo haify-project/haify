@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/haify-project/haify/pkg/database"
 	"go.uber.org/zap"
@@ -56,6 +57,7 @@ type StorageManager struct {
 
 // NewStorageManager creates a new storage manager
 func NewStorageManager(ctrl *Controller) *StorageManager {
+	ctrlLogOrGlobal(ctrl).Debug("NewStorageManager: building storage manager")
 	return &StorageManager{
 		controller: ctrl,
 	}
@@ -72,6 +74,8 @@ func poolInfoFromDB(pool *database.Pool) *PoolInfo {
 		}
 	}
 
+	zap.L().Debug("poolInfoFromDB: pool from record", zap.String("pool", pool.Name), zap.String("type", pool.Type),
+		zap.String("node", pool.Node), zap.Strings("devices", devices))
 	return &PoolInfo{
 		Name:    pool.Name,
 		Type:    pool.Type,
@@ -95,25 +99,34 @@ func bytesToGB(b uint64) uint64 {
 }
 
 func (sm *StorageManager) getPersistedPool(ctx context.Context, name string) (*PoolInfo, error) {
+	log := ctrlLogOrGlobal(sm.controller)
 	if sm.controller.db == nil {
+		log.Debug("getPersistedPool: no database", zap.String("pool", name))
 		return nil, fmt.Errorf("database not available")
 	}
 
+	start := time.Now()
 	pool, err := sm.controller.db.GetPool(ctx, name)
 	if err != nil {
+		log.Debug("getPersistedPool: not found", zap.String("pool", name), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, err
 	}
 
+	log.Debug("getPersistedPool: found", zap.String("pool", name), zap.String("type", pool.Type), zap.Duration("took", time.Since(start)))
 	return poolInfoFromDB(pool), nil
 }
 
 func (sm *StorageManager) listPersistedPools(ctx context.Context) ([]*PoolInfo, error) {
+	log := ctrlLogOrGlobal(sm.controller)
 	if sm.controller.db == nil {
+		log.Debug("listPersistedPools: no database")
 		return nil, fmt.Errorf("database not available")
 	}
 
+	start := time.Now()
 	pools, err := sm.controller.db.ListPools(ctx)
 	if err != nil {
+		log.Debug("listPersistedPools: database read failed", zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, err
 	}
 
@@ -121,6 +134,7 @@ func (sm *StorageManager) listPersistedPools(ctx context.Context) ([]*PoolInfo, 
 	for _, pool := range pools {
 		result = append(result, poolInfoFromDB(pool))
 	}
+	log.Debug("listPersistedPools: read", zap.Int("count", len(result)), zap.Duration("took", time.Since(start)))
 	return result, nil
 }
 
@@ -139,6 +153,7 @@ func normalizeDeviceList(devices []string) []string {
 		result = append(result, device)
 	}
 	slices.Sort(result)
+	zap.L().Debug("normalizeDeviceList: normalized", zap.Int("given", len(devices)), zap.Strings("devices", result))
 	return result
 }
 
@@ -160,19 +175,26 @@ func normalizeDeviceList(devices []string) []string {
 // keeps working.
 func (sm *StorageManager) defaultedPoolType(poolType string) string {
 	if strings.TrimSpace(poolType) != "" {
+		zap.L().Debug("defaultedPoolType: type given", zap.String("type", poolType))
 		return poolType
 	}
 	if sm.controller == nil || sm.controller.config == nil {
+		zap.L().Debug("defaultedPoolType: no type and no config, left empty")
 		return poolType
 	}
+	zap.L().Debug("defaultedPoolType: using configured default", zap.String("type", sm.controller.config.Storage.DefaultPoolType))
 	return sm.controller.config.Storage.DefaultPoolType
 }
 
 // CreatePool creates a pool from disks on node. A disk holding old data is
 // refused unless wipe is set.
 func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node string, disks []string, sizeGB uint64, wipe bool) error {
+	log := ctrlLogOrGlobal(sm.controller)
+	log.Debug("CreatePool: creating", zap.String("pool", name), zap.String("type", poolType), zap.String("node", node),
+		zap.Strings("disks", disks), zap.Uint64("size_gb", sizeGB), zap.Bool("wipe", wipe))
 	normalizedType, err := normalizeLVMPoolType(sm.defaultedPoolType(poolType))
 	if err != nil {
+		log.Debug("CreatePool: bad pool type", zap.String("type", poolType), zap.Error(err))
 		return err
 	}
 	name = normalizeManagedName(name)
@@ -185,11 +207,14 @@ func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node s
 
 	address := sm.controller.ResolveHost(node)
 	if address == "" {
+		log.Debug("CreatePool: node not found", zap.String("node", node))
 		return fmt.Errorf("node not found: %s", node)
 	}
 
 	if normalizedType == vdoPoolType {
+		log.Debug("CreatePool: VDO pool, checking support", zap.String("host", address))
 		if err := sm.assertVDOSupported(ctx, address, node); err != nil {
+			log.Debug("CreatePool: VDO not supported", zap.String("node", node), zap.Error(err))
 			return err
 		}
 	}
@@ -200,43 +225,59 @@ func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node s
 	var real, files []string
 	for _, d := range disks {
 		if isFileDevice(d) {
+			log.Debug("CreatePool: file-backed device", zap.String("device", d))
 			files = append(files, d)
 		} else {
+			log.Debug("CreatePool: block device", zap.String("device", d))
 			real = append(real, d)
 		}
 	}
 	if len(real) > 0 {
 		if real, err = sm.prepareDisks(ctx, address, node, real, wipe); err != nil {
+			log.Debug("CreatePool: disk preparation failed", zap.Error(err))
 			return err
 		}
 	}
 	loops, err := sm.attachFileDevices(ctx, address, node, name, files, isThinPoolType(normalizedType))
 	if err != nil {
+		log.Debug("CreatePool: file devices not attached", zap.Error(err))
 		return err
 	}
 	recorded := append(append([]string(nil), real...), files...)
 	disks = append(real, loops...)
+	log.Debug("CreatePool: devices ready", zap.Strings("disks", disks), zap.Strings("recorded", recorded))
 
 	// Create PVs first
 	for _, disk := range disks {
+		start := time.Now()
 		result, err := sm.controller.deployment.PVCreate(ctx, []string{address}, disk)
 		if err != nil {
+			log.Debug("CreatePool: pvcreate errored", zap.String("host", address), zap.String("disk", disk),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
 			return fmt.Errorf("failed to create PV on %s: %w", disk, err)
 		}
 		if !result.AllSuccess() {
+			log.Debug("CreatePool: pvcreate failed", zap.String("host", address), zap.String("disk", disk),
+				zap.Duration("took", time.Since(start)))
 			return fmt.Errorf("PV creation failed on %s for disk %s: %s", node, disk, result.FailureDetails())
 		}
+		log.Debug("CreatePool: PV created", zap.String("host", address), zap.String("disk", disk), zap.Duration("took", time.Since(start)))
 	}
 
 	// Create VG
+	start := time.Now()
 	result, err := sm.controller.deployment.VGCreate(ctx, []string{address}, name, disks)
 	if err != nil {
+		log.Debug("CreatePool: vgcreate errored", zap.String("host", address), zap.String("pool", name),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to create pool: %w", err)
 	}
 
 	if !result.AllSuccess() {
+		log.Debug("CreatePool: vgcreate failed", zap.String("host", address), zap.String("pool", name), zap.Duration("took", time.Since(start)))
 		return fmt.Errorf("failed to create pool: %s", result.FailureDetails())
 	}
+	log.Debug("CreatePool: VG created", zap.String("host", address), zap.String("pool", name), zap.Duration("took", time.Since(start)))
 
 	// If type is thin_pool, create a thin pool LV
 	if isThinPoolType(normalizedType) {
@@ -249,16 +290,23 @@ func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node s
 		if sizeGB > 0 {
 			thinSize = fmt.Sprintf("%dG", sizeGB)
 		}
+		log.Debug("CreatePool: creating thin pool", zap.String("thin_lv", thinPoolName), zap.String("size", thinSize),
+			zap.Bool("vdo", normalizedType == vdoPoolType))
 
+		start := time.Now()
 		if normalizedType == vdoPoolType {
 			if err := sm.createVDOThinPool(ctx, address, name, thinSize); err != nil {
+				log.Debug("CreatePool: VDO thin pool failed", zap.Error(err))
 				return err
 			}
 		} else if tpResult, err := sm.controller.deployment.LVCreateThinPool(ctx, []string{address}, name, thinPoolName, thinSize); err != nil {
+			log.Debug("CreatePool: thin pool lvcreate errored", zap.Duration("took", time.Since(start)), zap.Error(err))
 			return fmt.Errorf("failed to create thin pool: %w", err)
 		} else if !tpResult.AllSuccess() {
+			log.Debug("CreatePool: thin pool lvcreate failed", zap.Duration("took", time.Since(start)))
 			return fmt.Errorf("failed to create thin pool: %s", tpResult.FailureDetails())
 		}
+		log.Debug("CreatePool: thin pool created", zap.String("thin_lv", thinPoolName), zap.Duration("took", time.Since(start)))
 	}
 
 	sm.controller.logger.Info("Pool created successfully",
@@ -276,199 +324,23 @@ func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node s
 			sm.controller.logger.Warn("Failed to save pool to database",
 				zap.String("name", name),
 				zap.Error(err))
+		} else {
+			log.Debug("CreatePool: pool record saved", zap.String("pool", name))
 		}
+	} else {
+		log.Debug("CreatePool: no database, pool record not saved", zap.String("pool", name))
 	}
 
 	return nil
 }
 
-// GetPool gets pool information
-func (sm *StorageManager) GetPool(ctx context.Context, poolName, node string) (*PoolInfo, error) {
-	poolName = normalizeManagedName(poolName)
-	persisted, persistedErr := sm.getPersistedPool(ctx, poolName)
-	if persistedErr == nil && isZFSPoolType(persisted.Type) {
-		return sm.GetZFSPool(ctx, poolName, node)
-	}
-
-	address := sm.controller.ResolveHost(node)
-	result, err := sm.controller.deployment.Exec(ctx, []string{address}, "sudo vgs --noheadings --units b --separator '|' -o vg_name,vg_size,vg_free")
-	if err != nil {
-		if zfsPool, zfsErr := sm.GetZFSPool(ctx, poolName, node); zfsErr == nil {
-			return zfsPool, nil
-		}
-		if persistedErr == nil {
-			return persisted, nil
-		}
-		return nil, fmt.Errorf("failed to get pool: %w", err)
-	}
-
-	if !result.AllSuccess() {
-		if zfsPool, zfsErr := sm.GetZFSPool(ctx, poolName, node); zfsErr == nil {
-			return zfsPool, nil
-		}
-		if persistedErr == nil {
-			return persisted, nil
-		}
-		return nil, fmt.Errorf("failed to get pool: %s", result.FailureDetails())
-	}
-
-	// Parse VGS output
-	for _, r := range result.Hosts {
-		if r.Success {
-			lines := strings.Split(strings.TrimSpace(r.Output), "\n")
-			for _, line := range lines {
-				name, totalSize, freeSize, _, ok := parseLVMPoolLine(line)
-				if ok && name == poolName {
-					info := &PoolInfo{
-						Name:       poolName,
-						Type:       "vg",
-						Node:       node,
-						TotalGB:    bytesToGB(totalSize),
-						FreeGB:     bytesToGB(freeSize),
-						TotalBytes: totalSize,
-						FreeBytes:  freeSize,
-						Devices:    []string{},
-					}
-					// A pool that cannot report its cache is still a pool; the
-					// capacity figures above are the reason this call exists.
-					if cache, cerr := sm.readPoolCache(ctx, address, poolName); cerr == nil {
-						info.Cache = cache
-					} else {
-						sm.controller.logger.Warn("Failed to read pool cache state",
-							zap.String("pool", poolName), zap.Error(cerr))
-					}
-					// Same tolerance for utilisation, and the same reason it is
-					// worth a second call: the vgs figures above cannot say
-					// whether a thin pool is about to refuse writes.
-					if usage, uerr := sm.readThinUsage(ctx, address, poolName); uerr == nil {
-						info.ThinUsage = usage
-					} else {
-						sm.controller.logger.Warn("Failed to read thin pool usage",
-							zap.String("pool", poolName), zap.Error(uerr))
-					}
-					return info, nil
-				}
-			}
-		}
-	}
-
-	if zfsPool, zfsErr := sm.GetZFSPool(ctx, poolName, node); zfsErr == nil {
-		return zfsPool, nil
-	}
-
-	if persistedErr == nil {
-		return persisted, nil
-	}
-
-	return nil, fmt.Errorf("pool not found: %s", poolName)
-}
-
-// ListPools lists all pools across all nodes (LVM and ZFS)
-func (sm *StorageManager) ListPools(ctx context.Context) ([]*PoolInfo, error) {
-	var pools []*PoolInfo
-	// Use map to deduplicate by normalized node name
-	seen := make(map[string]bool)
-
-	hosts := sm.poolHosts(ctx)
-	if len(hosts) == 0 {
-		if persisted, err := sm.listPersistedPools(ctx); err == nil {
-			return persisted, nil
-		}
-		return pools, nil
-	}
-
-	// 1. Get LVM pools. Adding pv_name to the vgs output makes vgs emit one row
-	// per physical volume (vg_name/size/free repeated), so a single SSH round
-	// yields both the capacity AND the devices backing each VG — no separate
-	// pvs call. Rows for the same VG are folded into one PoolInfo, collecting
-	// its devices.
-	poolByKey := make(map[string]*PoolInfo)
-	result, err := sm.controller.deployment.Exec(ctx, hosts, "sudo vgs --noheadings --units b --separator '|' -o vg_name,vg_size,vg_free,pv_name")
-	if err != nil {
-		// Log error but continue to try ZFS
-		sm.controller.logger.Warn("Failed to list LVM pools", zap.Error(err))
-	} else {
-		for host, r := range result.Hosts {
-			if r.Success {
-				normalizedHost := sm.controller.NormalizeHost(host)
-				if normalizedHost == "" {
-					normalizedHost = host
-				}
-
-				lines := strings.Split(strings.TrimSpace(r.Output), "\n")
-				for _, line := range lines {
-					line = strings.TrimSpace(line)
-					if line == "" {
-						continue
-					}
-					vgName, totalSize, freeSize, pv, ok := parseLVMPoolLine(line)
-					if !ok || !strings.HasPrefix(vgName, managedNamePrefix) {
-						continue
-					}
-					key := normalizedHost + "/lvm/" + vgName
-					pool, exists := poolByKey[key]
-					if !exists {
-						pool = &PoolInfo{
-							Name:       vgName,
-							Type:       "vg",
-							Node:       normalizedHost,
-							TotalGB:    bytesToGB(totalSize),
-							FreeGB:     bytesToGB(freeSize),
-							TotalBytes: totalSize,
-							FreeBytes:  freeSize,
-						}
-						poolByKey[key] = pool
-						seen[key] = true
-						pools = append(pools, pool)
-					}
-					if pv != "" {
-						pool.Devices = append(pool.Devices, pv)
-					}
-				}
-			}
-		}
-		for _, pool := range poolByKey {
-			slices.Sort(pool.Devices)
-		}
-
-		// Two lvs calls for every host, folded into the rows above by the same
-		// normalized host name they were keyed under.
-		if len(poolByKey) > 0 {
-			caches := sm.cacheByPool(ctx, hosts)
-			usage := sm.thinUsageByPool(ctx, hosts)
-			for _, pool := range poolByKey {
-				if byVG, ok := caches[pool.Node]; ok {
-					pool.Cache = byVG[pool.Name]
-				}
-				if byVG, ok := usage[pool.Node]; ok {
-					pool.ThinUsage = byVG[pool.Name]
-				}
-			}
-			sm.attachVDOUsage(ctx, poolByKey)
-		}
-	}
-
-	// 2. Get ZFS pools
-	zfsPools, err := sm.ListZFSpools(ctx)
-	if err != nil {
-		sm.controller.logger.Warn("Failed to list ZFS pools", zap.Error(err))
-	} else {
-		pools = append(pools, zfsPools...)
-	}
-
-	if len(pools) == 0 {
-		if persisted, err := sm.listPersistedPools(ctx); err == nil {
-			return persisted, nil
-		}
-	}
-
-	return pools, nil
-}
-
 // DeletePool deletes a storage pool
 func (sm *StorageManager) DeletePool(ctx context.Context, name, node string) error {
+	log := ctrlLogOrGlobal(sm.controller)
+	log.Debug("DeletePool: deleting", zap.String("pool", name), zap.String("node", node))
 	name = normalizeManagedName(name)
 	if persisted, err := sm.getPersistedPool(ctx, name); err == nil && isZFSPoolType(persisted.Type) {
+		log.Debug("DeletePool: recorded as ZFS, deleting the zpool", zap.String("pool", name))
 		return sm.DeleteZFSPool(ctx, name, node)
 	}
 
@@ -499,12 +371,17 @@ if vgs "$vg" >/dev/null 2>&1; then
 else
   exit 4
 fi`, name, fileTeardownScript(name))) + " | base64 -d | sudo /bin/bash"
+	start := time.Now()
 	result, err := sm.controller.deployment.Exec(ctx, []string{address}, cmd)
+	log.Debug("DeletePool: vgremove script ran", zap.String("host", address), zap.String("pool", name),
+		zap.Bool("all_success", err == nil && result.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err == nil && !result.AllSuccess() && strings.Contains(result.FailureDetails(), "still holds volumes") {
+		log.Debug("DeletePool: pool still holds volumes, refusing", zap.String("pool", name))
 		return errors.New(result.FailureDetails())
 	}
 	if err != nil {
 		if zfsErr := sm.DeleteZFSPool(ctx, name, node); zfsErr == nil {
+			log.Debug("DeletePool: exec failed but it was a zpool, deleted that", zap.String("pool", name))
 			return nil
 		}
 		return fmt.Errorf("failed to delete pool: %w", err)
@@ -512,8 +389,10 @@ fi`, name, fileTeardownScript(name))) + " | base64 -d | sudo /bin/bash"
 
 	if !result.AllSuccess() {
 		if zfsErr := sm.DeleteZFSPool(ctx, name, node); zfsErr == nil {
+			log.Debug("DeletePool: not a VG but a zpool, deleted that", zap.String("pool", name))
 			return nil
 		}
+		log.Debug("DeletePool: failed", zap.String("pool", name), zap.Strings("failed_hosts", result.FailedHosts()))
 		return fmt.Errorf("failed to delete pool: %s", result.FailureDetails())
 	}
 
@@ -526,6 +405,8 @@ fi`, name, fileTeardownScript(name))) + " | base64 -d | sudo /bin/bash"
 			sm.controller.logger.Warn("Failed to delete pool from database",
 				zap.String("name", name),
 				zap.Error(err))
+		} else {
+			log.Debug("DeletePool: pool record deleted", zap.String("pool", name))
 		}
 	}
 

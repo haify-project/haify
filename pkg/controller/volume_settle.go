@@ -32,15 +32,22 @@ const (
 // volumePeerStates reads, on address, each peer's state for volume vol of
 // resource, keyed by peer name.
 func (rm *ResourceManager) volumePeerStates(ctx context.Context, address, resource string, vol int) (map[string]drbdPeerDevice, error) {
+	log := ctrlLogOrGlobal(rm.controller)
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{address}, "sudo drbdsetup status "+resource+" --json")
 	if err != nil {
+		log.Debug("volumePeerStates: status errored", zap.String("host", address), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, err
 	}
 	hr := res.Hosts[address]
 	if hr == nil || !hr.Success {
+		log.Debug("volumePeerStates: status failed", zap.String("host", address), zap.Duration("took", time.Since(start)))
 		return nil, fmt.Errorf("drbdsetup status %s failed on %s", resource, address)
 	}
-	return parseVolumePeerStates(hr.Output, vol)
+	peers, err := parseVolumePeerStates(hr.Output, vol)
+	log.Debug("volumePeerStates: read", zap.String("host", address), zap.String("resource", resource), zap.Int("volume", vol),
+		zap.Int("peers", len(peers)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return peers, err
 }
 
 // parseVolumePeerStates extracts volume vol's peer devices from `drbdsetup
@@ -101,22 +108,27 @@ func peersNotUpToDate(peers map[string]drbdPeerDevice) []string {
 // left, or wait passes; it returns the last ones reported.
 func (rm *ResourceManager) waitVolumePeers(ctx context.Context, address, resource string, vol int, wait time.Duration,
 	done func(map[string]drbdPeerDevice) []string) ([]string, error) {
+	log := ctrlLogOrGlobal(rm.controller)
 	deadline := time.Now().Add(wait)
 	var left []string
 	for {
 		peers, err := rm.volumePeerStates(ctx, address, resource, vol)
 		if err == nil {
 			if left = done(peers); len(left) == 0 {
+				log.Debug("waitVolumePeers: every peer done", zap.String("resource", resource), zap.Int("volume", vol))
 				return nil, nil
 			}
 		} else {
 			left = []string{err.Error()}
 		}
+		log.Debug("waitVolumePeers: peers left", zap.String("resource", resource), zap.Int("volume", vol), zap.Strings("left", left))
 		if time.Now().After(deadline) {
+			log.Debug("waitVolumePeers: deadline passed", zap.Duration("wait", wait))
 			return left, nil
 		}
 		select {
 		case <-ctx.Done():
+			log.Debug("waitVolumePeers: cancelled", zap.Error(ctx.Err()))
 			return left, ctx.Err()
 		case <-time.After(time.Second):
 		}
@@ -126,20 +138,27 @@ func (rm *ResourceManager) waitVolumePeers(ctx context.Context, address, resourc
 // settleNewVolume declares a freshly added, empty volume UpToDate on every
 // replica without a sync, as described above.
 func (rm *ResourceManager) settleNewVolume(ctx context.Context, address, resource string, vol int) error {
+	log := ctrlLogOrGlobal(rm.controller)
+	log.Debug("settleNewVolume: waiting for the handshake", zap.String("host", address), zap.String("resource", resource), zap.Int("volume", vol))
 	left, err := rm.waitVolumePeers(ctx, address, resource, vol, volumeHandshakeWait, unsettledPeers)
 	if err != nil {
+		log.Debug("settleNewVolume: handshake wait cancelled", zap.Error(err))
 		return err
 	}
 	if len(left) > 0 {
+		log.Debug("settleNewVolume: peers did not attach", zap.Strings("peers", left))
 		return fmt.Errorf("volume %d of %s did not attach on every peer within %s: %s", vol, resource,
 			volumeHandshakeWait, strings.Join(left, ", "))
 	}
 	cmd := fmt.Sprintf("sudo drbdadm new-current-uuid --clear-bitmap %s/%d", resource, vol)
 	if err := rm.execAllSuccess(ctx, []string{address}, cmd, "failed to initialize new volume sync state"); err != nil {
+		log.Debug("settleNewVolume: bitmap not cleared", zap.Error(err))
 		return err
 	}
+	log.Debug("settleNewVolume: bitmap cleared, waiting for UpToDate", zap.String("resource", resource), zap.Int("volume", vol))
 	left, err = rm.waitVolumePeers(ctx, address, resource, vol, volumeUpToDateWait, peersNotUpToDate)
 	if err != nil {
+		log.Debug("settleNewVolume: UpToDate wait cancelled", zap.Error(err))
 		return err
 	}
 	if len(left) > 0 {
@@ -149,5 +168,6 @@ func (rm *ResourceManager) settleNewVolume(ctx context.Context, address, resourc
 			"failover there. Copy it over with `drbdadm invalidate-remote %s:<peer>/%d` on %s",
 			vol, resource, strings.Join(left, ", "), resource, vol, address)
 	}
+	log.Debug("settleNewVolume: settled", zap.String("resource", resource), zap.Int("volume", vol))
 	return nil
 }
