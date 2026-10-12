@@ -7,7 +7,7 @@ on:
       - "docs/**"
       - "docs-site/**"
       - "mkdocs.yml"
-      - "deploy/*/README.md"
+      - "deploy/**/README.md"
       - "README_cn.md"
       - ".github/workflows/pages.yml"
   workflow_dispatch:

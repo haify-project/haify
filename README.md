@@ -12,14 +12,14 @@ No agent runs on the storage nodes: one controller drives them over SSH and keep
 
 ## Features
 
-- **Pools**: LVM, LVM-thin, ZFS. SSD caching for thin pools.
-- **Resources**: replicated DRBD volumes with automatic placement, online resize, diskless clients, quorum tiebreakers, LUKS2 encryption at rest, TLS-encrypted replication.
+- **Pools**: LVM, LVM-thin, ZFS, or an image file on a node without a spare disk. SSD caching for thin pools. A disk put into a server shows up as unused, and nothing that holds data is overwritten without being asked.
+- **Resources**: replicated DRBD volumes with automatic placement, online resize, diskless clients (made into replicas in place, without stopping what uses them), quorum tiebreakers, LUKS2 encryption at rest, TLS-encrypted replication over one or more networks.
 - **Gateways**: NFS, SMB, iSCSI, NVMe-oF, each failing over with drbd-reactor and a floating IP.
 - **Applications**: PostgreSQL, MySQL / MariaDB, Redis or an S3 object store (RustFS) run on a resource and fail over with it (`haify app`).
-- **Snapshots and backups**: LVM / ZFS snapshots with retention schedules; scheduled, incremental backups to S3, SMB or WebDAV, restorable on a rebuilt or different cluster.
+- **Snapshots and backups**: LVM / ZFS snapshots with retention schedules; scheduled, incremental backups to S3, SMB or WebDAV, restorable on a rebuilt or different cluster; a resource copied straight into another Haify cluster.
 - **Cross-site**: asynchronous DR replicas over a TCP tunnel that works through NAT.
 - **Integrity**: scheduled DRBD verify with resync, alerts on degraded replicas, lost Primaries, out-of-sync data and full pools.
-- **Kubernetes**: CSI driver with snapshots, clones, expansion, raw block and remote (diskless) access.
+- **Kubernetes and Docker**: CSI driver (manifests or a Helm chart) with snapshots, clones, expansion, raw block and remote (diskless) access; a Docker volume plugin whose volumes follow containers between hosts.
 - **Virtual machines**: Proxmox VE storage plugin with a panel in the PVE web UI; an XCP-ng storage driver; a libvirt hook for plain KVM; an OpenStack Cinder driver with a Horizon panel. Live migration works on all four.
 - **AI**: MCP server for Claude Code, ChatGPT and others (local or remote with role-scoped tokens and OAuth), plus a Copilot in the web UI.
 - **Operations**: token auth, RBAC, audit log, TLS, Prometheus metrics, notifications to Feishu / Slack / WeCom / DingTalk / webhooks.

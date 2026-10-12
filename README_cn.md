@@ -2,7 +2,7 @@
 
 # Haify - 软件定义存储
 
-Haify 是一套坏一台服务器也照常工作的存储。它用 DRBD 9 把卷复制到多个节点，提供给 Kubernetes（CSI）、Proxmox VE、KVM（libvirt）和 OpenStack（Cinder、Horizon）使用，也可以通过 NFS / SMB / iSCSI / NVMe-oF 网关对外提供。它还管理存储池和高可用，AI 助手可以通过 MCP 操作它。控制器是一个用 Go 编写的轻量程序。
+Haify 是一套坏一台服务器也照常工作的存储。它用 DRBD 9 把卷复制到多个节点，提供给 Kubernetes（CSI、Helm）、Docker、Proxmox VE、XCP-ng、KVM（libvirt）和 OpenStack（Cinder、Horizon）使用，也可以通过 NFS / SMB / iSCSI / NVMe-oF 网关对外提供。它还管理存储池和高可用，AI 助手可以通过 MCP 操作它。控制器是一个用 Go 编写的轻量程序。
 
 [English](README.md) | 简体中文 | [文档站](https://haify-project.github.io/haify/)
 
@@ -12,15 +12,15 @@ Haify 是一套坏一台服务器也照常工作的存储。它用 DRBD 9 把卷
 
 ## 功能
 
-- **存储池**：LVM、LVM-thin、ZFS，thin 池支持 SSD 缓存。
-- **资源**：DRBD 复制卷，支持自动放置、在线扩容、无盘客户端、仲裁 tiebreaker、LUKS2 静态加密和复制链路 TLS 加密。
+- **存储池**：LVM、LVM-thin、ZFS，也可以在没有空盘的节点上用镜像文件建池；thin 池支持 SSD 缓存。新插的硬盘会显示为未使用，有数据的盘不经确认绝不覆盖。
+- **资源**：DRBD 复制卷，支持自动放置、在线扩容、无盘客户端（可原地转成副本，不打断正在用它的东西）、仲裁 tiebreaker、LUKS2 静态加密，复制可走一条或多条网络并做 TLS 加密。
 - **网关**：NFS、SMB、iSCSI、NVMe-oF，由 drbd-reactor 加浮动 IP 做故障转移。
 - **应用**：PostgreSQL、MySQL / MariaDB、Redis 或 S3 对象存储（RustFS）跑在资源上，随资源一起故障转移（`haify app`）。
-- **快照与备份**：LVM / ZFS 快照和保留策略；定时、增量备份到 S3、SMB 或 WebDAV，可在重建的或另一个集群上恢复。
+- **快照与备份**：LVM / ZFS 快照和保留策略；定时、增量备份到 S3、SMB 或 WebDAV，可在重建的或另一个集群上恢复；也可以把资源直接复制到另一个 Haify 集群。
 - **跨站点**：通过能穿过 NAT 的 TCP 隧道做异步容灾副本。
 - **数据完整性**：定时 DRBD verify 并可重同步；副本降级、Primary 丢失、数据不同步、存储池写满时发出告警。
-- **Kubernetes**：CSI 驱动，支持快照、克隆、扩容、原始块设备和远程（无盘）访问。
-- **虚拟机**：Proxmox VE 存储插件（PVE 网页里带 Haify 面板）；普通 KVM 用 libvirt 钩子；OpenStack 有 Cinder 驱动和 Horizon 面板。三者都支持热迁移。
+- **Kubernetes 和 Docker**：CSI 驱动（清单或 Helm chart），支持快照、克隆、扩容、原始块设备和远程（无盘）访问；Docker 卷插件，卷跟着容器在主机间走。
+- **虚拟机**：Proxmox VE 存储插件（PVE 网页里带 Haify 面板）；XCP-ng 存储驱动；普通 KVM 用 libvirt 钩子；OpenStack 有 Cinder 驱动和 Horizon 面板。四者都支持热迁移。
 - **AI**：给 Claude Code、ChatGPT 等用的 MCP 服务（本地，或带角色令牌和 OAuth 的远程），以及 Web UI 里的 Copilot。
 - **运维**：令牌认证、RBAC、审计日志、TLS、Prometheus 指标，通知可发到飞书 / Slack / 企业微信 / 钉钉 / Webhook。
 
@@ -118,7 +118,7 @@ Web UI 地址是 `http://node1:3376`。控制器 Self-HA、WAN 容灾副本、�
 
 ## 集成
 
-Kubernetes：把控制器地址填进 `deploy/k8s/00-haify-controller-endpoint.yaml`，`kubectl apply -f deploy/k8s/`，然后使用 `haify-drbd` StorageClass（见 [deploy/k8s/README.md](deploy/k8s/README.md)）。Proxmox VE 见 [deploy/proxmox/README.md](deploy/proxmox/README.md)；`deploy/proxmox/bootstrap.sh` 用一条命令在现有 PVE 集群上装好 DRBD、控制器、Self-HA、插件和存储条目。KVM（libvirt）见 [deploy/libvirt/README.md](deploy/libvirt/README.md)，OpenStack（Cinder、Horizon）见 [deploy/openstack/README.md](deploy/openstack/README.md)，Prometheus 和 Grafana 见 [deploy/monitoring/README.md](deploy/monitoring/README.md)。
+Kubernetes：把控制器地址填进 `deploy/k8s/00-haify-controller-endpoint.yaml`，`kubectl apply -f deploy/k8s/`，然后使用 `haify-drbd` StorageClass（见 [deploy/k8s/README.md](deploy/k8s/README.md)）。Proxmox VE 见 [deploy/proxmox/README.md](deploy/proxmox/README.md)；`deploy/proxmox/bootstrap.sh` 用一条命令在现有 PVE 集群上装好 DRBD、控制器、Self-HA、插件和存储条目。XCP-ng 见 [deploy/xcp-ng/README.md](deploy/xcp-ng/README.md)，KVM（libvirt）见 [deploy/libvirt/README.md](deploy/libvirt/README.md)，Docker 见 [deploy/docker/README.md](deploy/docker/README.md)，Helm 见 [deploy/helm/haify-csi/README.md](deploy/helm/haify-csi/README.md)，OpenStack（Cinder、Horizon）见 [deploy/openstack/README.md](deploy/openstack/README.md)，Prometheus 和 Grafana 见 [deploy/monitoring/README.md](deploy/monitoring/README.md)。
 
 AI 助手：
 

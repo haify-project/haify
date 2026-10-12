@@ -13,8 +13,10 @@ hide:
 - [Deployment](deployment-guide.md): install Haify and set up a cluster
 - [User guide](user-guide.md): everyday tasks, step by step
 - [Node prerequisites](node-prerequisites.md): what each server needs
-- [Kubernetes (CSI)](../deploy/k8s/README.md): volumes for containers
+- [Kubernetes (CSI)](../deploy/k8s/README.md): volumes for containers, also as a [Helm chart](../deploy/helm/haify-csi/README.md)
+- [Docker](../deploy/docker/README.md): volumes that follow containers between hosts
 - [Proxmox VE](../deploy/proxmox/README.md): volumes for virtual machines
+- [XCP-ng](../deploy/xcp-ng/README.md): a storage repository whose every disk is replicated
 - [KVM (libvirt)](../deploy/libvirt/README.md): VM disks under libvirt, with failover
 - [OpenStack](../deploy/openstack/README.md): Cinder volumes, and a panel in Horizon
 - [Evacuating VMware vSAN](vsan-evacuation.md): move VMware VMs to Proxmox VE on Haify

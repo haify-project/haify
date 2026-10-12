@@ -66,7 +66,10 @@ nav:
   - User guide: user-guide.md
   - Integrations:
       - Kubernetes (CSI): kubernetes.md
+      - Kubernetes (Helm chart): helm.md
+      - Docker: docker.md
       - Proxmox VE: proxmox.md
+      - XCP-ng: xcp-ng.md
       - KVM (libvirt): libvirt.md
       - OpenStack (Cinder, Horizon): openstack.md
       - Evacuating VMware vSAN: vsan-evacuation.md
