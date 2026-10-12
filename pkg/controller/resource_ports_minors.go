@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -18,8 +19,12 @@ import (
 // already binds the given TCP port, or "" if the port is free. The resource
 // being created (selfName) is ignored so re-runs don't flag themselves.
 func (rm *ResourceManager) findPortConflict(ctx context.Context, host string, port uint32, selfName string) (string, error) {
+	log := rm.resourcesLog()
 	cmd := fmt.Sprintf("grep -lE 'address[^;]*:%d;' /etc/drbd.d/*.res 2>/dev/null || true", port)
+	start := time.Now()
 	result, err := rm.deployment.Exec(ctx, []string{host}, cmd)
+	log.Debug("findPortConflict: scanned configs", zap.String("host", host), zap.Uint32("port", port),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return "", err
 	}
@@ -31,10 +36,12 @@ func (rm *ResourceManager) findPortConflict(ctx context.Context, host string, po
 			}
 			base := strings.TrimSuffix(filepath.Base(line), ".res")
 			if base != selfName {
+				log.Debug("findPortConflict: port taken", zap.Uint32("port", port), zap.String("owner", base))
 				return base, nil
 			}
 		}
 	}
+	log.Debug("findPortConflict: port free", zap.String("host", host), zap.Uint32("port", port))
 	return "", nil
 }
 
@@ -65,7 +72,9 @@ func (rm *ResourceManager) findPortConflict(ctx context.Context, host string, po
 // config has been distributed. Failing here instead says which resource is in
 // the way, before anything is changed.
 func (rm *ResourceManager) assertMinorsFreeOn(ctx context.Context, host, resource string, minors []int) error {
+	log := rm.resourcesLog()
 	if len(minors) == 0 {
+		log.Debug("assertMinorsFreeOn: no minors to check", zap.String("resource", resource), zap.String("host", host))
 		return nil
 	}
 	// List every minor the node already has, with the resource that owns it.
@@ -73,7 +82,10 @@ func (rm *ResourceManager) assertMinorsFreeOn(ctx context.Context, host, resourc
 	// them (a removed resource whose device node lingers).
 	cmd := "grep -H -E '^[[:space:]]*device[[:space:]]+minor' /etc/drbd.d/*.res 2>/dev/null; " +
 		"sudo drbdsetup show --show-defaults 2>/dev/null | grep -E '^resource|volume|device' || true"
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{host}, cmd)
+	log.Debug("assertMinorsFreeOn: listed minors on node", zap.String("resource", resource), zap.String("host", host),
+		zap.Ints("minors", minors), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		// A node we cannot inspect is a node we cannot vouch for, but refusing
 		// the whole operation on a transient SSH hiccup is worse than letting
@@ -90,11 +102,14 @@ func (rm *ResourceManager) assertMinorsFreeOn(ctx context.Context, host, resourc
 
 	for _, hr := range res.Hosts {
 		if minor, owner, ok := minorTaken(hr.Output, resource, want); ok {
+			log.Debug("assertMinorsFreeOn: minor taken", zap.String("resource", resource), zap.String("host", host),
+				zap.Int("minor", minor), zap.String("owner", owner))
 			return fmt.Errorf("device minor %d needed by %q is already used on %s by %s; "+
 				"free it there (drbdadm down + remove its .res) or recreate %q on a free minor",
 				minor, resource, host, owner, resource)
 		}
 	}
+	log.Debug("assertMinorsFreeOn: minors free", zap.String("resource", resource), zap.String("host", host))
 	return nil
 }
 
@@ -129,8 +144,11 @@ func minorTaken(output, resource string, want map[int]bool) (minor int, owner st
 		if owner == "" {
 			owner = "another resource or a stale device node"
 		}
+		zap.L().Debug("minorTaken: wanted minor held by another owner", zap.String("resource", resource),
+			zap.Int("minor", m), zap.String("owner", owner))
 		return m, owner, true
 	}
+	zap.L().Debug("minorTaken: no wanted minor held by another owner", zap.String("resource", resource), zap.Int("wanted", len(want)))
 	return 0, "", false
 }
 
@@ -178,15 +196,21 @@ func resourceMinors(config string) []int {
 			minors = append(minors, m)
 		}
 	}
+	zap.L().Debug("resourceMinors: parsed minors", zap.Ints("minors", minors))
 	return minors
 }
 
 func (rm *ResourceManager) nextGlobalMinor(ctx context.Context, hosts []string) (int, error) {
+	log := rm.resourcesLog()
 	if len(hosts) == 0 {
+		log.Debug("nextGlobalMinor: no hosts")
 		return 0, fmt.Errorf("no hosts to allocate a device minor on")
 	}
+	start := time.Now()
 	result, err := rm.deployment.Exec(ctx, hosts,
 		"cat /etc/drbd.d/*.res 2>/dev/null; ls -1d /dev/drbd[0-9]* 2>/dev/null || true")
+	log.Debug("nextGlobalMinor: read configs and device nodes", zap.Strings("hosts", hosts),
+		zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return 0, err
 	}
@@ -201,6 +225,7 @@ func (rm *ResourceManager) nextGlobalMinor(ctx context.Context, hosts []string) 
 			}
 		}
 	}
+	log.Debug("nextGlobalMinor: chose minor", zap.Int("max_used", maxMinor), zap.Int("minor", maxMinor+1))
 	return maxMinor + 1, nil
 }
 
@@ -215,6 +240,7 @@ func parsePortsFromResConfigs(text string) []uint32 {
 			ports = append(ports, uint32(p))
 		}
 	}
+	zap.L().Debug("parsePortsFromResConfigs: parsed ports", zap.Int("count", len(ports)))
 	return ports
 }
 
@@ -226,6 +252,7 @@ func lowestFreePort(used []uint32, base uint32) uint32 {
 	}
 	for p := base; ; p++ {
 		if !set[p] {
+			zap.L().Debug("lowestFreePort: chose port", zap.Uint32("base", base), zap.Int("used", len(used)), zap.Uint32("port", p))
 			return p
 		}
 	}
@@ -234,7 +261,10 @@ func lowestFreePort(used []uint32, base uint32) uint32 {
 // nextGlobalPort scans existing .res files on host and returns the lowest free
 // DRBD port at or above 7000.
 func (rm *ResourceManager) nextGlobalPort(ctx context.Context, host string) (uint32, error) {
+	start := time.Now()
 	result, err := rm.deployment.Exec(ctx, []string{host}, "cat /etc/drbd.d/*.res 2>/dev/null || true")
+	rm.resourcesLog().Debug("nextGlobalPort: read configs", zap.String("host", host),
+		zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return 0, err
 	}

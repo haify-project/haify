@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/haify-project/haify/pkg/database"
 	"go.uber.org/zap"
@@ -31,14 +32,20 @@ type AdoptResult struct {
 // from the .res. Adopting a resource that is already recorded simply refreshes
 // the record (idempotent, no error).
 func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes []string, port uint32, protocol string) (*AdoptResult, error) {
+	log := rm.resourcesLog()
+	log.Debug("AdoptResource: start", zap.String("resource", name), zap.Strings("nodes", nodes),
+		zap.Uint32("port", port), zap.String("protocol", protocol))
 	if rm.deployment == nil {
+		log.Debug("AdoptResource: no deployment client", zap.String("resource", name))
 		return nil, fmt.Errorf("deployment client not set")
 	}
 	if rm.controller.db == nil {
+		log.Debug("AdoptResource: no database", zap.String("resource", name))
 		return nil, fmt.Errorf("database not available")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
+		log.Debug("AdoptResource: no resource name")
 		return nil, fmt.Errorf("resource name is required")
 	}
 
@@ -54,6 +61,7 @@ func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes
 	// wins, then every registered node, then any statically configured host.
 	candidates := rm.adoptCandidateHosts(ctx, flagNodes)
 	if len(candidates) == 0 {
+		log.Debug("AdoptResource: no candidate host", zap.String("resource", name))
 		return nil, fmt.Errorf("no reachable node to read DRBD config for %q: register a node or pass --nodes", name)
 	}
 
@@ -61,6 +69,7 @@ func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes
 	// pure read — it never mutates the resource.
 	configContent, usedHost, err := rm.readForeignResourceConfig(ctx, candidates, name)
 	if err != nil {
+		log.Debug("AdoptResource: could not read config", zap.String("resource", name), zap.Error(err))
 		return nil, err
 	}
 
@@ -68,12 +77,15 @@ func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes
 	discNodes := parseResourceConfigNodes(configContent)
 	discPort := parsePortFromConfig(configContent)
 	cfgVolumes := parseResourceConfigVolumes(configContent)
+	log.Debug("AdoptResource: discovered from config", zap.String("resource", name), zap.String("host", usedHost),
+		zap.Strings("nodes", discNodes), zap.Uint32("port", discPort), zap.Int("volumes", len(cfgVolumes)))
 
 	adoptNodes := flagNodes
 	if len(adoptNodes) == 0 {
 		adoptNodes = discNodes
 	}
 	if len(adoptNodes) == 0 {
+		log.Debug("AdoptResource: no nodes determined", zap.String("resource", name))
 		return nil, fmt.Errorf("could not determine nodes for %q from %s:/etc/drbd.d/%s.res; pass --nodes", name, usedHost, name)
 	}
 	if port == 0 {
@@ -82,6 +94,8 @@ func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes
 	if protocol == "" {
 		protocol = "C"
 	}
+	log.Debug("AdoptResource: adopting with", zap.String("resource", name), zap.Strings("nodes", adoptNodes),
+		zap.Bool("nodes_from_flag", len(flagNodes) > 0), zap.Uint32("port", port), zap.String("protocol", protocol))
 
 	// Persist Haify metadata only — the DRBD resource and its data are left
 	// exactly as they are.
@@ -93,11 +107,16 @@ func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes
 		Replicas: len(adoptNodes),
 	}
 	if existing, err := rm.controller.db.GetResource(ctx, name); err == nil {
+		log.Debug("AdoptResource: refreshing existing record", zap.String("resource", name))
 		resRecord.Profile = existing.Profile
 		resRecord.Labels = cloneStringMap(existing.Labels)
 		resRecord.CreatedAt = existing.CreatedAt
+	} else {
+		log.Debug("AdoptResource: no existing record", zap.String("resource", name), zap.Error(err))
 	}
-	if err := rm.controller.db.SaveResource(ctx, resRecord); err != nil {
+	err = rm.controller.db.SaveResource(ctx, resRecord)
+	log.Debug("AdoptResource: saved resource record", zap.String("resource", name), zap.Error(err))
+	if err != nil {
 		return nil, fmt.Errorf("record adopted resource %q: %w", name, err)
 	}
 
@@ -108,9 +127,11 @@ func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes
 		// section) and any volume with no backing disk — they carry no data to
 		// record and would duplicate the data-bearing volume of the same ID.
 		if v.DiskPath == "" || v.DiskPath == "none" {
+			log.Debug("AdoptResource: skipping diskless volume", zap.String("resource", name), zap.Int("volume_id", v.VolumeID))
 			continue
 		}
 		if seenVolID[v.VolumeID] {
+			log.Debug("AdoptResource: skipping duplicate volume", zap.String("resource", name), zap.Int("volume_id", v.VolumeID))
 			continue
 		}
 		seenVolID[v.VolumeID] = true
@@ -128,7 +149,10 @@ func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes
 			Pool:         pool,
 			Device:       v.DiskPath,
 		}
-		if err := rm.controller.db.SaveVolume(ctx, volRecord); err != nil {
+		err := rm.controller.db.SaveVolume(ctx, volRecord)
+		log.Debug("AdoptResource: saved volume record", zap.String("resource", name), zap.Int("volume_id", v.VolumeID),
+			zap.String("volume", volumeName), zap.String("pool", pool), zap.String("device", v.DiskPath), zap.Error(err))
+		if err != nil {
 			return nil, fmt.Errorf("record adopted volume %d of %q: %w", v.VolumeID, name, err)
 		}
 		savedVolumes++
@@ -155,6 +179,7 @@ func (rm *ResourceManager) AdoptResource(ctx context.Context, name string, nodes
 // to try when reading a foreign resource's .res: explicit flag nodes first,
 // then every registered node, then any statically configured host.
 func (rm *ResourceManager) adoptCandidateHosts(ctx context.Context, flagNodes []string) []string {
+	log := rm.resourcesLog()
 	var hosts []string
 	seen := make(map[string]bool)
 	add := func(h string) {
@@ -168,7 +193,9 @@ func (rm *ResourceManager) adoptCandidateHosts(ctx context.Context, flagNodes []
 		add(rm.controller.ResolveHost(n))
 	}
 	if rm.controller.nodes != nil {
-		if list, err := rm.controller.nodes.ListNodes(ctx); err == nil {
+		list, err := rm.controller.nodes.ListNodes(ctx)
+		log.Debug("adoptCandidateHosts: listed registered nodes", zap.Int("count", len(list)), zap.Error(err))
+		if err == nil {
 			for _, n := range list {
 				add(n.Address)
 			}
@@ -177,6 +204,7 @@ func (rm *ResourceManager) adoptCandidateHosts(ctx context.Context, flagNodes []
 	for _, h := range rm.GetHosts() {
 		add(h)
 	}
+	log.Debug("adoptCandidateHosts: candidates", zap.Strings("flag_nodes", flagNodes), zap.Strings("hosts", hosts))
 	return hosts
 }
 
@@ -186,10 +214,14 @@ func (rm *ResourceManager) adoptCandidateHosts(ctx context.Context, flagNodes []
 // fabricates a record for a resource that is not really there. Returns the
 // config content and the host it was read from.
 func (rm *ResourceManager) readForeignResourceConfig(ctx context.Context, hosts []string, name string) (string, string, error) {
+	log := rm.resourcesLog()
 	cmd := fmt.Sprintf("cat /etc/drbd.d/%s.res 2>/dev/null || true", name)
 	var lastErr error
 	for _, host := range hosts {
+		start := time.Now()
 		result, err := rm.deployment.Exec(ctx, []string{host}, cmd)
+		log.Debug("readForeignResourceConfig: read from host", zap.String("resource", name), zap.String("host", host),
+			zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			lastErr = err
 			continue
@@ -203,11 +235,16 @@ func (rm *ResourceManager) readForeignResourceConfig(ctx context.Context, hosts 
 		}
 		if strings.Contains(content, "resource "+name) ||
 			(strings.Contains(content, "resource ") && strings.Contains(content, "on ")) {
+			log.Debug("readForeignResourceConfig: found config", zap.String("resource", name), zap.String("host", host),
+				zap.Int("bytes", len(content)))
 			return content, host, nil
 		}
+		log.Debug("readForeignResourceConfig: no config for resource there", zap.String("resource", name), zap.String("host", host))
 	}
 	if lastErr != nil {
+		log.Debug("readForeignResourceConfig: read failed", zap.String("resource", name), zap.Error(lastErr))
 		return "", "", fmt.Errorf("read DRBD config for %q: %w", name, lastErr)
 	}
+	log.Debug("readForeignResourceConfig: resource not found on any host", zap.String("resource", name), zap.Int("hosts", len(hosts)))
 	return "", "", fmt.Errorf("DRBD resource %q not found: no /etc/drbd.d/%s.res on any reachable node — refusing to adopt a resource that does not exist", name, name)
 }

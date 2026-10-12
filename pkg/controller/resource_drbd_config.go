@@ -1,11 +1,9 @@
 package controller
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"go.uber.org/zap"
 )
@@ -17,6 +15,12 @@ import (
 // wan is nil for a normal LAN resource (output unchanged). When set, the config
 // is rendered in WAN mode (protocol A + pull-ahead + loopback addresses).
 func (rm *ResourceManager) generateDrbdConfig(name string, port uint32, volumes []resolvedVolume, nodes, disklessNodes []string, protocol, storageType string, options map[string]string, wan *wanConfig) string {
+	log := rm.resourcesLog()
+	// Option keys only: a value can be a DRBD shared-secret.
+	log.Debug("generateDrbdConfig: start", zap.String("resource", name), zap.Uint32("port", port),
+		zap.Int("volumes", len(volumes)), zap.Strings("nodes", nodes), zap.Strings("diskless_nodes", disklessNodes),
+		zap.String("protocol", protocol), zap.String("storage_type", storageType), zap.Int("options", len(options)),
+		zap.Bool("wan", wan != nil), zap.Bool("multi_primary", wan.multiPrimary()))
 	var config strings.Builder
 
 	// Organize options by section -> key -> value
@@ -57,6 +61,7 @@ func (rm *ResourceManager) generateDrbdConfig(name string, port uint32, volumes 
 	// downgrade the synchronous primary-site mesh to async, which is the exact
 	// guarantee those replicas exist to provide.
 	if wan != nil && !wan.multiPrimary() {
+		log.Debug("generateDrbdConfig: two-endpoint WAN; async with pull-ahead", zap.String("resource", name))
 		protocol = "A"
 		setOption("net", "on-congestion", "pull-ahead")
 		setOption("net", "congestion-fill", "2M")
@@ -227,6 +232,8 @@ func (rm *ResourceManager) generateDrbdConfig(name string, port uint32, volumes 
 
 		// Resolve hostname to IP address if not already an IP
 		ip = resolveToIP(ip)
+		log.Debug("generateDrbdConfig: node stanza", zap.String("resource", name), zap.String("node", node),
+			zap.String("address", ip), zap.Int("node_id", i), zap.Bool("diskless", diskless[node]))
 
 		// `on <name>` must be the node's real hostname: drbdadm only applies a
 		// resource to a host that finds itself in one of these sections. The
@@ -346,156 +353,7 @@ func (rm *ResourceManager) generateDrbdConfig(name string, port uint32, volumes 
 
 	config.WriteString("}\n")
 
+	log.Debug("generateDrbdConfig: generated", zap.String("resource", name), zap.String("protocol", protocol),
+		zap.Int("members", len(allNodes)), zap.Int("bytes", config.Len()))
 	return config.String()
-}
-
-// SetOptions updates DRBD options on an existing resource. It rewrites the
-// shared .res config in place — preserving volumes and node sections — and runs
-// `drbdadm adjust` so the changes take effect without recreating the resource.
-// Keys use the "section/key" form (e.g. "net/max-buffers", "disk/on-io-error");
-// a bare key defaults to the resource-level "options" section.
-func (rm *ResourceManager) SetOptions(ctx context.Context, resource string, options map[string]string) error {
-	if len(options) == 0 {
-		return fmt.Errorf("no options provided")
-	}
-	if err := rm.rewriteResourceConfig(ctx, resource, func(current string) (string, error) {
-		updated, err := applyDrbdOptions(current, options)
-		if err != nil {
-			return "", fmt.Errorf("failed to apply options: %w", err)
-		}
-		return updated, nil
-	}); err != nil {
-		return err
-	}
-	rm.controller.logger.Info("Updated DRBD options",
-		zap.String("resource", resource),
-		zap.Any("options", options))
-	return nil
-}
-
-// RepairResourceConfig brings every participant's copy of a resource's config
-// back into agreement and applies it.
-//
-// What it fixes is a config that disagrees with itself about the diskless
-// nodes: a volume the tiebreaker's stanza has no `disk none` override for, and
-// a tiebreaker whose copy of the file never heard of that volume. Resources
-// that gained a volume before AddVolume learned to update diskless nodes — every
-// gateway on a cluster with a tiebreaker — are in exactly that state, their
-// tiebreaker retrying a connection DRBD keeps refusing.
-//
-// It also puts every registered node's address from the registry into its
-// `on` stanza, so a config left behind by a renumbering that did not finish —
-// a node's old address, or two peers on one — comes back right.
-//
-// Last, it installs the boot unit on every participant, so a member that
-// joined through add-replica, add-dr, attach-diskless or set-tiebreaker before
-// those paths installed it comes back up after its next reboot.
-func (rm *ResourceManager) RepairResourceConfig(ctx context.Context, resource string) error {
-	byHost := rm.controller.nodes.drbdAddressesByHost()
-	if err := rm.rewriteResourceConfig(ctx, resource, func(current string) (string, error) {
-		return reconcileDrbdAddresses(current, byHost), nil
-	}); err != nil {
-		return err
-	}
-	hosts, err := rm.resourceHosts(ctx, resource)
-	if err != nil {
-		return err
-	}
-	encrypted := false
-	if rm.controller.db != nil {
-		if dbRes, gerr := rm.controller.db.GetResource(ctx, resource); gerr == nil && dbRes != nil {
-			encrypted = dbRes.Encrypted
-		}
-	}
-	return rm.ensureBootUnitOnMembers(ctx, resource,
-		dedupe(append(hosts, rm.disklessParticipantHosts(ctx, resource)...)), encrypted)
-}
-
-// rewriteResourceConfig reads a resource's config from a diskful node, applies
-// change, reconciles the diskless nodes' volume overrides, and — when anything
-// differs from what the diskless nodes hold — installs the result on every
-// participant and adjusts it.
-//
-// Every participant, not every diskful node: tiebreakers and diskless clients
-// hold the same file. Rewriting it on the diskful nodes alone is how their
-// copies drifted in the first place.
-func (rm *ResourceManager) rewriteResourceConfig(ctx context.Context, resource string, change func(string) (string, error)) error {
-	hosts, diskless, err := rm.stageResourceConfig(ctx, resource, change)
-	if err != nil {
-		return err
-	}
-	// Diskless nodes first. When a diskful node learns that a peer's volume
-	// is diskless it drops the bitmap it keeps for that peer, and the kernel
-	// refuses that ("Can not drop the bitmap when both sides have a disk")
-	// until the peer has actually connected as diskless. Adjusting everyone at
-	// once lost that race on the first repair of a live gateway.
-	adjust := fmt.Sprintf("sudo drbdadm adjust %s", resource)
-	if len(diskless) > 0 {
-		if err := rm.execAllSuccess(ctx, diskless, adjust, "failed to apply the resource config on the diskless nodes"); err != nil {
-			return err
-		}
-	}
-	// The diskless nodes connect asynchronously, so the diskful adjust can
-	// still arrive first. Give it a few seconds' grace; with no diskless node
-	// there is nothing to wait for and the first answer stands.
-	var err2 error
-	for attempt := 0; attempt < 5; attempt++ {
-		if err2 = rm.execAllSuccess(ctx, hosts, adjust, "failed to apply the resource config"); err2 == nil || len(diskless) == 0 {
-			return err2
-		}
-		select {
-		case <-ctx.Done():
-			return err2
-		case <-time.After(3 * time.Second):
-		}
-	}
-	return err2
-}
-
-// stageResourceConfig reads a resource's config from a diskful node, applies
-// change, reconciles the diskless nodes' volume overrides and installs the
-// result on every participant, without applying it. It returns the diskful and
-// diskless hosts.
-func (rm *ResourceManager) stageResourceConfig(ctx context.Context, resource string, change func(string) (string, error)) ([]string, []string, error) {
-	if rm.deployment == nil {
-		return nil, nil, fmt.Errorf("deployment client not set")
-	}
-	hosts, err := rm.resourceHosts(ctx, resource)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(hosts) == 0 {
-		return nil, nil, fmt.Errorf("resource %q has no nodes", resource)
-	}
-	diskless := rm.disklessParticipantHosts(ctx, resource)
-	allHosts := append(append([]string(nil), hosts...), diskless...)
-	resPath := fmt.Sprintf("/etc/drbd.d/%s.res", resource)
-
-	// Read the current config from a diskful node: it is the one that
-	// describes the resource's volumes.
-	result, err := rm.deployment.Exec(ctx, []string{hosts[0]}, "cat "+resPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read config: %w", err)
-	}
-	var current string
-	var found bool
-	for _, hr := range result.Hosts {
-		current, found = hr.Output, hr.Success
-		break
-	}
-	if !found || strings.TrimSpace(current) == "" {
-		return nil, nil, fmt.Errorf("resource %q config not found on %s", resource, hosts[0])
-	}
-
-	updated, err := change(current)
-	if err != nil {
-		return nil, nil, err
-	}
-	updated = reconcileDisklessVolumeOverrides(updated)
-
-	if _, err := rm.deployment.DistributeConfig(ctx, allHosts, updated, resPath); err != nil {
-		return nil, nil, fmt.Errorf("failed to distribute updated config: %w", err)
-	}
-
-	return hosts, diskless, nil
 }

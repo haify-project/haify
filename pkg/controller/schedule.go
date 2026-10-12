@@ -13,7 +13,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/database"
-	"github.com/haify-project/haify/pkg/deployment"
 )
 
 // schedSnapMarker separates a backing volume name from the UTC timestamp in a
@@ -42,6 +41,7 @@ func parseSnapName(name string) (backingVolume string, ts time.Time, ok bool) {
 	tsStr := name[idx+len(schedSnapMarker):]
 	parsed, err := time.ParseInLocation(snapTimeLayout, tsStr, time.UTC)
 	if err != nil || prefix == "" {
+		zap.L().Debug("parseSnapName: marker but no valid timestamp", zap.String("snapshot", name), zap.Error(err))
 		return "", time.Time{}, false
 	}
 	return prefix, parsed, true
@@ -65,6 +65,8 @@ func gfsHasRetention(p database.GFSPolicy) bool {
 // so a misconfiguration can never wipe a resource's snapshots.
 func selectExpiredSnapshots(snaps []scheduledSnap, policy database.GFSPolicy) []scheduledSnap {
 	if !gfsHasRetention(policy) || len(snaps) == 0 {
+		zap.L().Debug("selectExpiredSnapshots: nothing to expire", zap.Bool("has_retention", gfsHasRetention(policy)),
+			zap.Int("snapshots", len(snaps)))
 		return nil
 	}
 
@@ -105,6 +107,9 @@ func selectExpiredSnapshots(snaps []scheduledSnap, policy database.GFSPolicy) []
 			expired = append(expired, s)
 		}
 	}
+	zap.L().Debug("selectExpiredSnapshots: applied policy", zap.Int("snapshots", len(sorted)), zap.Int("kept", len(kept)),
+		zap.Int("expired", len(expired)), zap.Int("hourly", policy.Hourly), zap.Int("daily", policy.Daily),
+		zap.Int("weekly", policy.Weekly), zap.Int("monthly", policy.Monthly), zap.Int("yearly", policy.Yearly))
 	return expired
 }
 
@@ -126,15 +131,27 @@ func NewScheduleManager(c *Controller) *ScheduleManager {
 	return &ScheduleManager{controller: c}
 }
 
+// scheduleLog is the logger the scheduler traces through: the controller's,
+// or the global one for a manager built without one (tests build them bare).
+func (sm *ScheduleManager) scheduleLog() *zap.Logger {
+	if sm != nil && sm.controller != nil && sm.controller.logger != nil {
+		return sm.controller.logger
+	}
+	return zap.L()
+}
+
 // Start loads persisted schedules and begins firing them. Safe to call once on
 // the active controller; a no-op if already started.
 func (sm *ScheduleManager) Start(ctx context.Context) error {
+	log := sm.scheduleLog()
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if sm.started {
+		log.Debug("ScheduleManager.Start: already started")
 		return nil
 	}
 	if err := sm.rebuildLocked(ctx); err != nil {
+		log.Debug("ScheduleManager.Start: rebuild failed", zap.Error(err))
 		return err
 	}
 	sm.cron.Start()
@@ -148,6 +165,7 @@ func (sm *ScheduleManager) Stop() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if !sm.started {
+		sm.scheduleLog().Debug("ScheduleManager.Stop: not started")
 		return
 	}
 	if sm.cron != nil {
@@ -164,19 +182,25 @@ func (sm *ScheduleManager) Stop() {
 // lockDays, when set, locks the snapshots the schedule takes (snapshot_lock.go);
 // nil keeps the lock of the schedule being replaced.
 func (sm *ScheduleManager) CreateSchedule(ctx context.Context, resource, cronExpr string, policy database.GFSPolicy, enabled bool, lockDays *int) error {
+	log := sm.scheduleLog()
+	log.Debug("ScheduleManager.CreateSchedule: start", zap.String("resource", resource), zap.String("cron", cronExpr),
+		zap.Bool("enabled", enabled), zap.Bool("lock_given", lockDays != nil))
 	if err := validateCron(cronExpr); err != nil {
 		return err
 	}
 	if !gfsHasRetention(policy) {
+		log.Debug("ScheduleManager.CreateSchedule: policy keeps nothing", zap.String("resource", resource))
 		return fmt.Errorf("retention policy keeps nothing: set at least one of hourly/daily/weekly/monthly/yearly")
 	}
 	if sm.controller.db == nil {
+		log.Debug("ScheduleManager.CreateSchedule: no database")
 		return fmt.Errorf("database not available")
 	}
 	if _, err := sm.controller.db.GetResource(ctx, resource); err != nil {
+		log.Debug("ScheduleManager.CreateSchedule: resource not found", zap.String("resource", resource), zap.Error(err))
 		return fmt.Errorf("resource %q not found", resource)
 	}
-	old, _ := sm.controller.db.GetSnapshotSchedule(ctx, resource)
+	old, oerr := sm.controller.db.GetSnapshotSchedule(ctx, resource)
 	lock := 0
 	if old != nil {
 		lock = old.LockDays
@@ -184,7 +208,10 @@ func (sm *ScheduleManager) CreateSchedule(ctx context.Context, resource, cronExp
 	if lockDays != nil {
 		lock = *lockDays
 	}
+	log.Debug("ScheduleManager.CreateSchedule: existing schedule", zap.String("resource", resource), zap.Bool("replacing", old != nil),
+		zap.Int("lock_days", lock), zap.NamedError("lookup_error", oerr))
 	if err := checkScheduleLockChange(old, lock, lockNow()); err != nil {
+		log.Debug("ScheduleManager.CreateSchedule: lock change refused", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	s := &database.SnapshotSchedule{
@@ -201,7 +228,9 @@ func (sm *ScheduleManager) CreateSchedule(ctx context.Context, resource, cronExp
 		s.LastRun, s.CreatedAt = old.LastRun, old.CreatedAt
 		s.FrozenUntil, s.FrozenAt, s.FrozenReason = old.FrozenUntil, old.FrozenAt, old.FrozenReason
 	}
-	if err := sm.controller.db.SaveSnapshotSchedule(ctx, s); err != nil {
+	err := sm.controller.db.SaveSnapshotSchedule(ctx, s)
+	log.Debug("ScheduleManager.CreateSchedule: saved schedule", zap.String("resource", resource), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("save schedule: %w", err)
 	}
 	sm.controller.logger.Info("Created snapshot schedule",
@@ -212,16 +241,22 @@ func (sm *ScheduleManager) CreateSchedule(ctx context.Context, resource, cronExp
 // DeleteSchedule removes a schedule. Existing snapshots are left in place;
 // only future scheduled snapshots and pruning stop.
 func (sm *ScheduleManager) DeleteSchedule(ctx context.Context, name string) error {
+	log := sm.scheduleLog()
+	log.Debug("ScheduleManager.DeleteSchedule: start", zap.String("schedule", name))
 	if sm.controller.db == nil {
+		log.Debug("ScheduleManager.DeleteSchedule: no database")
 		return fmt.Errorf("database not available")
 	}
 	if s, err := sm.controller.db.GetSnapshotSchedule(ctx, name); err == nil && s != nil {
 		if until := scheduleLockedUntil(s, lockNow()); !until.IsZero() {
+			log.Debug("ScheduleManager.DeleteSchedule: snapshots still locked", zap.String("schedule", name), zap.Time("until", until))
 			return fmt.Errorf("the schedule of %s locks its snapshots and the newest stay locked until %s; it can be deleted after that",
 				s.Resource, until.UTC().Format(time.RFC3339))
 		}
 	}
-	if err := sm.controller.db.DeleteSnapshotSchedule(ctx, name); err != nil {
+	err := sm.controller.db.DeleteSnapshotSchedule(ctx, name)
+	log.Debug("ScheduleManager.DeleteSchedule: deleted schedule", zap.String("schedule", name), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("delete schedule: %w", err)
 	}
 	sm.controller.logger.Info("Deleted snapshot schedule", zap.String("name", name))
@@ -230,10 +265,14 @@ func (sm *ScheduleManager) DeleteSchedule(ctx context.Context, name string) erro
 
 // ListSchedules returns all schedules.
 func (sm *ScheduleManager) ListSchedules(ctx context.Context) ([]*database.SnapshotSchedule, error) {
+	log := sm.scheduleLog()
 	if sm.controller.db == nil {
+		log.Debug("ScheduleManager.ListSchedules: no database")
 		return nil, fmt.Errorf("database not available")
 	}
-	return sm.controller.db.ListSnapshotSchedules(ctx)
+	schedules, err := sm.controller.db.ListSnapshotSchedules(ctx)
+	log.Debug("ScheduleManager.ListSchedules: listed", zap.Int("count", len(schedules)), zap.Error(err))
+	return schedules, err
 }
 
 // NextRun returns the next fire time of a cron expression after now, or the
@@ -241,6 +280,7 @@ func (sm *ScheduleManager) ListSchedules(ctx context.Context) ([]*database.Snaps
 func NextRun(cronExpr string, now time.Time) time.Time {
 	sched, err := cron.ParseStandard(cronExpr)
 	if err != nil {
+		zap.L().Debug("NextRun: invalid cron", zap.String("cron", cronExpr), zap.Error(err))
 		return time.Time{}
 	}
 	return sched.Next(now)
@@ -249,6 +289,7 @@ func NextRun(cronExpr string, now time.Time) time.Time {
 // validateCron checks a standard 5-field cron expression.
 func validateCron(cronExpr string) error {
 	if _, err := cron.ParseStandard(cronExpr); err != nil {
+		zap.L().Debug("validateCron: invalid cron", zap.String("cron", cronExpr), zap.Error(err))
 		return fmt.Errorf("invalid cron expression %q: %w", cronExpr, err)
 	}
 	return nil
@@ -257,32 +298,39 @@ func validateCron(cronExpr string) error {
 // reload rebuilds cron entries from the database. Called after any schedule
 // change so edits take effect without a controller restart.
 func (sm *ScheduleManager) reload(ctx context.Context) error {
+	log := sm.scheduleLog()
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	if !sm.started {
+		log.Debug("ScheduleManager.reload: not started; nothing to reload")
 		return nil
 	}
 	old := sm.cron
 	if err := sm.rebuildLocked(ctx); err != nil {
+		log.Debug("ScheduleManager.reload: rebuild failed", zap.Error(err))
 		return err
 	}
 	sm.cron.Start()
 	if old != nil {
 		old.Stop()
 	}
+	log.Debug("ScheduleManager.reload: cron replaced", zap.Int("entries", len(sm.cron.Entries())))
 	return nil
 }
 
 // rebuildLocked constructs a fresh (stopped) cron populated with every enabled
 // schedule. The caller holds sm.mu and starts the cron.
 func (sm *ScheduleManager) rebuildLocked(ctx context.Context) error {
+	log := sm.scheduleLog()
 	c := cron.New()
 	schedules, err := sm.controller.db.ListSnapshotSchedules(ctx)
+	log.Debug("ScheduleManager.rebuildLocked: loaded snapshot schedules", zap.Int("count", len(schedules)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("load snapshot schedules: %w", err)
 	}
 	for _, s := range schedules {
 		if !s.Enabled {
+			log.Debug("ScheduleManager.rebuildLocked: schedule disabled", zap.String("schedule", s.Name))
 			continue
 		}
 		name := s.Name
@@ -291,9 +339,12 @@ func (sm *ScheduleManager) rebuildLocked(ctx context.Context) error {
 				zap.String("schedule", name),
 				zap.String("cron", s.Cron),
 				zap.Error(err))
+		} else {
+			log.Debug("ScheduleManager.rebuildLocked: scheduled", zap.String("schedule", name), zap.String("cron", s.Cron))
 		}
 	}
 	if err := sm.addBackupSchedules(ctx, c); err != nil {
+		log.Debug("ScheduleManager.rebuildLocked: backup schedules failed", zap.Error(err))
 		return err
 	}
 	if spec := sm.verifySchedule(); spec != "" {
@@ -314,6 +365,7 @@ func (sm *ScheduleManager) rebuildLocked(ctx context.Context) error {
 		}
 	}
 	sm.cron = c
+	log.Debug("ScheduleManager.rebuildLocked: built cron", zap.Int("entries", len(c.Entries())))
 	return nil
 }
 
@@ -321,223 +373,7 @@ func (sm *ScheduleManager) verifySchedule() string {
 	if sm.controller.config == nil {
 		return ""
 	}
-	return strings.TrimSpace(sm.controller.config.Storage.VerifySchedule)
-}
-
-// runSchedule executes one schedule: snapshot the resource's volumes on every
-// diskful node, then prune per the GFS policy. Per-node failures are logged
-// and do not abort the rest.
-func (sm *ScheduleManager) runSchedule(name string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	log := sm.controller.logger
-
-	s, err := sm.controller.db.GetSnapshotSchedule(ctx, name)
-	if err != nil || s == nil || !s.Enabled {
-		return
-	}
-
-	res, err := sm.controller.resources.GetResource(ctx, s.Resource)
-	if err != nil {
-		log.Warn("Snapshot schedule: resource lookup failed",
-			zap.String("schedule", name), zap.String("resource", s.Resource), zap.Error(err))
-		return
-	}
-	if len(res.Volumes) == 0 || len(res.Nodes) == 0 {
-		log.Warn("Snapshot schedule: resource has no diskful volumes/nodes",
-			zap.String("schedule", name), zap.String("resource", s.Resource))
-		return
-	}
-
-	ts := time.Now().UTC()
-	log.Info("Running snapshot schedule",
-		zap.String("schedule", name), zap.String("resource", s.Resource),
-		zap.Int("nodes", len(res.Nodes)), zap.Int("volumes", len(res.Volumes)))
-
-	lock := time.Duration(s.LockDays) * 24 * time.Hour
-	frozen := !scheduleFrozenUntil(s, lockNow()).IsZero()
-	sm.snapshotResource(ctx, res, s, ts)
-	for _, node := range res.Nodes {
-		host := sm.controller.ResolveHost(node)
-		for _, vol := range res.Volumes {
-			// A frozen schedule removes nothing, not even to relieve a full
-			// pool: what it froze is the history from before something
-			// started rewriting the volume.
-			if frozen {
-				continue
-			}
-			sm.pruneVolume(ctx, host, node, vol, s.Keep, lock)
-			sm.relieveThinPool(ctx, host, node, s.Resource, vol, lock)
-		}
-	}
-
-	s.LastRun = time.Now()
-	if err := sm.controller.db.SaveSnapshotSchedule(ctx, s); err != nil {
-		log.Warn("Snapshot schedule: failed to record last run",
-			zap.String("schedule", name), zap.Error(err))
-	}
-}
-
-// snapshotVolume takes one storage-native snapshot of vol on host.
-func (sm *ScheduleManager) snapshotVolume(ctx context.Context, host, node string, vol *ResourceVolumeInfo, ts time.Time) {
-	log := sm.controller.logger
-	snapName := buildSnapName(vol.BackingVolume, ts)
-	dep := sm.controller.deployment
-
-	if isZFSDevice(vol.Device) {
-		dataset := fmt.Sprintf("%s/%s", vol.Pool, vol.BackingVolume)
-		res, err := dep.ZFSSnapshot(ctx, []string{host}, dataset, snapName)
-		logSnapResult(log, "zfs", node, snapName, res, err)
-		return
-	}
-
-	// LVM: thin snapshots size from the pool; thick snapshots need a COW size.
-	thin, err := dep.LVIsThin(ctx, host, vol.Pool, vol.BackingVolume)
-	if err != nil {
-		log.Warn("Snapshot schedule: LVIsThin failed; assuming thick",
-			zap.String("node", node), zap.String("volume", vol.BackingVolume), zap.Error(err))
-	}
-	if thin {
-		res, e := dep.LVCreateThinSnapshot(ctx, []string{host}, vol.Pool, vol.BackingVolume, snapName)
-		logSnapResult(log, "lvm-thin", node, snapName, res, e)
-		return
-	}
-	// Thick LVM snapshots need an absolute COW size (-L); reserve ~20% of the
-	// origin, with a floor so tiny volumes still get usable headroom.
-	res, e := dep.LVCreateSnapshot(ctx, []string{host}, vol.Pool, vol.BackingVolume, snapName, cowSize(vol.SizeGB))
-	logSnapResult(log, "lvm", node, snapName, res, e)
-}
-
-// cowSize returns a copy-on-write reservation (~20% of an originGB-sized
-// volume) as an lvcreate -L argument, never below 256 MiB.
-func cowSize(originGB uint64) string {
-	return fmt.Sprintf("%dM", cowBytes(originGB)>>20)
-}
-
-// pruneVolume lists scheduled snapshots of vol on host and deletes those the
-// GFS policy no longer retains.
-//
-// A snapshot still inside its lock window is kept whatever the policy says; a
-// later run prunes it once the lock has expired.
-func (sm *ScheduleManager) pruneVolume(ctx context.Context, host, node string, vol *ResourceVolumeInfo, policy database.GFSPolicy, lock time.Duration) {
-	log := sm.controller.logger
-	snaps, err := sm.listScheduledSnaps(ctx, host, vol)
-	if err != nil {
-		log.Warn("Snapshot schedule: list snapshots failed",
-			zap.String("node", node), zap.String("volume", vol.BackingVolume), zap.Error(err))
-		return
-	}
-	expired := unlockedSnaps(selectExpiredSnapshots(snaps, policy), lock, lockNow())
-	dep := sm.controller.deployment
-	for _, s := range expired {
-		var derr error
-		if isZFSDevice(vol.Device) {
-			snap := fmt.Sprintf("%s/%s@%s", vol.Pool, vol.BackingVolume, s.Name)
-			sm.controller.releaseZFSLockHold(ctx, host, snap)
-			_, derr = dep.ZFSDestroySnapshot(ctx, []string{host}, snap)
-		} else {
-			_, derr = dep.LVRemoveSnapshot(ctx, []string{host}, vol.Pool, s.Name)
-		}
-		if derr != nil {
-			log.Warn("Snapshot schedule: prune failed",
-				zap.String("node", node), zap.String("snapshot", s.Name), zap.Error(derr))
-			continue
-		}
-		log.Info("Snapshot schedule: pruned expired snapshot",
-			zap.String("node", node), zap.String("snapshot", s.Name))
-	}
-}
-
-// listScheduledSnaps returns this volume's scheduler-managed snapshots on host.
-func (sm *ScheduleManager) listScheduledSnaps(ctx context.Context, host string, vol *ResourceVolumeInfo) ([]scheduledSnap, error) {
-	dep := sm.controller.deployment
-	var names []string
-
-	if isZFSDevice(vol.Device) {
-		dataset := fmt.Sprintf("%s/%s", vol.Pool, vol.BackingVolume)
-		res, err := dep.ZFSListSnapshots(ctx, []string{host}, dataset)
-		if err != nil {
-			return nil, err
-		}
-		for _, line := range execLines(res, host) {
-			// "pool/vol@snapname  used  refer  creation"
-			fields := strings.Fields(line)
-			if len(fields) == 0 {
-				continue
-			}
-			if at := strings.Index(fields[0], "@"); at >= 0 {
-				names = append(names, fields[0][at+1:])
-			}
-		}
-	} else {
-		res, err := dep.LVListSnapshots(ctx, []string{host}, vol.Pool)
-		if err != nil {
-			return nil, err
-		}
-		for _, line := range execLines(res, host) {
-			// Pipe-separated, because lv_time carries spaces. Splitting on
-			// whitespace worked only as long as the name was first and nothing
-			// downstream looked at the other columns.
-			name := strings.TrimSpace(line)
-			if idx := strings.IndexByte(name, '|'); idx >= 0 {
-				name = strings.TrimSpace(name[:idx])
-			}
-			if name == "" {
-				continue
-			}
-			names = append(names, name)
-		}
-	}
-
-	var out []scheduledSnap
-	for _, n := range names {
-		backing, ts, ok := parseSnapName(n)
-		if !ok || backing != vol.BackingVolume {
-			continue
-		}
-		out = append(out, scheduledSnap{Name: n, TS: ts})
-	}
-	return out, nil
-}
-
-// isZFSDevice reports whether a volume's device path is a ZFS zvol.
-func isZFSDevice(device string) bool {
-	return strings.Contains(device, "/dev/zvol/")
-}
-
-// execLines returns the trimmed non-empty output lines for host from a result.
-func execLines(res *deployment.ExecResult, host string) []string {
-	if res == nil {
-		return nil
-	}
-	var lines []string
-	for h, hr := range res.Hosts {
-		if h != host {
-			continue
-		}
-		for _, raw := range strings.Split(hr.Output, "\n") {
-			if t := strings.TrimSpace(raw); t != "" {
-				lines = append(lines, t)
-			}
-		}
-	}
-	return lines
-}
-
-// logSnapResult records the outcome of a single snapshot attempt.
-func logSnapResult(log *zap.Logger, kind, node, snapName string, res *deployment.ExecResult, err error) {
-	if err != nil {
-		log.Warn("Snapshot schedule: snapshot failed",
-			zap.String("kind", kind), zap.String("node", node),
-			zap.String("snapshot", snapName), zap.Error(err))
-		return
-	}
-	if res != nil && !res.AllSuccess() {
-		log.Warn("Snapshot schedule: snapshot failed on host",
-			zap.String("kind", kind), zap.String("node", node),
-			zap.String("snapshot", snapName), zap.Strings("failed", res.FailedHosts()))
-		return
-	}
-	log.Info("Snapshot schedule: created snapshot",
-		zap.String("kind", kind), zap.String("node", node), zap.String("snapshot", snapName))
+	spec := strings.TrimSpace(sm.controller.config.Storage.VerifySchedule)
+	sm.scheduleLog().Debug("ScheduleManager.verifySchedule: verify cron", zap.String("cron", spec))
+	return spec
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -34,14 +35,20 @@ type grownVolume struct {
 // larger than snapshot name of it. A size that cannot be read counts as not
 // grown: the rollback then behaves as it always did.
 func (rm *ResourceManager) volumesGrownSinceSnapshot(ctx context.Context, targets []snapTarget, host, name string) []grownVolume {
+	log := rm.resourcesLog()
 	var out []grownVolume
 	for _, t := range targets {
 		if t.zfs {
+			log.Debug("volumesGrownSinceSnapshot: zvol; not checked", zap.String("volume", t.vol.VolumeName))
 			continue
 		}
 		cur, err1 := rm.lvSizeBytes(ctx, host, t.vol.Pool+"/"+t.vol.VolumeName)
 		snap, err2 := rm.lvSizeBytes(ctx, host, t.vol.Pool+"/"+t.lvName(name))
-		if err1 != nil || err2 != nil || snap >= cur {
+		grown := err1 == nil && err2 == nil && snap < cur
+		log.Debug("volumesGrownSinceSnapshot: compared sizes", zap.String("volume", t.vol.VolumeName), zap.String("snapshot", name),
+			zap.Uint64("size_bytes", cur), zap.Uint64("snapshot_bytes", snap), zap.Bool("grown", grown),
+			zap.NamedError("volume_error", err1), zap.NamedError("snapshot_error", err2))
+		if !grown {
 			continue
 		}
 		out = append(out, grownVolume{
@@ -54,7 +61,10 @@ func (rm *ResourceManager) volumesGrownSinceSnapshot(ctx context.Context, target
 }
 
 func (rm *ResourceManager) lvSizeBytes(ctx context.Context, host, lv string) (uint64, error) {
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{host}, "sudo lvs --noheadings --units b --nosuffix -o lv_size "+lv)
+	rm.resourcesLog().Debug("lvSizeBytes: read LV size", zap.String("host", host), zap.String("lv", lv),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return 0, err
 	}
@@ -76,7 +86,9 @@ func (rm *ResourceManager) clearGrownSizes(ctx context.Context, resource string,
 	for _, g := range grown {
 		exact = exact || g.exact > 0
 	}
+	log := rm.resourcesLog()
 	if !exact {
+		log.Debug("clearGrownSizes: no exact sizes to clear", zap.String("resource", resource), zap.Int("grown", len(grown)))
 		return nil
 	}
 	_, _, err := rm.stageResourceConfig(ctx, resource, func(conf string) (string, error) {
@@ -91,6 +103,8 @@ func (rm *ResourceManager) clearGrownSizes(ctx context.Context, resource string,
 		}
 		return conf, nil
 	})
+	log.Debug("clearGrownSizes: cleared exact sizes from config", zap.String("resource", resource),
+		zap.Int("grown", len(grown)), zap.Error(err))
 	return err
 }
 
@@ -116,14 +130,21 @@ func clearVolumeSizeInConfig(conf string, volumeID int) (string, error) {
 // growBack grows the rolled-back volumes to the sizes they had, once every
 // replica is connected again: DRBD settles a resize between connected peers.
 func (rm *ResourceManager) growBack(ctx context.Context, resource string, hosts []string, grown []grownVolume) error {
+	log := rm.resourcesLog()
 	if len(grown) == 0 {
+		log.Debug("growBack: nothing to grow back", zap.String("resource", resource))
 		return nil
 	}
+	start := time.Now()
 	if err := rm.execAllSuccess(ctx, hosts, "sudo drbdsetup wait-connect-resource --wfc-timeout=60 "+resource,
 		"wait for the replicas of "+resource+" to connect"); err != nil {
+		log.Debug("growBack: replicas did not connect", zap.String("resource", resource), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return err
 	}
+	log.Debug("growBack: replicas connected", zap.String("resource", resource), zap.Duration("took", time.Since(start)))
 	for _, g := range grown {
+		log.Debug("growBack: growing volume", zap.String("resource", resource), zap.Uint32("volume_id", g.volumeID),
+			zap.Uint64("size_gb", g.sizeGB), zap.Uint64("size_bytes", g.exact))
 		if err := rm.resizeVolume(ctx, resource, g.volumeID, g.sizeGB, g.exact, true); err != nil {
 			return fmt.Errorf("%s/%d is back at its snapshot's size; growing it to %d GiB again failed (haify "+
 				"resource resize grows it): %w", resource, g.volumeID, g.sizeGB, err)

@@ -49,7 +49,12 @@ func (rm *ResourceManager) replicationCA() (*drbdtls.CA, error) {
 	if rm.controller.config != nil && rm.controller.config.Database.Path != "" {
 		dir = filepath.Join(filepath.Dir(rm.controller.config.Database.Path), "drbd-tls")
 	}
-	return drbdtls.Ensure(dir)
+	start := time.Now()
+	ca, err := drbdtls.Ensure(dir)
+	// The CA's key is never logged: only where it lives and whether it loaded.
+	rm.resourcesLog().Debug("replicationCA: loaded replication CA", zap.String("dir", dir),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return ca, err
 }
 
 // tlsNodePreflight checks what a node needs before it can be given a
@@ -101,17 +106,22 @@ true`
 // to carry encrypted DRBD connections. Each node is reported on its own; one
 // that cannot be prepared does not stop the others.
 func (rm *ResourceManager) SetupReplicationTLS(ctx context.Context, nodes []string) ([]NodeTLSState, error) {
+	log := rm.resourcesLog()
+	log.Debug("SetupReplicationTLS: start", zap.Strings("nodes", nodes))
 	ca, err := rm.replicationCA()
 	if err != nil {
+		log.Debug("SetupReplicationTLS: no CA", zap.Error(err))
 		return nil, err
 	}
 	targets, err := rm.tlsTargets(ctx, nodes)
 	if err != nil {
+		log.Debug("SetupReplicationTLS: could not resolve nodes", zap.Error(err))
 		return nil, err
 	}
 	out := make([]NodeTLSState, 0, len(targets))
 	for _, n := range targets {
 		st := NodeTLSState{Node: n.Name}
+		log.Debug("SetupReplicationTLS: preparing node", zap.String("node", n.Name))
 		if err := rm.setupNodeTLS(ctx, ca, n); err != nil {
 			st.Problem = err.Error()
 			rm.controller.logger.Warn("Replication TLS setup failed", zap.String("node", n.Name), zap.Error(err))
@@ -120,6 +130,7 @@ func (rm *ResourceManager) SetupReplicationTLS(ctx context.Context, nodes []stri
 	}
 	status, err := rm.ReplicationTLSStatus(ctx, nodes)
 	if err != nil {
+		log.Debug("SetupReplicationTLS: status after setup unavailable; reporting setup results only", zap.Error(err))
 		return out, nil
 	}
 	for i := range out {
@@ -128,32 +139,48 @@ func (rm *ResourceManager) SetupReplicationTLS(ctx context.Context, nodes []stri
 				out[i] = s
 			}
 		}
+		log.Debug("SetupReplicationTLS: node result", zap.String("node", out[i].Node), zap.Bool("ready", out[i].Ready),
+			zap.String("problem", out[i].Problem))
 	}
 	return out, nil
 }
 
 func (rm *ResourceManager) setupNodeTLS(ctx context.Context, ca *drbdtls.CA, n *NodeInfo) error {
+	// Neither the key nor the certificates are logged: the script output
+	// carries the CSR, and the install script the certificates.
+	log := rm.resourcesLog()
 	host := rm.controller.ResolveHost(n.Name)
+	log.Debug("setupNodeTLS: running preflight", zap.String("node", n.Name), zap.String("host", host))
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{host}, "bash -c "+shellSingleQuote(fmt.Sprintf(tlsNodePreflight, n.Name)))
+	log.Debug("setupNodeTLS: preflight done", zap.String("node", n.Name), zap.Array("failed_hosts", resourcesFailedHosts{res}),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return err
 	}
 	output := hostOutput(res, host)
 	if v, ok := tlsField(output, "HAIFY_MISSING"); ok {
+		log.Debug("setupNodeTLS: node lacks a prerequisite", zap.String("node", n.Name), zap.String("missing", v))
 		return fmt.Errorf("missing %s", v)
 	}
 	if !res.AllSuccess() {
+		log.Debug("setupNodeTLS: preparing the key failed", zap.String("node", n.Name))
 		return fmt.Errorf("preparing the key failed: %s", res.FailureDetails())
 	}
 	_, rest, _ := strings.Cut(output, "HAIFY_CSR_BEGIN")
 	csr, _, _ := strings.Cut(rest, "HAIFY_CSR_END")
 	cert, err := ca.Sign([]byte(strings.TrimSpace(csr)), n.Name, []string{n.Address})
+	log.Debug("setupNodeTLS: signed certificate request", zap.String("node", n.Name), zap.String("address", n.Address),
+		zap.Bool("has_csr", strings.TrimSpace(csr) != ""), zap.Error(err))
 	if err != nil {
 		return err
 	}
 	install := fmt.Sprintf(tlsNodeInstall,
 		base64.StdEncoding.EncodeToString(cert), base64.StdEncoding.EncodeToString(ca.CertPEM))
+	start = time.Now()
 	res, err = rm.deployment.Exec(ctx, []string{host}, "bash -c "+shellSingleQuote(install))
+	log.Debug("setupNodeTLS: installed certificate and restarted tlshd", zap.String("node", n.Name),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return err
 	}
@@ -166,25 +193,35 @@ func (rm *ResourceManager) setupNodeTLS(ctx context.Context, ca *drbdtls.CA, n *
 // ReplicationTLSStatus reports, per node, whether it can carry an encrypted
 // connection today, and if not, what is missing.
 func (rm *ResourceManager) ReplicationTLSStatus(ctx context.Context, nodes []string) ([]NodeTLSState, error) {
+	log := rm.resourcesLog()
+	log.Debug("ReplicationTLSStatus: start", zap.Strings("nodes", nodes))
 	ca, err := rm.replicationCA()
 	if err != nil {
+		log.Debug("ReplicationTLSStatus: no CA", zap.Error(err))
 		return nil, err
 	}
 	targets, err := rm.tlsTargets(ctx, nodes)
 	if err != nil {
+		log.Debug("ReplicationTLSStatus: could not resolve nodes", zap.Error(err))
 		return nil, err
 	}
 	hosts := make([]string, 0, len(targets))
 	for _, n := range targets {
 		hosts = append(hosts, rm.controller.ResolveHost(n.Name))
 	}
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, hosts, "bash -c "+shellSingleQuote(tlsNodeStatus))
+	log.Debug("ReplicationTLSStatus: probed nodes", zap.Strings("hosts", hosts), zap.Array("failed_hosts", resourcesFailedHosts{res}),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]NodeTLSState, 0, len(targets))
 	for i, n := range targets {
-		out = append(out, judgeNodeTLS(ca, n.Name, hostOutput(res, hosts[i]), time.Now()))
+		st := judgeNodeTLS(ca, n.Name, hostOutput(res, hosts[i]), time.Now())
+		log.Debug("ReplicationTLSStatus: node verdict", zap.String("node", n.Name), zap.Bool("ready", st.Ready),
+			zap.String("problem", st.Problem), zap.Time("expires", st.Expires))
+		out = append(out, st)
 	}
 	return out, nil
 }
@@ -193,6 +230,12 @@ func (rm *ResourceManager) ReplicationTLSStatus(ctx context.Context, nodes []str
 // thing that stops it.
 func judgeNodeTLS(ca *drbdtls.CA, node, output string, now time.Time) NodeTLSState {
 	st := NodeTLSState{Node: node}
+	// Only the verdict, whichever check decided it: the output carries
+	// certificates, which are not logged.
+	defer func() {
+		zap.L().Debug("judgeNodeTLS: verdict", zap.String("node", node), zap.Bool("ready", st.Ready),
+			zap.String("problem", st.Problem), zap.Time("expires", st.Expires))
+	}()
 	certB64, hasCert := tlsField(output, "HAIFY_CERT")
 	trustB64, hasTrust := tlsField(output, "HAIFY_TRUST")
 	if tlshd, _ := tlsField(output, "HAIFY_TLSHD"); !hasCert {
@@ -234,7 +277,9 @@ func judgeNodeTLS(ca *drbdtls.CA, node, output string, now time.Time) NodeTLSSta
 
 // tlsTargets resolves the named nodes, or every registered node.
 func (rm *ResourceManager) tlsTargets(ctx context.Context, names []string) ([]*NodeInfo, error) {
+	log := rm.resourcesLog()
 	all, err := rm.controller.nodes.ListNodes(ctx)
+	log.Debug("tlsTargets: listed nodes", zap.Strings("requested", names), zap.Int("registered", len(all)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -254,10 +299,12 @@ func (rm *ResourceManager) tlsTargets(ctx context.Context, names []string) ([]*N
 	for _, name := range names {
 		n, ok := byName[name]
 		if !ok {
+			log.Debug("tlsTargets: node not registered", zap.String("node", name))
 			return nil, fmt.Errorf("node %q is not registered", name)
 		}
 		out = append(out, n)
 	}
+	log.Debug("tlsTargets: resolved", zap.Strings("nodes", names))
 	return out, nil
 }
 

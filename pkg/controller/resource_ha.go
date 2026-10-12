@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/haify-project/haify/pkg/database"
 	"github.com/haify-project/haify/pkg/gateway"
@@ -22,18 +23,25 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 		zap.String("fstype", fsType),
 		zap.String("vip", vip))
 
+	log := rm.resourcesLog()
+	log.Debug("MakeHa: start", zap.String("resource", resource), zap.Int("ocf_agents", len(ocfAgents)),
+		zap.Int("start_items", len(startItems)))
 	if rm.deployment == nil {
+		log.Debug("MakeHa: no deployment client", zap.String("resource", resource))
 		return "", fmt.Errorf("deployment client not set")
 	}
 	if rm.controller.db == nil {
+		log.Debug("MakeHa: no database", zap.String("resource", resource))
 		return "", fmt.Errorf("database not available")
 	}
 	if err := checkHaMountPoint(mountPoint); err != nil {
+		log.Debug("MakeHa: mount point refused", zap.String("mount_point", mountPoint), zap.Error(err))
 		return "", err
 	}
 
 	// Get resource info to find nodeAddresses
 	dbResource, err := rm.controller.db.GetResource(ctx, resource)
+	log.Debug("MakeHa: database lookup", zap.String("resource", resource), zap.Bool("found", dbResource != nil), zap.Error(err))
 	if err != nil {
 		return "", fmt.Errorf("failed to get resource from database: %w", err)
 	}
@@ -42,6 +50,7 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 		return "", fmt.Errorf("resource not found: %s", resource)
 	}
 	if err := rm.controller.assertPromoterAllowed(ctx, resource, "ha create"); err != nil {
+		log.Debug("MakeHa: promoter not allowed", zap.String("resource", resource), zap.Error(err))
 		return "", err
 	}
 
@@ -49,9 +58,11 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 	// asynchronous copy is a manual decision (see promoter_placement.go).
 	nodeNames := splitCSV(dbResource.Nodes)
 	if dbResource.WANMode && dbResource.DRNode != "" {
+		log.Debug("MakeHa: WAN resource; DR node gets no promoter", zap.String("resource", resource), zap.String("dr_node", dbResource.DRNode))
 		nodeNames = without(nodeNames, dbResource.DRNode)
 	}
 	if len(nodeNames) == 0 {
+		log.Debug("MakeHa: no nodes", zap.String("resource", resource))
 		return "", fmt.Errorf("no nodes found for resource")
 	}
 
@@ -60,21 +71,26 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 	for i, nodeName := range nodeNames {
 		addr := rm.controller.nodes.GetNodeAddressByName(nodeName)
 		if addr == "" {
+			log.Debug("MakeHa: node has no address", zap.String("resource", resource), zap.String("node", nodeName))
 			return "", fmt.Errorf("failed to resolve address for node: %s", nodeName)
 		}
 		nodeAddresses[i] = addr
 	}
 	hosts := nodeAddresses
+	log.Debug("MakeHa: promoter hosts", zap.String("resource", resource), zap.Strings("nodes", nodeNames), zap.Strings("hosts", hosts))
 
 	// A VIP is served by the service-ip@ systemd template, which runs the
 	// service-ip helper. Without them the promoter target fails to start ("Unit
 	// service-ip@... not found") and the HA config is silently broken, so they
 	// are installed up front on every node that lacks them.
 	if strings.TrimSpace(vip) != "" {
+		log.Debug("MakeHa: VIP given; ensuring service-ip and nonlocal bind", zap.String("resource", resource), zap.String("vip", vip))
 		if err := rm.ensureServiceIP(ctx, hosts); err != nil {
+			log.Debug("MakeHa: service-ip install failed", zap.String("resource", resource), zap.Error(err))
 			return "", err
 		}
 		if err := rm.ensureNonlocalBind(ctx, hosts); err != nil {
+			log.Debug("MakeHa: nonlocal bind failed", zap.String("resource", resource), zap.Error(err))
 			return "", err
 		}
 	}
@@ -86,13 +102,19 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 
 	// First, ensure resource is up on all nodes
 	rm.controller.logger.Info("Bringing up DRBD resource on all nodes")
-	_, err = rm.deployment.Exec(ctx, nodeAddresses, "sudo drbdadm up "+resource)
+	start := time.Now()
+	upRes, err := rm.deployment.Exec(ctx, nodeAddresses, "sudo drbdadm up "+resource)
+	log.Debug("MakeHa: drbdadm up", zap.String("resource", resource), zap.Array("failed_hosts", resourcesFailedHosts{upRes}),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		rm.controller.logger.Warn("Failed to bring up resource (continuing anyway)", zap.Error(err))
 	}
 	// Continue anyway - resource might already be up
 
+	start = time.Now()
 	statusResult, err := rm.deployment.Exec(ctx, nodeAddresses, "sudo drbdadm status "+resource)
+	log.Debug("MakeHa: drbdadm status", zap.String("resource", resource), zap.Array("failed_hosts", resourcesFailedHosts{statusResult}),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return "", fmt.Errorf("failed to check DRBD status: %w", err)
 	}
@@ -113,6 +135,7 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 			zap.String("node", nodeNames[0]),
 			zap.String("address", nodeAddresses[0]))
 		if err := rm.SetPrimary(ctx, resource, nodeAddresses[0], true); err != nil {
+			log.Debug("MakeHa: initial promote failed", zap.String("resource", resource), zap.Error(err))
 			return "", fmt.Errorf("failed to set Primary: %w", err)
 		}
 		rm.controller.logger.Info("Primary set successfully",
@@ -129,7 +152,10 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 		// Check if filesystem already exists by checking if device can be read
 		drbdDevice := fmt.Sprintf("/dev/drbd/by-res/%s/0", resource)
 		checkFsCmd := fmt.Sprintf("sudo blkid -o value -s TYPE %s 2>/dev/null || echo 'none'", drbdDevice)
+		start := time.Now()
 		checkResult, err := rm.deployment.Exec(ctx, []string{nodeAddresses[0]}, checkFsCmd)
+		log.Debug("MakeHa: probed filesystem", zap.String("resource", resource), zap.String("host", nodeAddresses[0]),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 
 		needsFs := true
 		if err == nil {
@@ -146,8 +172,10 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 			}
 		}
 
+		log.Debug("MakeHa: filesystem decision", zap.String("resource", resource), zap.Bool("needs_fs", needsFs))
 		if needsFs {
 			if err := rm.CreateFilesystemOnly(ctx, resource, 0, fsType, nodeAddresses[0]); err != nil {
+				log.Debug("MakeHa: mkfs failed", zap.String("resource", resource), zap.Error(err))
 				return "", fmt.Errorf("failed to create filesystem: %w", err)
 			}
 			rm.controller.logger.Info("Filesystem created successfully")
@@ -161,7 +189,10 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 			// Check if service unit file exists on all nodes
 			// Use systemctl show to check LoadState - "loaded" means unit file exists
 			checkCmd := fmt.Sprintf("systemctl show %s -p LoadState 2>/dev/null || echo 'not-found'", svc)
+			start := time.Now()
 			result, err := rm.deployment.Exec(ctx, nodeAddresses, checkCmd)
+			log.Debug("MakeHa: checked service unit", zap.String("resource", resource), zap.String("service", svc),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
 			if err != nil {
 				return "", fmt.Errorf("failed to check service %s on nodes: %w", svc, err)
 			}
@@ -176,6 +207,7 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 			}
 
 			if len(missingNodes) > 0 {
+				log.Debug("MakeHa: service missing on nodes", zap.String("service", svc), zap.Strings("hosts", missingNodes))
 				return "", fmt.Errorf("service %s not found on nodes: %v. Please install the service on all nodes before configuring HA", svc, missingNodes)
 			}
 
@@ -190,6 +222,7 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 		for _, svc := range services {
 			// Stop service
 			stopCmd := fmt.Sprintf("systemctl stop %s", svc)
+			start := time.Now()
 			if _, err := rm.deployment.Exec(ctx, nodeAddresses, stopCmd); err != nil {
 				rm.controller.logger.Warn("Failed to stop service", zap.String("service", svc), zap.Error(err))
 			}
@@ -199,6 +232,8 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 			if _, err := rm.deployment.Exec(ctx, nodeAddresses, disableCmd); err != nil {
 				rm.controller.logger.Warn("Failed to disable service", zap.String("service", svc), zap.Error(err))
 			}
+			log.Debug("MakeHa: stopped and disabled service", zap.String("service", svc), zap.Strings("hosts", nodeAddresses),
+				zap.Duration("took", time.Since(start)))
 		}
 
 		// Migrate existing data to /tmp before HA takeover
@@ -234,7 +269,11 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 
 		rm.controller.logger.Info("Distributing mount unit", zap.String("path", mountPath))
 
-		if _, err := rm.deployment.DistributeConfig(ctx, hosts, mountContent, mountPath); err != nil {
+		start := time.Now()
+		_, err := rm.deployment.DistributeConfig(ctx, hosts, mountContent, mountPath)
+		log.Debug("MakeHa: distributed mount unit", zap.String("path", mountPath), zap.Strings("hosts", hosts),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			return "", fmt.Errorf("failed to distribute mount unit: %w", err)
 		}
 
@@ -242,6 +281,8 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 		if _, err := rm.deployment.Exec(ctx, hosts, "systemctl daemon-reload"); err != nil {
 			rm.controller.logger.Warn("Failed to reload systemd", zap.Error(err))
 		}
+	} else {
+		log.Debug("MakeHa: no mount point; no mount unit", zap.String("resource", resource))
 	}
 
 	// Generate drbd-reactor promoter config. When the caller supplied an explicit
@@ -260,17 +301,23 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 		zap.String("config", configContent))
 
 	// Distribute config to all hosts using DistributeConfig
+	start = time.Now()
 	_, err = rm.deployment.DistributeConfig(ctx, hosts, configContent, configPath)
+	log.Debug("MakeHa: distributed promoter config", zap.String("path", configPath), zap.Bool("ordered", len(startItems) > 0),
+		zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return "", fmt.Errorf("failed to distribute promoter config: %w", err)
 	}
 	// A DR node may still hold a copy written before DR nodes were left out.
 	if dbResource.WANMode && dbResource.DRNode != "" {
+		log.Debug("MakeHa: retiring stale promoter on DR node", zap.String("resource", resource), zap.String("dr_node", dbResource.DRNode))
 		rm.retireHaPromoter(ctx, resource, []string{rm.controller.ResolveHost(dbResource.DRNode)})
 	}
 
 	// Reload drbd-reactor on all hosts
+	start = time.Now()
 	_, err = rm.deployment.ReactorReload(ctx, hosts)
+	log.Debug("MakeHa: reloaded drbd-reactor", zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		rm.controller.logger.Warn("Failed to reload drbd-reactor", zap.Error(err))
 	}
@@ -302,7 +349,9 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 					"else echo 'No backup found or backup is empty'; fi",
 				backupDir, backupDir, mountPoint, backupDir, mountPoint, mountPoint, backupDir, backupDir)
 
+			start := time.Now()
 			result, err := rm.deployment.Exec(ctx, []string{activeNode}, restoreCmd)
+			log.Debug("MakeHa: ran data restore", zap.String("host", activeNode), zap.Duration("took", time.Since(start)), zap.Error(err))
 			if err != nil {
 				rm.controller.logger.Warn("Failed to restore data",
 					zap.String("active_node", activeNode),
@@ -330,7 +379,9 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 			OcfAgents:  ocfAgentRecords(ocfAgents),
 			StartItems: startItemRecords(startItems),
 		}
-		if err := rm.controller.db.SaveHaConfig(ctx, haCfg); err != nil {
+		err := rm.controller.db.SaveHaConfig(ctx, haCfg)
+		log.Debug("MakeHa: saved HA record", zap.String("resource", resource), zap.Error(err))
+		if err != nil {
 			rm.controller.logger.Warn("Failed to save HA config to database", zap.Error(err))
 		}
 	}
@@ -340,18 +391,26 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 
 // ListHaConfigs lists all HA configurations from database
 func (rm *ResourceManager) ListHaConfigs(ctx context.Context) ([]*database.HaConfig, error) {
+	log := rm.resourcesLog()
 	if rm.controller.db == nil {
+		log.Debug("ListHaConfigs: no database")
 		return nil, fmt.Errorf("database not available")
 	}
-	return rm.controller.db.ListHaConfigs(ctx)
+	cfgs, err := rm.controller.db.ListHaConfigs(ctx)
+	log.Debug("ListHaConfigs: listed", zap.Int("count", len(cfgs)), zap.Error(err))
+	return cfgs, err
 }
 
 // GetHaConfig gets an HA configuration from database
 func (rm *ResourceManager) GetHaConfig(ctx context.Context, resource string) (*database.HaConfig, error) {
+	log := rm.resourcesLog()
 	if rm.controller.db == nil {
+		log.Debug("GetHaConfig: no database", zap.String("resource", resource))
 		return nil, fmt.Errorf("database not available")
 	}
-	return rm.controller.db.GetHaConfig(ctx, resource)
+	cfg, err := rm.controller.db.GetHaConfig(ctx, resource)
+	log.Debug("GetHaConfig: lookup", zap.String("resource", resource), zap.Bool("found", cfg != nil), zap.Error(err))
+	return cfg, err
 }
 
 // checkHaMountPoint refuses a mount point inside a directory another promoter
@@ -366,6 +425,7 @@ func checkHaMountPoint(mountPoint string) error {
 	cleaned := filepath.Clean(mountPoint)
 	for _, taken := range []string{selfHaMountPoint, gateway.DefaultClusterPrivateMountPath} {
 		if cleaned == taken || strings.HasPrefix(cleaned, taken+"/") {
+			zap.L().Debug("checkHaMountPoint: inside a Haify mount", zap.String("mount_point", cleaned), zap.String("taken", taken))
 			return fmt.Errorf("mount point %s is inside %s, which Haify mounts itself; choose another directory", cleaned, taken)
 		}
 	}
@@ -409,6 +469,8 @@ func (rm *ResourceManager) generatePromoterConfigOrdered(resource string, items 
 		}
 		startActions = append(startActions, fmt.Sprintf(`  "%s"`, entry))
 	}
+	rm.resourcesLog().Debug("generatePromoterConfigOrdered: rendered start list", zap.String("resource", resource),
+		zap.Int("items", len(items)), zap.Int("actions", len(startActions)))
 
 	return fmt.Sprintf(`# drbd-reactor promoter configuration for HA resource: %s
 # Generated by haify-controller
@@ -465,6 +527,9 @@ func (rm *ResourceManager) generatePromoterConfig(resource string, services []st
 		serviceIPUnit := fmt.Sprintf("\"service-ip@%s.service\"", inst)
 		startActions = append(startActions, serviceIPUnit)
 	}
+	rm.resourcesLog().Debug("generatePromoterConfig: rendered start list", zap.String("resource", resource),
+		zap.Bool("mount", mountPoint != ""), zap.Int("services", len(services)), zap.Int("ocf_agents", len(ocfAgents)),
+		zap.Bool("vip", vip != ""), zap.Int("actions", len(startActions)))
 
 	// Generate TOML config
 	toml := fmt.Sprintf(`# drbd-reactor promoter configuration for HA resource: %s

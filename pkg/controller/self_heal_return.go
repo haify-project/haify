@@ -18,24 +18,31 @@ import (
 
 // persistHealth writes a node's state and OfflineSince after a transition.
 func (nm *NodeManager) persistHealth(address string) {
+	log := nm.replicationPathsLog()
 	if nm.controller.db == nil {
+		log.Debug("NodeManager.persistHealth: no database", zap.String("host", address))
 		return
 	}
 	nm.mu.RLock()
 	n := nm.nodes[address]
 	if n == nil {
 		nm.mu.RUnlock()
+		log.Debug("NodeManager.persistHealth: node not registered", zap.String("host", address))
 		return
 	}
 	rec := nodeRecord(n)
 	nm.mu.RUnlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if existing, err := nm.controller.db.GetNode(ctx, address); err == nil && existing != nil {
+	existing, gerr := nm.controller.db.GetNode(ctx, address)
+	if gerr == nil && existing != nil {
 		existing.State, existing.OfflineSince, existing.LastSeen = rec.State, rec.OfflineSince, rec.LastSeen
 		rec = existing
 	}
-	if err := nm.controller.db.SaveNode(ctx, rec); err != nil {
+	err := nm.controller.db.SaveNode(ctx, rec)
+	log.Debug("NodeManager.persistHealth: saved node health", zap.String("host", address), zap.String("state", rec.State),
+		zap.Bool("had_record", existing != nil), zap.NamedError("lookup_error", gerr), zap.Error(err))
+	if err != nil {
 		nm.controller.logger.Warn("Failed to persist node health", zap.String("node", address), zap.Error(err))
 	}
 }
@@ -45,9 +52,11 @@ func (rm *ResourceManager) repairStaleConfigs(node string) {
 	if rm == nil || rm.controller.db == nil || node == "" {
 		return
 	}
+	log := rm.resourcesLog()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	resources, err := rm.controller.db.ListResources(ctx)
+	log.Debug("repairStaleConfigs: listed resources", zap.String("node", node), zap.Int("count", len(resources)), zap.Error(err))
 	if err != nil {
 		return
 	}
@@ -56,6 +65,7 @@ func (rm *ResourceManager) repairStaleConfigs(node string) {
 		if !contains(stale, node) {
 			continue
 		}
+		log.Debug("repairStaleConfigs: repairing", zap.String("node", node), zap.String("resource", r.Name))
 		if err := rm.RepairResourceConfig(ctx, r.Name); err != nil {
 			rm.controller.logger.Warn("Node is back but its config of the resource could not be repaired; run `haify resource repair`",
 				zap.String("node", node), zap.String("resource", r.Name), zap.Error(err))

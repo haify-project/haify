@@ -3,6 +3,8 @@ package controller
 import (
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // selfHaSSHOpts are the options for every script-driven SSH hop. accept-new
@@ -90,6 +92,7 @@ done
 systemctl is-active --quiet haify-controller
 echo "[selfha] handoff complete: $(date -Is)"
 `)
+	zap.L().Debug("generateSelfHaHandoffScript: rendered", zap.Strings("standbys", standbyAddrs), zap.Int("bytes", sb.Len()))
 	return sb.String()
 }
 
@@ -109,9 +112,11 @@ func selfHaReactorDropins(vip string) string {
 			`"/run/systemd/system/drbd-demote-or-escalate@%s.service.d" `+
 			`"/run/systemd/system/drbd-services@%s.target.d"`,
 		escaped, escaped, escaped)
-	if inst := vipServiceIPInstance(vip); inst != "" {
+	inst := vipServiceIPInstance(vip)
+	if inst != "" {
 		dropins += fmt.Sprintf(` "/run/systemd/system/service-ip@%s.service.d"`, inst)
 	}
+	zap.L().Debug("selfHaReactorDropins: drop-ins to remove", zap.String("vip", vip), zap.Bool("vip_dropin", inst != ""))
 	return dropins
 }
 
@@ -222,5 +227,8 @@ ssh %s %s "$restore_cmds"
 	sb.WriteString(`rm -f "$CONF_BACKUP"
 echo "[selfha] disable complete: $(date -Is)"
 `)
+	zap.L().Debug("generateSelfHaDisableScript: rendered", zap.Strings("others", otherAddrs), zap.String("target", targetAddr),
+		zap.String("self", selfAddr), zap.Bool("restore_locally", targetAddr == selfAddr), zap.Bool("vip", vipInst != ""),
+		zap.Int("bytes", sb.Len()))
 	return sb.String()
 }

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -25,14 +26,19 @@ import (
 
 // NodeLost removes every replica node still holds, without contacting it.
 func (rm *ResourceManager) NodeLost(ctx context.Context, node string) ([]string, error) {
+	log := rm.resourcesLog()
+	log.Debug("NodeLost: start", zap.String("node", node))
 	addr := rm.controller.nodes.GetNodeAddressByName(node)
 	if addr == "" {
+		log.Debug("NodeLost: node not registered", zap.String("node", node))
 		return nil, fmt.Errorf("node %q is not registered", node)
 	}
 	if rm.answers(ctx, addr) {
+		log.Debug("NodeLost: node answers; refusing", zap.String("node", node))
 		return nil, fmt.Errorf("%s answers over SSH; restore it with `haify node restore %s` instead", node, node)
 	}
 	resources, err := rm.controller.db.ListResources(ctx)
+	log.Debug("NodeLost: listed resources", zap.Int("count", len(resources)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -42,12 +48,16 @@ func (rm *ResourceManager) NodeLost(ctx context.Context, node string) ([]string,
 			continue
 		}
 		if err := rm.RemoveReplicaOptions(ctx, r.Name, node, true); err != nil {
+			log.Debug("NodeLost: replica not removed", zap.String("resource", r.Name), zap.Error(err))
 			failed = append(failed, fmt.Sprintf("%s: %v", r.Name, err))
 			continue
 		}
+		log.Debug("NodeLost: replica removed", zap.String("resource", r.Name), zap.String("node", node))
 		done = append(done, r.Name)
 	}
-	if err := rm.controller.nodes.SetNodeState(ctx, addr, NodeStateEvicted); err != nil {
+	err = rm.controller.nodes.SetNodeState(ctx, addr, NodeStateEvicted)
+	log.Debug("NodeLost: marked evicted", zap.String("node", node), zap.Int("done", len(done)), zap.Int("failed", len(failed)), zap.Error(err))
+	if err != nil {
 		return done, err
 	}
 	if len(failed) > 0 {
@@ -61,18 +71,25 @@ var resFileRE = regexp.MustCompile(`^/etc/drbd\.d/([A-Za-z0-9][A-Za-z0-9_.-]*)\.
 // NodeRestore cleans what node holds of resources it is no longer a member of
 // and lets it take replicas again. With dryRun it only returns the plan.
 func (rm *ResourceManager) NodeRestore(ctx context.Context, node string, dryRun bool) ([]string, error) {
+	log := rm.resourcesLog()
+	log.Debug("NodeRestore: start", zap.String("node", node), zap.Bool("dry_run", dryRun))
 	addr := rm.controller.nodes.GetNodeAddressByName(node)
 	if addr == "" {
+		log.Debug("NodeRestore: node not registered", zap.String("node", node))
 		return nil, fmt.Errorf("node %q is not registered", node)
 	}
 	if !rm.answers(ctx, addr) {
+		log.Debug("NodeRestore: node does not answer", zap.String("node", node))
 		return nil, fmt.Errorf("%s does not answer over SSH; it cannot be restored until it does", node)
 	}
+	start := time.Now()
 	held, err := rm.deployment.Exec(ctx, []string{addr}, "ls /etc/drbd.d/*.res 2>/dev/null; true")
+	log.Debug("NodeRestore: listed configs on node", zap.String("host", addr), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
 	resources, err := rm.controller.db.ListResources(ctx)
+	log.Debug("NodeRestore: listed resources", zap.Int("count", len(resources)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -91,15 +108,20 @@ func (rm *ResourceManager) NodeRestore(ctx context.Context, node string, dryRun 
 		}
 	}
 	sort.Strings(stale)
+	log.Debug("NodeRestore: stale resources on node", zap.String("node", node), zap.Strings("stale", stale))
 	var plan []string
 	for _, r := range stale {
 		plan = append(plan, fmt.Sprintf("take %s down and delete its config, promoter configs and volumes on %s", r, node))
 		if dryRun {
+			log.Debug("NodeRestore: dry run; would clean", zap.String("node", node), zap.String("resource", r))
 			continue
 		}
 		// Base64-wrapped: dispatch's sh -c quoting empties the script's $vars.
 		cmd := "echo " + base64Std(staleResourceCleanup(r)) + " | base64 -d | sudo /bin/bash"
+		start := time.Now()
 		if err := rm.execAllSuccess(ctx, []string{addr}, cmd, "clean "+r+" on "+node); err != nil {
+			log.Debug("NodeRestore: cleanup failed", zap.String("node", node), zap.String("resource", r),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
 			return plan, err
 		}
 		rm.controller.logger.Info("Restore: cleaned a resource the node no longer belongs to",
@@ -108,8 +130,11 @@ func (rm *ResourceManager) NodeRestore(ctx context.Context, node string, dryRun 
 	if dryRun {
 		return plan, nil
 	}
-	_, _ = rm.deployment.Exec(ctx, []string{addr}, "sudo systemctl reload drbd-reactor 2>/dev/null; true")
-	return plan, rm.controller.nodes.SetNodeState(ctx, addr, NodeStateOnline)
+	_, rerr := rm.deployment.Exec(ctx, []string{addr}, "sudo systemctl reload drbd-reactor 2>/dev/null; true")
+	err = rm.controller.nodes.SetNodeState(ctx, addr, NodeStateOnline)
+	log.Debug("NodeRestore: reloaded drbd-reactor and marked online", zap.String("node", node),
+		zap.NamedError("reload_error", rerr), zap.Error(err))
+	return plan, err
 }
 
 // staleResourceCleanup takes a resource down on a node that is no longer its

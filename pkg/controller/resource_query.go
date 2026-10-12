@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/haify-project/haify/pkg/alert"
 	"github.com/haify-project/haify/pkg/database"
@@ -14,22 +15,28 @@ import (
 
 // GetResource gets resource information from database with live status
 func (rm *ResourceManager) GetResource(ctx context.Context, name string) (*ResourceInfo, error) {
+	log := rm.resourcesLog()
+	log.Debug("GetResource: start", zap.String("resource", name))
 	if rm.controller.db == nil {
+		log.Debug("GetResource: no database", zap.String("resource", name))
 		return nil, fmt.Errorf("database not available")
 	}
 
 	hosts, err := rm.resourceHosts(ctx, name)
 	if err != nil {
+		log.Debug("GetResource: no hosts", zap.String("resource", name), zap.Error(err))
 		return nil, err
 	}
 
 	// Get resource info from database
 	dbRes, err := rm.controller.db.GetResource(ctx, name)
 	if err != nil {
+		log.Debug("GetResource: not in database", zap.String("resource", name), zap.Error(err))
 		return nil, fmt.Errorf("resource not found: %s", name)
 	}
 
 	dbVolumes, err := rm.controller.db.ListVolumes(ctx, name)
+	log.Debug("GetResource: listed volume records", zap.String("resource", name), zap.Int("count", len(dbVolumes)), zap.Error(err))
 	if err != nil {
 		rm.controller.logger.Warn("Failed to list resource volumes from database",
 			zap.String("resource", name),
@@ -68,6 +75,7 @@ func (rm *ResourceManager) GetResource(ctx context.Context, name string) (*Resou
 	// "local", and filing it under the wrong node reports a machine that is
 	// down as healthy.
 	result, answeredAt, err := rm.drbdStatusFromAnyHost(ctx, hosts, name)
+	log.Debug("GetResource: status read", zap.String("resource", name), zap.Int("answered_at", answeredAt), zap.Error(err))
 
 	var volumes []*ResourceVolumeInfo
 	nodeStates := make(map[string]*ResourceNodeState)
@@ -135,7 +143,11 @@ func (rm *ResourceManager) GetResource(ctx context.Context, name string) (*Resou
 	// keep the text-parsed states above and degrade gracefully.
 	if len(nodeAddresses) > 0 && answeredAt >= 0 && answeredAt < len(nodeAddresses) {
 		localNode := nodeAddresses[answeredAt]
-		if jsonResult, jerr := rm.deployment.DRBDStatusJSON(ctx, []string{hosts[answeredAt]}, name); jerr == nil {
+		start := time.Now()
+		jsonResult, jerr := rm.deployment.DRBDStatusJSON(ctx, []string{hosts[answeredAt]}, name)
+		log.Debug("GetResource: read JSON status", zap.String("resource", name), zap.String("host", hosts[answeredAt]),
+			zap.Array("failed_hosts", resourcesFailedHosts{jsonResult}), zap.Duration("took", time.Since(start)), zap.Error(jerr))
+		if jerr == nil {
 			for _, r := range jsonResult.Hosts {
 				if !r.Success {
 					continue
@@ -152,6 +164,8 @@ func (rm *ResourceManager) GetResource(ctx context.Context, name string) (*Resou
 						localRole = local.Role
 					}
 				}
+				log.Debug("GetResource: JSON states", zap.String("resource", name), zap.Int("count", len(parsed)),
+					zap.String("role", localRole))
 				break
 			}
 		} else {
@@ -185,11 +199,15 @@ func (rm *ResourceManager) GetResource(ctx context.Context, name string) (*Resou
 	info.FaultDomainRisk = faultDomainRisk(nodeAddresses, disklessNodes, rm.labelsByNode(ctx), rm.faultDomainKey())
 
 	if len(info.Volumes) == 0 && len(dbVolumes) > 0 {
+		log.Debug("GetResource: no live volumes; using database records", zap.String("resource", name), zap.Int("count", len(dbVolumes)))
 		for _, volume := range dbVolumes {
 			info.Volumes = append(info.Volumes, volumeInfoFromRecord(dbRes, volume))
 		}
 	}
 
+	log.Debug("GetResource: done", zap.String("resource", name), zap.String("role", info.Role),
+		zap.Int("volumes", len(info.Volumes)), zap.Int("node_states", len(info.NodeStates)),
+		zap.Bool("quorum_risk", info.QuorumRisk), zap.String("fault_domain_risk", info.FaultDomainRisk))
 	return info, nil
 }
 
@@ -211,12 +229,15 @@ func volumeInfoFromRecord(res *database.Resource, volume *database.Volume) *Reso
 
 // ListResources lists all resources from database with live status
 func (rm *ResourceManager) ListResources(ctx context.Context) ([]*ResourceInfo, error) {
+	log := rm.resourcesLog()
 	if rm.controller.db == nil {
+		log.Debug("ListResources: no database")
 		return nil, fmt.Errorf("database not available")
 	}
 
 	// Get resources from database
 	dbResources, err := rm.controller.db.ListResources(ctx)
+	log.Debug("ListResources: listed resource records", zap.Int("count", len(dbResources)), zap.Error(err))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list resources from database: %w", err)
 	}
@@ -234,7 +255,10 @@ func (rm *ResourceManager) ListResources(ctx context.Context) ([]*ResourceInfo, 
 		// SSH status calls per resource, and the persisted records carry
 		// everything the API exposes (id, size, pool, backing volume).
 		var volumes []*ResourceVolumeInfo
-		if dbVolumes, err := rm.controller.db.ListVolumes(ctx, dbRes.Name); err == nil {
+		dbVolumes, err := rm.controller.db.ListVolumes(ctx, dbRes.Name)
+		log.Debug("ListResources: resource", zap.String("resource", dbRes.Name), zap.Strings("nodes", nodeAddresses),
+			zap.Int("volumes", len(dbVolumes)), zap.Error(err))
+		if err == nil {
 			for _, volume := range dbVolumes {
 				volumes = append(volumes, volumeInfoFromRecord(dbRes, volume))
 			}
@@ -274,10 +298,13 @@ func (rm *ResourceManager) ListResources(ctx context.Context) ([]*ResourceInfo, 
 // GetResourceStatusList adapts ResourceManager to alert.ResourceLister by returning
 // status info for all resources managed by the controller.
 func (rm *ResourceManager) GetResourceStatusList(ctx context.Context) ([]alert.ResourceStatusInfo, error) {
+	log := rm.resourcesLog()
 	if rm.controller.db == nil {
+		log.Debug("GetResourceStatusList: no database")
 		return nil, fmt.Errorf("database not available")
 	}
 	dbResources, err := rm.controller.db.ListResources(ctx)
+	log.Debug("GetResourceStatusList: listed resource records", zap.Int("count", len(dbResources)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -286,6 +313,7 @@ func (rm *ResourceManager) GetResourceStatusList(ctx context.Context) ([]alert.R
 	for _, dbRes := range dbResources {
 		info, err := rm.GetResource(ctx, dbRes.Name)
 		if err != nil || info == nil {
+			log.Debug("GetResourceStatusList: no status; skipping", zap.String("resource", dbRes.Name), zap.Error(err))
 			continue
 		}
 		// Nodes that hold no local copy on purpose: quorum tiebreakers and
@@ -337,6 +365,7 @@ func (rm *ResourceManager) GetResourceStatusList(ctx context.Context) ([]alert.R
 		// the alert monitor can surface a broken cross-site link.
 		if dbRes.WANMode {
 			item.WANEnabled = true
+			start := time.Now()
 			st, err := wanproxy.StatusMulti(ctx, rm.wanproxyDeployClient(), rm.wanMultiSpecFor(dbRes))
 			switch {
 			case err != nil:
@@ -346,10 +375,15 @@ func (rm *ResourceManager) GetResourceStatusList(ctx context.Context) ([]alert.R
 				item.WANHealthy = st.Healthy()
 				item.WANMessage = wanStatusMessage(st)
 			}
+			log.Debug("GetResourceStatusList: WAN proxy status", zap.String("resource", dbRes.Name),
+				zap.Bool("healthy", item.WANHealthy), zap.Duration("took", time.Since(start)), zap.Error(err))
 		}
 
+		log.Debug("GetResourceStatusList: resource status", zap.String("resource", dbRes.Name),
+			zap.Int("node_states", len(item.NodeStates)), zap.Bool("idle_without_primary", item.IdleWithoutPrimary))
 		result = append(result, item)
 	}
+	log.Debug("GetResourceStatusList: done", zap.Int("count", len(result)))
 	return result, nil
 }
 
@@ -384,10 +418,14 @@ func disklessByDesign(c *Controller, dbRes *database.Resource) map[string]bool {
 // the caller can still render the resource with unknown state rather than
 // failing outright — the UI has to draw something either way.
 func (rm *ResourceManager) drbdStatusFromAnyHost(ctx context.Context, hosts []string, resource string) (*deployment.ExecResult, int, error) {
+	log := rm.resourcesLog()
 	var lastErr error
 	for _, i := range rm.statusAskOrder(resource, hosts) {
 		host := hosts[i]
+		start := time.Now()
 		result, err := rm.deployment.DRBDStatus(ctx, []string{host}, resource)
+		log.Debug("drbdStatusFromAnyHost: asked host", zap.String("resource", resource), zap.String("host", host),
+			zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			lastErr = err
 			continue
@@ -401,6 +439,7 @@ func (rm *ResourceManager) drbdStatusFromAnyHost(ctx context.Context, hosts []st
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no hosts to ask for %s", resource)
 	}
+	log.Debug("drbdStatusFromAnyHost: no host answered", zap.String("resource", resource), zap.Error(lastErr))
 	return nil, -1, lastErr
 }
 

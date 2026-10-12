@@ -15,16 +15,20 @@ import (
 // them, and a sync from the stored config would. Nothing configured, nothing
 // changes.
 func (rm *ResourceManager) reconcileSelfHaServices(ctx context.Context) {
+	log := rm.resourcesLog()
 	extras := rm.selfHaExtraServices()
 	if len(extras) == 0 || rm.controller == nil || rm.controller.db == nil {
+		log.Debug("reconcileSelfHaServices: nothing to reconcile", zap.Int("extra_services", len(extras)))
 		return
 	}
 	cfg, err := rm.controller.db.GetHaConfig(ctx, SelfHaResource)
 	if err != nil || cfg == nil {
+		log.Debug("reconcileSelfHaServices: no Self-HA config", zap.Bool("found", cfg != nil), zap.Error(err))
 		return
 	}
 	want := append([]string{selfHaControllerSvc}, extras...)
 	if slices.Equal(cfg.Services, want) {
+		log.Debug("reconcileSelfHaServices: services already match", zap.Strings("services", want))
 		return
 	}
 	was := cfg.Services

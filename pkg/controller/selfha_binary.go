@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -39,27 +40,38 @@ type controllerBinaryPlan struct {
 // running binary's directory when that file exists, and is refused otherwise.
 // It changes nothing, so enable calls it before any side effect.
 func (rm *ResourceManager) planControllerBinary(ctx context.Context, standbyAddrs []string) (*controllerBinaryPlan, error) {
+	log := rm.resourcesLog()
+	log.Debug("planControllerBinary: start", zap.Strings("hosts", standbyAddrs))
 	unit, err := os.ReadFile(controllerUnitPath)
+	usedPackaged := false
 	if errors.Is(err, os.ErrNotExist) {
 		unit, err = os.ReadFile(packagedControllerUnitPath)
+		usedPackaged = true
 	}
+	log.Debug("planControllerBinary: read controller unit", zap.Bool("packaged", usedPackaged), zap.Int("bytes", len(unit)), zap.Error(err))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read %s (or the packaged %s): %w", controllerUnitPath, packagedControllerUnitPath, err)
 	}
 	target, err := unitExecStartPath(string(unit))
 	if err != nil {
+		log.Debug("planControllerBinary: no usable ExecStart", zap.Error(err))
 		return nil, fmt.Errorf("%s: %w", controllerUnitPath, err)
 	}
 	exe, err := controllerExecutable()
+	log.Debug("planControllerBinary: binary paths", zap.String("target", target), zap.String("executable", exe), zap.Error(err))
 	if err != nil {
 		return nil, fmt.Errorf("failed to locate controller binary: %w", err)
 	}
 
 	plan := &controllerBinaryPlan{target: target, unit: string(unit), sources: make(map[string]string, len(standbyAddrs))}
 	if len(standbyAddrs) == 0 {
+		log.Debug("planControllerBinary: no standbys")
 		return plan, nil
 	}
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, standbyAddrs, "uname -m")
+	log.Debug("planControllerBinary: probed architectures", zap.Strings("hosts", standbyAddrs),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, fmt.Errorf("check node architecture: %w", err)
 	}
@@ -71,27 +83,33 @@ func (rm *ResourceManager) planControllerBinary(ctx context.Context, standbyAddr
 			machine = strings.TrimSpace(hr.Output)
 		}
 		if machine == "" {
+			log.Debug("planControllerBinary: architecture unknown", zap.String("host", addr))
 			return nil, fmt.Errorf("check node architecture on %s: %s", rm.nodeLabel(addr), hostFailure(hr))
 		}
 		arch := goarchFromMachine(machine)
 		if arch == runtime.GOARCH {
+			log.Debug("planControllerBinary: same architecture; running binary", zap.String("host", addr), zap.String("arch", arch))
 			plan.sources[addr] = exe
 			continue
 		}
 		perArch := filepath.Join(filepath.Dir(exe), "haify-controller-"+arch)
 		if fileExists(perArch) {
+			log.Debug("planControllerBinary: per-architecture binary", zap.String("host", addr), zap.String("arch", arch), zap.String("path", perArch))
 			plan.sources[addr] = perArch
 			continue
 		}
+		log.Debug("planControllerBinary: no binary for architecture", zap.String("host", addr), zap.String("arch", arch))
 		refused = append(refused, fmt.Sprintf("%s (%s)", rm.nodeLabel(addr), machine))
 	}
 	if len(refused) > 0 {
 		sort.Strings(refused)
+		log.Debug("planControllerBinary: refusing", zap.Strings("refused", refused))
 		return nil, fmt.Errorf("this controller is built for %s and %s cannot run it; place a build for that "+
 			"architecture at %s-<goarch> (e.g. haify-controller-arm64), or leave those nodes out with --nodes",
 			unameMachine(runtime.GOARCH), strings.Join(refused, ", "),
 			filepath.Join(filepath.Dir(exe), "haify-controller"))
 	}
+	log.Debug("planControllerBinary: planned", zap.String("target", target), zap.Int("standbys", len(plan.sources)))
 	return plan, nil
 }
 
@@ -112,7 +130,10 @@ func (rm *ResourceManager) installControllerBinary(ctx context.Context, plan *co
 		sort.Strings(hosts)
 		rm.controller.logger.Info("Installing controller binary",
 			zap.Strings("hosts", hosts), zap.String("source", src), zap.String("target", plan.target))
+		start := time.Now()
 		res, err := rm.deployment.InstallFile(ctx, hosts, src, plan.target, 0o755)
+		rm.resourcesLog().Debug("installControllerBinary: installed", zap.Strings("hosts", hosts), zap.String("source", src),
+			zap.Bool("success", err == nil && res.Success), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			return fmt.Errorf("failed to distribute controller binary: %w", err)
 		}
@@ -159,6 +180,7 @@ func unitExecStartPath(unit string) (string, error) {
 		}
 	}
 	if cmd == "" {
+		zap.L().Debug("unitExecStartPath: no ExecStart in [Service]")
 		return "", fmt.Errorf("no ExecStart in [Service]")
 	}
 	// Special executable prefixes: "-", "@", ":", "+", "!", "!!".
@@ -177,8 +199,10 @@ func unitExecStartPath(unit string) (string, error) {
 		path = strings.Fields(cmd)[0]
 	}
 	if !filepath.IsAbs(path) {
+		zap.L().Debug("unitExecStartPath: program not absolute", zap.String("path", path))
 		return "", fmt.Errorf("ExecStart program %q is not an absolute path", path)
 	}
+	zap.L().Debug("unitExecStartPath: program", zap.String("path", path))
 	return filepath.Clean(path), nil
 }
 

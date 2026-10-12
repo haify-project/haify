@@ -113,20 +113,26 @@ const nodeArchProbe = `case "$(uname -m)" in x86_64) echo amd64;; aarch64|arm64)
 // architecture matches the controller's own falls back to the plain path, which
 // keeps every existing single-architecture deployment working untouched.
 func (rm *ResourceManager) wanproxyBinaryResolver(ctx context.Context, hosts []string) func(string) string {
+	log := rm.resourcesLog()
 	arch := make(map[string]string, len(hosts))
 	for _, h := range hosts {
-		if res, err := rm.deployment.Exec(ctx, []string{h}, nodeArchProbe); err == nil && res != nil {
+		start := time.Now()
+		res, err := rm.deployment.Exec(ctx, []string{h}, nodeArchProbe)
+		if err == nil && res != nil {
 			for _, r := range res.Hosts {
 				arch[h] = strings.TrimSpace(r.Output)
 				break
 			}
 		}
+		log.Debug("wanproxyBinaryResolver: probed node architecture", zap.String("host", h), zap.String("arch", arch[h]),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 	}
 
 	return func(host string) string {
 		a := arch[host]
 		if a != "" {
 			if p := wanproxyLocalBinaryPath + "-" + a; fileExists(p) {
+				log.Debug("wanproxyBinaryResolver: per-architecture binary", zap.String("host", host), zap.String("path", p))
 				return p
 			}
 		}
@@ -135,6 +141,8 @@ func (rm *ResourceManager) wanproxyBinaryResolver(ctx context.Context, hosts []s
 		// to go on — pushing a binary of the wrong architecture is worse than
 		// pushing none, because "missing" is a failure the operator can read.
 		if (a == runtime.GOARCH || a == "") && fileExists(wanproxyLocalBinaryPath) {
+			log.Debug("wanproxyBinaryResolver: controller's own binary", zap.String("host", host), zap.String("arch", a),
+				zap.String("path", wanproxyLocalBinaryPath))
 			return wanproxyLocalBinaryPath
 		}
 		rm.controller.logger.Warn("No haify-proxy binary on the controller for this node's architecture; assuming it is pre-staged",
@@ -172,6 +180,8 @@ func (rm *ResourceManager) wanPrimaryAddrs(dbRes *database.Resource) (primaryAdd
 		}
 		primaryAddrs = append(primaryAddrs, rm.controller.ResolveHost(n))
 	}
+	rm.resourcesLog().Debug("wanPrimaryAddrs: resolved", zap.String("resource", dbRes.Name), zap.Strings("primaries", primaryAddrs),
+		zap.String("dr", drAddr))
 	return primaryAddrs, drAddr
 }
 
@@ -186,6 +196,8 @@ func (rm *ResourceManager) wanEndpointAddrs(dbRes *database.Resource) (primaryAd
 		primaryAddr = rm.controller.ResolveHost(n)
 		break
 	}
+	rm.resourcesLog().Debug("wanEndpointAddrs: resolved", zap.String("resource", dbRes.Name), zap.String("primary", primaryAddr),
+		zap.String("dr", drAddr))
 	return primaryAddr, drAddr
 }
 
@@ -212,11 +224,14 @@ type WANStatusInfo struct {
 // LAN resource (WANMode false / no record). It probes the haify-proxy unit on the
 // primary and DR nodes so `resource status` can surface proxy health.
 func (rm *ResourceManager) WANStatus(ctx context.Context, name string) (*WANStatusInfo, error) {
+	log := rm.resourcesLog()
 	if rm.controller.db == nil {
+		log.Debug("WANStatus: no database", zap.String("resource", name))
 		return nil, nil
 	}
 	dbRes, err := rm.controller.db.GetResource(ctx, name)
 	if err != nil || dbRes == nil || !dbRes.WANMode {
+		log.Debug("WANStatus: not a WAN resource", zap.String("resource", name), zap.Bool("found", dbRes != nil), zap.Error(err))
 		return nil, nil
 	}
 	info := &WANStatusInfo{
@@ -239,14 +254,17 @@ func (rm *ResourceManager) WANStatus(ctx context.Context, name string) (*WANStat
 		state := "unknown"
 		if addr != "" && rm.deployment != nil {
 			// `|| true` so an inactive unit (non-zero exit) still yields its state.
-			if res, err := rm.deployment.Exec(ctx, []string{addr},
-				"systemctl is-active "+unit+" 2>/dev/null || true"); err == nil && res != nil {
+			start := time.Now()
+			res, err := rm.deployment.Exec(ctx, []string{addr}, "systemctl is-active "+unit+" 2>/dev/null || true")
+			if err == nil && res != nil {
 				if hr, ok := res.Hosts[addr]; ok {
 					if s := strings.TrimSpace(hr.Output); s != "" {
 						state = s
 					}
 				}
 			}
+			log.Debug("WANStatus: probed proxy unit", zap.String("resource", name), zap.String("host", addr), zap.String("unit", unit),
+				zap.String("state", state), zap.Duration("took", time.Since(start)), zap.Error(err))
 		}
 		info.ProxyState[label] = state
 	}
@@ -268,15 +286,26 @@ func (rm *ResourceManager) WANStatus(ctx context.Context, name string) (*WANStat
 	// running. Probing from the first node in the list instead reports "WAN
 	// unreachable" whenever that particular replica happens to be down, which
 	// points at the wrong end of the link.
-	if st, serr := wanproxy.StatusMulti(ctx, rm.wanproxyDeployClient(), multi); serr == nil && st != nil {
+	start := time.Now()
+	st, serr := wanproxy.StatusMulti(ctx, rm.wanproxyDeployClient(), multi)
+	log.Debug("WANStatus: read leg status", zap.String("resource", name), zap.Bool("found", st != nil),
+		zap.Duration("took", time.Since(start)), zap.Error(serr))
+	if serr == nil && st != nil {
 		info.WANReachable = st.WANReachable
 		// Proxy counters from a live primary (the side that holds the backlog).
 		// Best effort: an older proxy publishes nothing, and that must not fail
 		// status.
 		if host := liveWANPrimary(st); host != "" {
+			start := time.Now()
 			info.Metrics = wanproxy.ReadNodeMetrics(ctx, rm.wanproxyDeployClient(), host, wanLegFor(st, host))
+			log.Debug("WANStatus: read proxy metrics", zap.String("resource", name), zap.String("host", host),
+				zap.Bool("found", info.Metrics != nil), zap.Duration("took", time.Since(start)))
+		} else {
+			log.Debug("WANStatus: no live primary dialer; no metrics", zap.String("resource", name))
 		}
 	}
+	log.Debug("WANStatus: done", zap.String("resource", name), zap.Bool("reachable", info.WANReachable),
+		zap.Int("units", len(info.ProxyState)))
 	return info, nil
 }
 
@@ -310,9 +339,13 @@ func randomWANPort() uint32 {
 	if err != nil {
 		// crypto/rand should never fail; fall back to a time-derived port so we
 		// still return a usable high port rather than aborting the create.
-		return uint32(lo + int(time.Now().UnixNano()%(hi-lo+1)))
+		port := uint32(lo + int(time.Now().UnixNano()%(hi-lo+1)))
+		zap.L().Debug("randomWANPort: crypto/rand failed; time-derived port", zap.Uint32("port", port), zap.Error(err))
+		return port
 	}
-	return uint32(lo) + uint32(n.Int64())
+	port := uint32(lo) + uint32(n.Int64())
+	zap.L().Debug("randomWANPort: chose port", zap.Uint32("port", port))
+	return port
 }
 
 // applyLocalSiteQuorum narrows a running WAN resource's quorum to a majority of
@@ -326,11 +359,17 @@ func randomWANPort() uint32 {
 // it. Once the peers are up, the number is both satisfiable and the thing we
 // actually want: see localSiteQuorum for why the DR must not vote.
 func (rm *ResourceManager) applyLocalSiteQuorum(ctx context.Context, resource string, hosts []string, localVoters int) error {
+	log := rm.resourcesLog()
+	log.Debug("applyLocalSiteQuorum: start", zap.String("resource", resource), zap.Strings("hosts", hosts), zap.Int("local_voters", localVoters))
 	if len(hosts) == 0 {
+		log.Debug("applyLocalSiteQuorum: no hosts", zap.String("resource", resource))
 		return nil
 	}
 	resPath := fmt.Sprintf("/etc/drbd.d/%s.res", resource)
+	start := time.Now()
 	catRes, err := rm.deployment.Exec(ctx, []string{hosts[0]}, "cat "+resPath)
+	log.Debug("applyLocalSiteQuorum: read config", zap.String("resource", resource), zap.String("host", hosts[0]),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("read resource config to set quorum: %w", err)
 	}
@@ -340,14 +379,19 @@ func (rm *ResourceManager) applyLocalSiteQuorum(ctx context.Context, resource st
 		break
 	}
 	if !ok || strings.TrimSpace(live) == "" {
+		log.Debug("applyLocalSiteQuorum: config unreadable", zap.String("resource", resource))
 		return fmt.Errorf("read resource config for %q: %s", resource, catRes.FailureDetails())
 	}
 
 	updated := setLocalSiteQuorum(live, localVoters)
 	if updated == live {
+		log.Debug("applyLocalSiteQuorum: quorum already set", zap.String("resource", resource))
 		return nil
 	}
-	if _, err := rm.deployment.DistributeConfig(ctx, hosts, updated, resPath); err != nil {
+	start = time.Now()
+	_, err = rm.deployment.DistributeConfig(ctx, hosts, updated, resPath)
+	log.Debug("applyLocalSiteQuorum: distributed config", zap.String("resource", resource), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("distribute quorum change: %w", err)
 	}
 	return rm.execAllSuccess(ctx, hosts, fmt.Sprintf("sudo drbdadm adjust %s", resource),
@@ -390,6 +434,8 @@ func (rm *ResourceManager) wanMultiSpecFor(dbRes *database.Resource) wanproxy.Mu
 		primaries = append(primaries, rm.controller.ResolveHost(n))
 		primaryNames = append(primaryNames, n)
 	}
+	rm.resourcesLog().Debug("wanMultiSpecFor: rebuilt spec", zap.String("resource", dbRes.Name), zap.Strings("primaries", primaryNames),
+		zap.String("dr_node", dbRes.DRNode), zap.Int("wan_port", dbRes.WANPort))
 	return wanproxy.MultiSpec{
 		Resource:          dbRes.Name,
 		PrimaryNodeAddrs:  primaries,

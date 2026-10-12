@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/haify-project/haify/pkg/database"
 	"github.com/haify-project/haify/pkg/event"
 )
@@ -40,11 +42,14 @@ type RebalanceMove struct {
 
 // PlanRebalance proposes at most maxMoves moves, with notes on what it left out.
 func (rm *ResourceManager) PlanRebalance(ctx context.Context, maxMoves int) ([]RebalanceMove, []string, error) {
+	log := rm.resourcesLog()
 	if maxMoves <= 0 {
 		maxMoves = 10
 	}
+	log.Debug("PlanRebalance: start", zap.Int("max_moves", maxMoves))
 	nodes, err := rm.controller.nodes.ListNodes(ctx)
 	if err != nil {
+		log.Debug("PlanRebalance: cannot list nodes", zap.Error(err))
 		return nil, nil, err
 	}
 	alloc := map[string]uint64{}
@@ -54,6 +59,7 @@ func (rm *ResourceManager) PlanRebalance(ctx context.Context, maxMoves int) ([]R
 		}
 	}
 	resources, err := rm.controller.db.ListResources(ctx)
+	log.Debug("PlanRebalance: listed", zap.Int("online_nodes", len(alloc)), zap.Int("resources", len(resources)), zap.Error(err))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -79,14 +85,20 @@ func (rm *ResourceManager) PlanRebalance(ctx context.Context, maxMoves int) ([]R
 		}
 		switch {
 		case r.Name == SelfHaResource, r.WANMode, r.MoveFrom != "":
+			log.Debug("PlanRebalance: resource not movable", zap.String("resource", r.Name), zap.Bool("wan", r.WANMode),
+				zap.Bool("moving", r.MoveFrom != ""))
 			continue
 		case externallyPromoted(r.Name, r.Labels) == "the CSI driver":
+			log.Debug("PlanRebalance: CSI volume left out", zap.String("resource", r.Name))
 			notes = append(notes, r.Name+": a CSI volume, whose node affinity is fixed; move it by hand if you must")
 			continue
 		}
+		log.Debug("PlanRebalance: candidate resource", zap.String("resource", r.Name), zap.String("pool", pool),
+			zap.Uint64("size_gb", size), zap.Strings("members", members))
 		all = append(all, held{r.Name, members, nonReplicaMembers(r), pool, size})
 	}
 	if len(alloc) < 2 {
+		log.Debug("PlanRebalance: fewer than two online nodes; nothing to balance", zap.Int("online_nodes", len(alloc)))
 		return nil, notes, nil
 	}
 	fill := rm.poolFillByNode(ctx)
@@ -101,7 +113,10 @@ func (rm *ResourceManager) PlanRebalance(ctx context.Context, maxMoves int) ([]R
 			total += v
 		}
 		mean := total / uint64(len(alloc))
+		log.Debug("PlanRebalance: spread", zap.String("most", from), zap.Uint64("most_gb", alloc[from]),
+			zap.String("least", low), zap.Uint64("least_gb", alloc[low]), zap.Uint64("mean_gb", mean))
 		if alloc[from]-alloc[low] <= max(mean/10, 1) {
+			log.Debug("PlanRebalance: spread within a tenth of the mean; done")
 			break
 		}
 		found := false
@@ -111,15 +126,20 @@ func (rm *ResourceManager) PlanRebalance(ctx context.Context, maxMoves int) ([]R
 			}
 			picked, err := rm.selectAdditionalReplicas(ctx, h.pool, h.size, 1, h.members, h.barred, nil, nil)
 			if err != nil || len(picked) == 0 {
+				log.Debug("PlanRebalance: no target for resource", zap.String("resource", h.name), zap.Error(err))
 				continue
 			}
 			to := picked[0]
 			if _, ok := alloc[to]; !ok || alloc[to]+h.size >= alloc[from] {
+				log.Debug("PlanRebalance: target would not even out", zap.String("resource", h.name), zap.String("to", to))
 				continue
 			}
 			if fuller(fill[h.pool], to, from) {
+				log.Debug("PlanRebalance: target pool already fuller", zap.String("resource", h.name), zap.String("to", to))
 				continue
 			}
+			log.Debug("PlanRebalance: planned move", zap.String("resource", h.name), zap.String("from", from), zap.String("to", to),
+				zap.Uint64("size_gb", h.size))
 			moves = append(moves, RebalanceMove{Resource: h.name, From: from, To: to, SizeGB: h.size})
 			alloc[from] -= h.size
 			alloc[to] += h.size
@@ -128,9 +148,11 @@ func (rm *ResourceManager) PlanRebalance(ctx context.Context, maxMoves int) ([]R
 			break
 		}
 		if !found {
+			log.Debug("PlanRebalance: nothing more can move off the fullest node", zap.String("node", from))
 			break
 		}
 	}
+	log.Debug("PlanRebalance: plan", zap.Int("moves", len(moves)), zap.Int("notes", len(notes)))
 	return moves, notes, nil
 }
 
@@ -143,15 +165,21 @@ func nonReplicaMembers(r *database.Resource) []string {
 // poolFillByNode is, per pool and node name, the fraction of the pool really
 // in use: written data on a thin pool, allocated extents on a thick one.
 func (rm *ResourceManager) poolFillByNode(ctx context.Context) map[string]map[string]float64 {
+	log := rm.resourcesLog()
 	fill := map[string]map[string]float64{}
 	pools, err := rm.controller.storage.ListPools(ctx)
 	if err != nil {
+		log.Debug("poolFillByNode: cannot list pools", zap.Error(err))
 		return fill
 	}
 	nodes, err := rm.controller.nodes.ListNodes(ctx)
 	if err != nil {
+		log.Debug("poolFillByNode: cannot list nodes", zap.Error(err))
 		return fill
 	}
+	defer func() {
+		log.Debug("poolFillByNode: pool fill", zap.Int("pools", len(pools)), zap.Int("pool_names", len(fill)))
+	}()
 	nameByAddr := make(map[string]string, len(nodes)*2)
 	for _, n := range nodes {
 		nameByAddr[n.Address] = n.Name
@@ -219,13 +247,17 @@ var rebalanceMu sync.Mutex
 // ApplyRebalance runs moves one after another in the background; it refuses
 // while a previous plan is still running.
 func (rm *ResourceManager) ApplyRebalance(moves []RebalanceMove) error {
+	log := rm.resourcesLog()
 	if !rebalanceMu.TryLock() {
+		log.Debug("ApplyRebalance: a rebalance is already running")
 		return fmt.Errorf("a rebalance is already running")
 	}
+	log.Debug("ApplyRebalance: start", zap.Int("moves", len(moves)))
 	go func() {
 		defer rebalanceMu.Unlock()
 		ctx := rm.controller.ctx
 		for _, m := range moves {
+			log.Debug("ApplyRebalance: moving", zap.String("resource", m.Resource), zap.String("from", m.From), zap.String("to", m.To))
 			if err := rm.MoveReplica(ctx, m.Resource, m.From, m.To); err != nil {
 				rm.moveEvent(m.Resource, event.SeverityWarning, fmt.Sprintf(
 					"rebalance: moving %s's replica from %s to %s was refused: %v", m.Resource, m.From, m.To, err))
@@ -235,14 +267,17 @@ func (rm *ResourceManager) ApplyRebalance(moves []RebalanceMove) error {
 			for {
 				select {
 				case <-ctx.Done():
+					log.Debug("ApplyRebalance: context done; stopping", zap.Error(ctx.Err()))
 					return
 				case <-time.After(movePollInterval):
 				}
 				if r, err := rm.controller.db.GetResource(ctx, m.Resource); err != nil || r == nil || r.MoveFrom == "" {
+					log.Debug("ApplyRebalance: move finished", zap.String("resource", m.Resource), zap.Error(err))
 					break
 				}
 			}
 		}
+		log.Debug("ApplyRebalance: done", zap.Int("moves", len(moves)))
 	}()
 	return nil
 }

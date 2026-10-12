@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
 
 // SetPrimary sets a resource to Primary on the specified node
 func (rm *ResourceManager) SetPrimary(ctx context.Context, resource, node string, force bool) error {
+	log := rm.resourcesLog()
 	// Resolve node name to address
 	address := rm.controller.ResolveHost(node)
 
@@ -21,10 +23,14 @@ func (rm *ResourceManager) SetPrimary(ctx context.Context, resource, node string
 		zap.Bool("force", force))
 
 	if rm.deployment == nil {
+		log.Debug("SetPrimary: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("deployment client not set")
 	}
 
+	start := time.Now()
 	result, err := rm.deployment.DRBDPrimary(ctx, address, resource, force)
+	log.Debug("SetPrimary: promote", zap.String("resource", resource), zap.String("host", address), zap.Bool("force", force),
+		zap.Bool("success", err == nil && result.Success), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err == nil && result.Success {
 		return nil
 	}
@@ -42,9 +48,13 @@ func (rm *ResourceManager) SetPrimary(ctx context.Context, resource, node string
 			zap.String("resource", resource), zap.String("node", node))
 		if derr := rm.execAllSuccess(ctx, []string{address}, "sudo drbdadm disconnect --force "+resource,
 			"disconnect the DR node from the primary site"); derr != nil {
+			log.Debug("SetPrimary: DR disconnect failed", zap.String("resource", resource), zap.Error(derr))
 			return derr
 		}
+		start = time.Now()
 		result, err = rm.deployment.DRBDPrimary(ctx, address, resource, true)
+		log.Debug("SetPrimary: DR promote after disconnect", zap.String("resource", resource), zap.String("host", address),
+			zap.Bool("success", err == nil && result.Success), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err == nil && result.Success {
 			return nil
 		}
@@ -63,13 +73,17 @@ func (rm *ResourceManager) SetPrimary(ctx context.Context, resource, node string
 	// in PromoteForNode.
 	if !force {
 		needsForce, ferr := rm.resourceNeedsInitialForce(ctx, resource, address)
+		log.Debug("SetPrimary: initial-sync check", zap.String("resource", resource), zap.Bool("needs_force", needsForce), zap.Error(ferr))
 		if ferr != nil {
 			rm.controller.logger.Warn("Could not determine initial-sync state after a failed promote; not forcing",
 				zap.String("resource", resource), zap.String("node", node), zap.Error(ferr))
 		} else if needsForce {
 			rm.controller.logger.Warn("Resource has a volume with no UpToDate copy anywhere (fresh initial sync); force-promoting to establish UpToDate",
 				zap.String("resource", resource), zap.String("node", node))
+			start := time.Now()
 			forced, fErr := rm.deployment.DRBDPrimary(ctx, address, resource, true)
+			log.Debug("SetPrimary: initial-sync force promote", zap.String("resource", resource), zap.String("host", address),
+				zap.Bool("success", fErr == nil && forced.Success), zap.Duration("took", time.Since(start)), zap.Error(fErr))
 			if fErr != nil {
 				return fmt.Errorf("failed to force-promote initial-sync resource on %s: %w", node, fErr)
 			}
@@ -83,6 +97,7 @@ func (rm *ResourceManager) SetPrimary(ctx context.Context, resource, node string
 	if err != nil {
 		return fmt.Errorf("failed to set primary: %w", err)
 	}
+	log.Debug("SetPrimary: promote refused", zap.String("resource", resource), zap.String("node", node))
 	return fmt.Errorf("failed to set primary on %s: %s", node, result.Output)
 }
 
@@ -93,10 +108,13 @@ func (rm *ResourceManager) isDRNodeOf(ctx context.Context, resource, node string
 	}
 	r, err := rm.controller.db.GetResource(ctx, resource)
 	if err != nil || r == nil {
+		rm.resourcesLog().Debug("isDRNodeOf: no resource record", zap.String("resource", resource), zap.Error(err))
 		return false
 	}
-	return r.WANMode && r.DRNode != "" &&
+	dr := r.WANMode && r.DRNode != "" &&
 		(r.DRNode == node || rm.controller.ResolveHost(r.DRNode) == rm.controller.ResolveHost(node))
+	rm.resourcesLog().Debug("isDRNodeOf: checked", zap.String("resource", resource), zap.String("node", node), zap.Bool("dr", dr))
+	return dr
 }
 
 // resourceNeedsInitialForce reports whether a failed non-forced promote should
@@ -112,7 +130,10 @@ func (rm *ResourceManager) resourceNeedsInitialForce(ctx context.Context, resour
 	if rm.deployment == nil {
 		return false, fmt.Errorf("deployment client not set")
 	}
+	start := time.Now()
 	res, err := rm.deployment.DRBDStatusJSON(ctx, []string{address}, resource)
+	rm.resourcesLog().Debug("resourceNeedsInitialForce: read JSON status", zap.String("resource", resource), zap.String("host", address),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return false, fmt.Errorf("read drbd status on %s: %w", address, err)
 	}
@@ -148,12 +169,14 @@ func (rm *ResourceManager) resourceNeedsInitialForce(ctx context.Context, resour
 // Returns true only if at least one volume needs the force and NO volume made it
 // unsafe. Empty/unparseable input returns an error so callers fail closed.
 func safeToForceInitialSync(output string) (bool, error) {
+	log := zap.L()
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" {
 		return false, fmt.Errorf("empty drbdsetup status json")
 	}
 	var resources []drbdsetupStatus
 	if err := json.Unmarshal([]byte(trimmed), &resources); err != nil {
+		log.Debug("safeToForceInitialSync: unparseable status", zap.Error(err))
 		return false, fmt.Errorf("decode drbdsetup status json: %w", err)
 	}
 	if len(resources) == 0 {
@@ -170,6 +193,8 @@ func safeToForceInitialSync(output string) (bool, error) {
 	// booting (a PVE host rebooted with its VM running).
 	for _, conn := range res.Connections {
 		if conn.ConnectionState != "Connected" {
+			log.Debug("safeToForceInitialSync: a peer is not connected; no force", zap.String("peer", conn.Name),
+				zap.String("connection", conn.ConnectionState))
 			return false, nil
 		}
 	}
@@ -186,6 +211,8 @@ func safeToForceInitialSync(output string) (bool, error) {
 
 	needForce := false
 	for _, dev := range res.Devices {
+		log.Debug("safeToForceInitialSync: local volume", zap.Int("volume_id", dev.Volume), zap.String("disk", dev.DiskState),
+			zap.Bool("peer_has_data", peerHasData[dev.Volume]))
 		if dev.DiskState == "UpToDate" {
 			continue
 		}
@@ -197,6 +224,7 @@ func safeToForceInitialSync(output string) (bool, error) {
 		// This volume has no copy with data anywhere: fresh, nothing to lose.
 		needForce = true
 	}
+	log.Debug("safeToForceInitialSync: verdict", zap.Bool("needs_force", needForce))
 	return needForce, nil
 }
 
@@ -207,13 +235,17 @@ func safeToForceInitialSync(output string) (bool, error) {
 // After it returns, the resource is Secondary+UpToDate and can be promoted with
 // a plain, non-forced promote.
 func (rm *ResourceManager) establishInitialSync(ctx context.Context, resource, address string) error {
+	log := rm.resourcesLog()
 	if rm.deployment == nil {
 		return fmt.Errorf("deployment client not set")
 	}
 	rm.controller.logger.Info("Establishing initial UpToDate generation (force-primary then demote)",
 		zap.String("resource", resource), zap.String("address", address))
 
+	start := time.Now()
 	forced, err := rm.deployment.DRBDPrimary(ctx, address, resource, true)
+	log.Debug("establishInitialSync: force promote", zap.String("resource", resource), zap.String("host", address),
+		zap.Bool("success", err == nil && forced.Success), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("force-promote for initial sync: %w", err)
 	}
@@ -221,7 +253,10 @@ func (rm *ResourceManager) establishInitialSync(ctx context.Context, resource, a
 		return fmt.Errorf("force-promote for initial sync on %s: %s", address, forced.Output)
 	}
 
+	start = time.Now()
 	demoted, err := rm.deployment.DRBDSecondary(ctx, address, resource)
+	log.Debug("establishInitialSync: demote", zap.String("resource", resource), zap.String("host", address),
+		zap.Bool("success", err == nil && demoted.Success), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("demote after initial sync: %w", err)
 	}
@@ -233,6 +268,7 @@ func (rm *ResourceManager) establishInitialSync(ctx context.Context, resource, a
 
 // SetSecondary sets a resource to Secondary on the specified node
 func (rm *ResourceManager) SetSecondary(ctx context.Context, resource, node string) error {
+	log := rm.resourcesLog()
 	address := rm.controller.ResolveHost(node)
 
 	rm.controller.logger.Info("Setting resource secondary",
@@ -241,10 +277,14 @@ func (rm *ResourceManager) SetSecondary(ctx context.Context, resource, node stri
 		zap.String("address", address))
 
 	if rm.deployment == nil {
+		log.Debug("SetSecondary: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("deployment client not set")
 	}
 
+	start := time.Now()
 	result, err := rm.deployment.DRBDSecondary(ctx, address, resource)
+	log.Debug("SetSecondary: demote", zap.String("resource", resource), zap.String("host", address),
+		zap.Bool("success", err == nil && result.Success), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to set secondary: %w", err)
 	}
@@ -284,10 +324,13 @@ func (rm *ResourceManager) SetSecondary(ctx context.Context, resource, node stri
 //	(d) if quorum == false (or unknown), REFUSE with an error — promoting
 //	    without quorum could split-brain.
 func (rm *ResourceManager) PromoteForNode(ctx context.Context, resource, node string) error {
+	log := rm.resourcesLog()
+	log.Debug("PromoteForNode: start", zap.String("resource", resource), zap.String("node", node))
 	// (a) Safe path: a plain promote succeeds on a graceful move (old Primary
 	// already Secondary) and on any node that can already take Primary. This
 	// path is unchanged from the previous non-forced behavior.
 	if err := rm.SetPrimary(ctx, resource, node, false); err == nil {
+		log.Debug("PromoteForNode: plain promote succeeded", zap.String("resource", resource), zap.String("node", node))
 		return nil
 	} else {
 		rm.controller.logger.Warn("Normal promote failed; evaluating quorum before any force-promote",
@@ -297,6 +340,7 @@ func (rm *ResourceManager) PromoteForNode(ctx context.Context, resource, node st
 		// simply in use there. Saying so beats the failover verdicts below,
 		// which read a diskless client's copy as one missing writes.
 		if peer := rm.connectedPrimaryPeer(ctx, resource, node); peer != "" {
+			log.Debug("PromoteForNode: a connected peer is Primary; refusing", zap.String("resource", resource), zap.String("peer", peer))
 			return fmt.Errorf("%s is in use on %s, which has it Primary; release it there first (promote error: %v)",
 				resource, peer, err)
 		}
@@ -305,6 +349,8 @@ func (rm *ResourceManager) PromoteForNode(ctx context.Context, resource, node st
 		// Primary was never demoted. Decide whether forcing is safe by checking
 		// whether THIS node currently holds DRBD quorum.
 		hasQuorum, qErr := rm.nodeHasQuorum(ctx, resource, node)
+		log.Debug("PromoteForNode: quorum", zap.String("resource", resource), zap.String("node", node),
+			zap.Bool("quorum", hasQuorum), zap.Error(qErr))
 		if qErr != nil {
 			// We cannot prove quorum, so we must not force.
 			return fmt.Errorf("refusing to force-promote %s on %s: normal promote failed (%v) and DRBD quorum could not be determined: %w",
@@ -326,7 +372,10 @@ func (rm *ResourceManager) PromoteForNode(ctx context.Context, resource, node st
 		// VM running: the guest came up on the outdated replica and the two
 		// copies split. Such a copy has to wait for the node that has the
 		// writes.
-		if stale, sErr := rm.nodeStaleDisk(ctx, resource, node); sErr != nil {
+		stale, sErr := rm.nodeStaleDisk(ctx, resource, node)
+		log.Debug("PromoteForNode: disk state", zap.String("resource", resource), zap.String("node", node),
+			zap.String("stale_disk", stale), zap.Error(sErr))
+		if sErr != nil {
 			return fmt.Errorf("refusing to force-promote %s on %s: normal promote failed (%v) and its disk state could not be read: %w",
 				resource, node, err, sErr)
 		} else if stale != "" {
@@ -341,6 +390,7 @@ func (rm *ResourceManager) PromoteForNode(ctx context.Context, resource, node st
 		rm.controller.logger.Warn("Node holds DRBD quorum; force-promoting for hard failover",
 			zap.String("resource", resource), zap.String("node", node))
 		if fErr := rm.SetPrimary(ctx, resource, node, true); fErr != nil {
+			log.Debug("PromoteForNode: forced promote failed", zap.String("resource", resource), zap.Error(fErr))
 			// The first failure is usually the one that explains both: a peer
 			// that has the device open refuses the forced promote as well.
 			return fmt.Errorf("promote %s on %s failed: %v; forcing it (the node holds quorum) failed too: %w",
@@ -359,7 +409,10 @@ func (rm *ResourceManager) nodeHasQuorum(ctx context.Context, resource, node str
 		return false, fmt.Errorf("deployment client not set")
 	}
 	address := rm.controller.ResolveHost(node)
+	start := time.Now()
 	res, err := rm.deployment.DRBDStatusJSON(ctx, []string{address}, resource)
+	rm.resourcesLog().Debug("nodeHasQuorum: read JSON status", zap.String("resource", resource), zap.String("host", address),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return false, fmt.Errorf("read drbd status on %s: %w", node, err)
 	}
@@ -376,10 +429,14 @@ func (rm *ResourceManager) nodeHasQuorum(ctx context.Context, resource, node str
 // Primary for resource, or returns "" (also when the status cannot be read,
 // leaving the verdict to the checks that follow).
 func (rm *ResourceManager) connectedPrimaryPeer(ctx context.Context, resource, node string) string {
+	log := rm.resourcesLog()
 	if rm.deployment == nil {
 		return ""
 	}
+	start := time.Now()
 	res, err := rm.deployment.DRBDStatusJSON(ctx, []string{rm.controller.ResolveHost(node)}, resource)
+	log.Debug("connectedPrimaryPeer: read JSON status", zap.String("resource", resource), zap.String("node", node),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return ""
 	}
@@ -389,21 +446,27 @@ func (rm *ResourceManager) connectedPrimaryPeer(ctx context.Context, resource, n
 		}
 		var resources []drbdsetupStatus
 		if json.Unmarshal([]byte(strings.TrimSpace(r.Output)), &resources) != nil || len(resources) == 0 {
+			log.Debug("connectedPrimaryPeer: status unreadable", zap.String("resource", resource))
 			return ""
 		}
 		for _, c := range resources[0].Connections {
 			if c.ConnectionState == "Connected" && c.PeerRole == "Primary" {
+				log.Debug("connectedPrimaryPeer: found", zap.String("resource", resource), zap.String("peer", c.Name))
 				return c.Name
 			}
 		}
 	}
+	log.Debug("connectedPrimaryPeer: none", zap.String("resource", resource), zap.String("node", node))
 	return ""
 }
 
 // nodeStaleDisk returns the disk state of node's copy of resource when it is
 // not one a forced promote may build on (UpToDate or Consistent), or "".
 func (rm *ResourceManager) nodeStaleDisk(ctx context.Context, resource, node string) (string, error) {
+	start := time.Now()
 	res, err := rm.deployment.DRBDStatusJSON(ctx, []string{rm.controller.ResolveHost(node)}, resource)
+	rm.resourcesLog().Debug("nodeStaleDisk: read JSON status", zap.String("resource", resource), zap.String("node", node),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return "", err
 	}
@@ -419,6 +482,7 @@ func (rm *ResourceManager) nodeStaleDisk(ctx context.Context, resource, node str
 func localStaleDisk(output string) (string, error) {
 	var resources []drbdsetupStatus
 	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &resources); err != nil {
+		zap.L().Debug("localStaleDisk: unparseable status", zap.Error(err))
 		return "", fmt.Errorf("decode drbdsetup status json: %w", err)
 	}
 	if len(resources) == 0 || len(resources[0].Devices) == 0 {
@@ -428,9 +492,11 @@ func localStaleDisk(output string) (string, error) {
 		switch d.DiskState {
 		case "UpToDate", "Consistent":
 		default:
+			zap.L().Debug("localStaleDisk: stale volume", zap.Int("volume_id", d.Volume), zap.String("disk", d.DiskState))
 			return d.DiskState, nil
 		}
 	}
+	zap.L().Debug("localStaleDisk: every volume usable", zap.Int("volumes", len(resources[0].Devices)))
 	return "", nil
 }
 
@@ -445,6 +511,7 @@ func localNodeHasQuorum(output string) (bool, error) {
 	}
 	var resources []drbdsetupStatus
 	if err := json.Unmarshal([]byte(trimmed), &resources); err != nil {
+		zap.L().Debug("localNodeHasQuorum: unparseable status", zap.Error(err))
 		return false, fmt.Errorf("decode drbdsetup status json: %w", err)
 	}
 	if len(resources) == 0 {
@@ -456,8 +523,10 @@ func localNodeHasQuorum(output string) (bool, error) {
 	}
 	for _, dev := range res.Devices {
 		if dev.Quorum == nil || !*dev.Quorum {
+			zap.L().Debug("localNodeHasQuorum: volume without quorum", zap.Int("volume_id", dev.Volume), zap.Bool("reported", dev.Quorum != nil))
 			return false, nil
 		}
 	}
+	zap.L().Debug("localNodeHasQuorum: every volume has quorum", zap.Int("volumes", len(res.Devices)))
 	return true, nil
 }

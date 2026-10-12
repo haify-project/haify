@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/haify-project/haify/pkg/database"
 	"github.com/haify-project/haify/pkg/deployment"
@@ -71,6 +72,8 @@ func backingVolumeSizeBytes(sizeGB uint32, peers int, encrypted bool) uint64 {
 	if encrypted {
 		total += luksHeaderBytes
 	}
+	zap.L().Debug("backingVolumeSizeBytes: sized backing volume", zap.Uint32("size_gb", sizeGB), zap.Int("peers", peers),
+		zap.Bool("encrypted", encrypted), zap.Uint64("size_bytes", total))
 	return total
 }
 
@@ -92,13 +95,21 @@ func backingVolumeSizeBytes(sizeGB uint32, peers int, encrypted bool) uint64 {
 // that node's volume, so a failure anywhere leaves at most one half-encrypted
 // volume for the rollback to collect rather than a set of them.
 func (rm *ResourceManager) createBackingVolume(ctx context.Context, nodeIPs, nodes []string, storageType, pool, volumeName string, sizeGB uint32, encrypt bool) error {
+	log := rm.resourcesLog()
 	size := fmt.Sprintf("%dB", backingVolumeSizeBytes(sizeGB, len(nodeIPs)-1, encrypt))
+	log.Debug("createBackingVolume: start", zap.Strings("hosts", nodeIPs), zap.Strings("nodes", nodes),
+		zap.String("storage_type", storageType), zap.String("pool", pool), zap.String("volume", volumeName),
+		zap.Uint32("size_gb", sizeGB), zap.String("size", size), zap.Bool("encrypt", encrypt))
 	for i, nodeIP := range nodeIPs {
 		var result *deployment.ExecResult
 		var err error
+		start := time.Now()
 		switch storageType {
 		case "zfs", "zfs-thin":
 			result, err = rm.deployment.ZFSCreateThinDataset(ctx, []string{nodeIP}, pool, volumeName, size)
+			log.Debug("createBackingVolume: created zvol", zap.String("node", nodes[i]), zap.String("host", nodeIP),
+				zap.String("pool", pool), zap.String("volume", volumeName), zap.Array("failed_hosts", resourcesFailedHosts{result}),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
 		default:
 			// The shape comes from the node, not from storageType.
 			//
@@ -116,17 +127,27 @@ func (rm *ResourceManager) createBackingVolume(ctx context.Context, nodeIPs, nod
 			// builds "<pool>_thin" but converting a thick pool in place builds a
 			// differently named one, and guessing fails on those nodes.
 			thinPool, perr := rm.deployment.LVThinPoolIn(ctx, nodeIP, pool)
+			log.Debug("createBackingVolume: looked for thin pool", zap.String("node", nodes[i]), zap.String("pool", pool),
+				zap.String("thin_pool", thinPool), zap.Duration("took", time.Since(start)), zap.Error(perr))
 			if perr != nil {
 				return fmt.Errorf("look for a thin pool in %s on %s: %w", pool, nodes[i], perr)
 			}
+			start = time.Now()
 			if thinPool == "" {
 				if storageType == "lvm-thin" {
+					log.Debug("createBackingVolume: lvm-thin pool has no thin pool", zap.String("node", nodes[i]), zap.String("pool", pool))
 					return fmt.Errorf("pool %s on %s is recorded as lvm-thin but has no thin pool", pool, nodes[i])
 				}
 				result, err = rm.deployment.LVCreate(ctx, []string{nodeIP}, pool, volumeName, size)
+				log.Debug("createBackingVolume: created thick LV", zap.String("node", nodes[i]), zap.String("host", nodeIP),
+					zap.String("pool", pool), zap.String("volume", volumeName), zap.Array("failed_hosts", resourcesFailedHosts{result}),
+					zap.Duration("took", time.Since(start)), zap.Error(err))
 				break
 			}
 			result, err = rm.deployment.LVCreateThinVolume(ctx, []string{nodeIP}, pool, thinPool, volumeName, size)
+			log.Debug("createBackingVolume: created thin LV", zap.String("node", nodes[i]), zap.String("host", nodeIP),
+				zap.String("pool", pool), zap.String("thin_pool", thinPool), zap.String("volume", volumeName),
+				zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 		}
 		if err != nil {
 			return fmt.Errorf("failed to create backing volume %s/%s on %s: %w", pool, volumeName, nodes[i], err)
@@ -136,6 +157,8 @@ func (rm *ResourceManager) createBackingVolume(ctx context.Context, nodeIPs, nod
 				if hres.Success {
 					continue
 				}
+				log.Debug("createBackingVolume: creation failed on host", zap.String("host", host), zap.String("volume", volumeName),
+					zap.String("output", strings.TrimSpace(hres.Output)))
 				// Tolerate a leftover from a previous failed attempt, but only
 				// once we have confirmed it is actually big enough to hold what
 				// was asked for — a stale SMALLER volume must still be an error
@@ -156,20 +179,28 @@ func (rm *ResourceManager) createBackingVolume(ctx context.Context, nodeIPs, nod
 			}
 		}
 		if encrypt {
+			log.Debug("createBackingVolume: encrypting backing volume", zap.String("node", nodes[i]), zap.String("volume", volumeName))
 			if err := rm.encryptBackingVolumeOn(ctx, nodeIP, nodes[i], pool, volumeName,
 				backingPathForVolume(pool, volumeName, storageType)); err != nil {
+				log.Debug("createBackingVolume: encryption failed", zap.String("node", nodes[i]), zap.String("volume", volumeName), zap.Error(err))
 				return err
 			}
 		}
 	}
+	log.Debug("createBackingVolume: created on every node", zap.String("pool", pool), zap.String("volume", volumeName),
+		zap.Int("count", len(nodeIPs)))
 	return nil
 }
 
 // backingVolumeAtLeast reports whether an existing logical volume is big enough
 // to back a volume of sizeGB (data plus DRBD metadata).
 func (rm *ResourceManager) backingVolumeAtLeast(ctx context.Context, host, pool, volumeName string, sizeGB uint32) (bool, error) {
+	log := rm.resourcesLog()
 	cmd := fmt.Sprintf("sudo lvs --noheadings --nosuffix --units b -o lv_size %s/%s", pool, volumeName)
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{host}, cmd)
+	log.Debug("backingVolumeAtLeast: read LV size", zap.String("host", host), zap.String("pool", pool), zap.String("volume", volumeName),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return false, err
 	}
@@ -179,18 +210,25 @@ func (rm *ResourceManager) backingVolumeAtLeast(ctx context.Context, host, pool,
 	}
 	have, perr := strconv.ParseUint(strings.TrimSpace(hres.Output), 10, 64)
 	if perr != nil {
+		log.Debug("backingVolumeAtLeast: unparseable size", zap.String("host", host), zap.Error(perr))
 		return false, perr
 	}
-	return have >= uint64(sizeGB)*1024*1024*1024, nil
+	ok := have >= uint64(sizeGB)*1024*1024*1024
+	log.Debug("backingVolumeAtLeast: compared size", zap.String("host", host), zap.String("volume", volumeName),
+		zap.Uint64("size_bytes", have), zap.Uint32("want_gb", sizeGB), zap.Bool("big_enough", ok))
+	return ok, nil
 }
 
 // autoSelectPool returns the single registered pool name, or an error when
 // the choice would be ambiguous (zero or multiple distinct pool names).
 func (rm *ResourceManager) autoSelectPool(ctx context.Context) (string, error) {
+	log := rm.resourcesLog()
 	if rm.controller.db == nil {
+		log.Debug("autoSelectPool: no database")
 		return "", fmt.Errorf("no pool specified and database not available for auto-selection")
 	}
 	pools, err := rm.controller.db.ListPools(ctx)
+	log.Debug("autoSelectPool: listed pools", zap.Int("count", len(pools)), zap.Error(err))
 	if err != nil {
 		return "", fmt.Errorf("no pool specified and pool lookup failed: %w", err)
 	}
@@ -200,16 +238,19 @@ func (rm *ResourceManager) autoSelectPool(ctx context.Context) (string, error) {
 	}
 	if len(names) == 1 {
 		for name := range names {
+			log.Debug("autoSelectPool: single pool chosen", zap.String("pool", name))
 			return name, nil
 		}
 	}
 	if len(names) == 0 {
+		log.Debug("autoSelectPool: no pools registered")
 		return "", fmt.Errorf("no pool specified and no pools are registered; create one with 'pool create'")
 	}
 	choices := make([]string, 0, len(names))
 	for name := range names {
 		choices = append(choices, name)
 	}
+	log.Debug("autoSelectPool: ambiguous", zap.Strings("pools", choices))
 	return "", fmt.Errorf("no pool specified and multiple pools exist (%v); pass --pool", choices)
 }
 
@@ -217,7 +258,11 @@ func (rm *ResourceManager) autoSelectPool(ctx context.Context) (string, error) {
 // The device path recorded at creation time identifies the storage type:
 // "/dev/zvol/<pool>/<vol>" is ZFS, "/dev/<pool>/<vol>" is LVM.
 func (rm *ResourceManager) deleteBackingVolume(ctx context.Context, hosts []string, volume *database.Volume) error {
+	log := rm.resourcesLog()
+	log.Debug("deleteBackingVolume: start", zap.String("resource", volume.ResourceName), zap.String("pool", volume.Pool),
+		zap.String("volume", volume.VolumeName), zap.String("device", volume.Device), zap.Strings("hosts", hosts))
 	if volume.Pool == "" || volume.VolumeName == "" {
+		log.Debug("deleteBackingVolume: record incomplete", zap.String("resource", volume.ResourceName))
 		return fmt.Errorf("volume record incomplete (pool=%q, volume=%q)", volume.Pool, volume.VolumeName)
 	}
 	// An encrypted volume's container has to go first, for two reasons: an open
@@ -225,6 +270,7 @@ func (rm *ResourceManager) deleteBackingVolume(ctx context.Context, hosts []stri
 	// making the ciphertext left in the freed extents unreadable. Destroying it
 	// before the storage is released is what turns "deleted" into "gone".
 	if luksIsMapperPath(volume.Device) && rm.resourceIsEncrypted(ctx, volume.ResourceName) {
+		log.Debug("deleteBackingVolume: closing encrypted container first", zap.String("volume", volume.VolumeName))
 		rm.closeBackingVolumeOn(ctx, hosts, volume.Pool, volume.VolumeName)
 	}
 
@@ -247,7 +293,11 @@ func (rm *ResourceManager) deleteBackingVolume(ctx context.Context, hosts []stri
 			volume.VolumeName, volume.Pool, volume.Pool,
 			volume.Pool, volume.VolumeName, volume.ResourceName, volume.Pool, volume.VolumeName)
 	}
+	start := time.Now()
 	result, err := rm.deployment.Exec(ctx, hosts, cmd)
+	log.Debug("deleteBackingVolume: removed storage", zap.String("volume", volume.VolumeName),
+		zap.Bool("zfs", strings.HasPrefix(volume.Device, "/dev/zvol/")), zap.Strings("hosts", hosts),
+		zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return err
 	}
@@ -257,7 +307,11 @@ func (rm *ResourceManager) deleteBackingVolume(ctx context.Context, hosts []stri
 			if !hr.Success &&
 				!strings.Contains(hr.Output, "not found") &&
 				!strings.Contains(hr.Output, "does not exist") {
+				log.Debug("deleteBackingVolume: removal failed", zap.String("host", host), zap.String("volume", volume.VolumeName))
 				return fmt.Errorf("removal failed on %s: %s", host, strings.TrimSpace(hr.Output))
+			}
+			if !hr.Success {
+				log.Debug("deleteBackingVolume: already gone", zap.String("host", host), zap.String("volume", volume.VolumeName))
 			}
 		}
 	}

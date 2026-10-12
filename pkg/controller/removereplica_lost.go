@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -38,8 +39,13 @@ type memberRef struct {
 
 // answers reports whether a node answers over SSH.
 func (rm *ResourceManager) answers(ctx context.Context, addr string) bool {
+	log := rm.resourcesLog()
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{addr}, "true")
-	return err == nil && res != nil && res.AllSuccess() && len(res.Hosts) > 0
+	ok := err == nil && res != nil && res.AllSuccess() && len(res.Hosts) > 0
+	log.Debug("answers: probed node over SSH", zap.String("host", addr), zap.Bool("answers", ok),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return ok
 }
 
 // survivorView is what one surviving member's DRBD says.
@@ -52,15 +58,25 @@ type survivorView struct {
 
 // readSurvivorView reads resource's DRBD status on addr.
 func (rm *ResourceManager) readSurvivorView(ctx context.Context, addr, resource string) survivorView {
+	log := rm.resourcesLog()
+	start := time.Now()
 	res, err := rm.deployment.DRBDStatus(ctx, []string{addr}, resource)
+	log.Debug("readSurvivorView: read DRBD status", zap.String("resource", resource), zap.String("host", addr),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil || res == nil {
+		log.Debug("readSurvivorView: no status; survivor counts as not answering", zap.String("resource", resource), zap.String("host", addr))
 		return survivorView{}
 	}
 	hr := res.Hosts[addr]
 	if hr == nil || !hr.Success || localStatusLine(hr.Output) == "" {
+		log.Debug("readSurvivorView: status failed or resource not up there; survivor counts as not answering",
+			zap.String("resource", resource), zap.String("host", addr), zap.Bool("has_result", hr != nil))
 		return survivorView{}
 	}
-	return parseSurvivorView(hr.Output)
+	v := parseSurvivorView(hr.Output)
+	log.Debug("readSurvivorView: survivor view", zap.String("resource", resource), zap.String("host", addr),
+		zap.Bool("quorum", v.quorum), zap.Bool("up_to_date", v.upToDate), zap.Int("peers", len(v.seesConnected)))
+	return v
 }
 
 // parseSurvivorView reads the local quorum and disk state and each peer's
@@ -102,6 +118,8 @@ func parseSurvivorView(out string) survivorView {
 			v.upToDate = true
 		}
 	}
+	zap.L().Debug("parseSurvivorView: parsed status", zap.Bool("quorum", v.quorum), zap.Bool("up_to_date", v.upToDate),
+		zap.Int("peers", len(v.seesConnected)))
 	return v
 }
 
@@ -109,15 +127,23 @@ func parseSurvivorView(out string) survivorView {
 // down for good as far as anyone can tell: no witness that answers still has a
 // DRBD connection to them. It returns the witnesses' views.
 func (rm *ResourceManager) confirmGone(ctx context.Context, resource string, gone []memberRef, witnesses []memberRef) (map[string]survivorView, error) {
+	log := rm.resourcesLog()
+	log.Debug("confirmGone: checking members are gone", zap.String("resource", resource),
+		zap.Int("gone", len(gone)), zap.Int("witnesses", len(witnesses)))
 	views := map[string]survivorView{}
 	for _, w := range witnesses {
 		v := rm.readSurvivorView(ctx, w.addr, resource)
 		if !v.answered {
+			log.Debug("confirmGone: witness did not answer", zap.String("resource", resource), zap.String("node", w.drbdName), zap.String("host", w.addr))
 			continue
 		}
 		views[w.addr] = v
 		for _, g := range gone {
+			log.Debug("confirmGone: witness view of gone member", zap.String("resource", resource), zap.String("witness", w.drbdName),
+				zap.String("node", g.drbdName), zap.Bool("connected", v.seesConnected[g.drbdName]))
 			if v.seesConnected[g.drbdName] {
+				log.Debug("confirmGone: gone member still connected; refusing", zap.String("resource", resource),
+					zap.String("witness", w.drbdName), zap.String("node", g.drbdName))
 				return nil, fmt.Errorf(
 					"%s is still connected to %s over DRBD although the controller cannot reach it; it is cut off from the controller, not gone",
 					rm.nodeLabel(w.addr), g.drbdName)
@@ -125,19 +151,27 @@ func (rm *ResourceManager) confirmGone(ctx context.Context, resource string, gon
 		}
 	}
 	if len(views) == 0 {
+		log.Debug("confirmGone: no witness answered", zap.String("resource", resource))
 		return nil, fmt.Errorf("no surviving member of %s answered, so nothing can confirm the rest are gone", resource)
 	}
+	log.Debug("confirmGone: members confirmed gone", zap.String("resource", resource), zap.Int("answered", len(views)))
 	return views, nil
 }
 
 // assertLostRemovable is the lost path's guard: the node is gone, and the
 // diskful survivors hold quorum and an UpToDate copy without it.
 func (rm *ResourceManager) assertLostRemovable(ctx context.Context, resource string, lost memberRef, diskful []memberRef) error {
+	log := rm.resourcesLog()
+	log.Debug("assertLostRemovable: checking lost member", zap.String("resource", resource),
+		zap.String("node", lost.drbdName), zap.String("host", lost.addr), zap.Int("diskful", len(diskful)))
 	if rm.answers(ctx, lost.addr) {
+		log.Debug("assertLostRemovable: node answers; not lost", zap.String("resource", resource), zap.String("node", lost.drbdName))
 		return fmt.Errorf("%s answers over SSH, so it is not lost; remove it without --lost", rm.nodeLabel(lost.addr))
 	}
 	views, err := rm.confirmGone(ctx, resource, []memberRef{lost}, diskful)
 	if err != nil {
+		log.Debug("assertLostRemovable: could not confirm node is gone", zap.String("resource", resource),
+			zap.String("node", lost.drbdName), zap.Error(err))
 		return err
 	}
 	quorum, upToDate := false, false
@@ -145,15 +179,20 @@ func (rm *ResourceManager) assertLostRemovable(ctx context.Context, resource str
 		quorum = quorum || v.quorum
 		upToDate = upToDate || v.upToDate
 	}
+	log.Debug("assertLostRemovable: survivors' state", zap.String("resource", resource),
+		zap.Bool("quorum", quorum), zap.Bool("up_to_date", upToDate))
 	if !upToDate {
+		log.Debug("assertLostRemovable: no UpToDate survivor; refusing", zap.String("resource", resource))
 		return fmt.Errorf("no surviving replica of %s is UpToDate; removing %s would leave no complete copy", resource, lost.drbdName)
 	}
 	if !quorum {
+		log.Debug("assertLostRemovable: survivors lack quorum; refusing", zap.String("resource", resource))
 		return fmt.Errorf(
 			"the surviving replicas of %s have no quorum without %s. That is the state in which another partition could "+
 				"still hold the data, so its vote is not dropped blind; give the survivors a quorum first "+
 				"(`haify ha set-tiebreaker %s <node>` works with %s down), then remove it", resource, lost.drbdName, resource, lost.drbdName)
 	}
+	log.Debug("assertLostRemovable: lost member may be removed", zap.String("resource", resource), zap.String("node", lost.drbdName))
 	return nil
 }
 
@@ -172,13 +211,16 @@ func nodeIDOf(content, name string) (string, bool) {
 			continue
 		}
 		if m := nodeIDLineRE.FindStringSubmatch(line); m != nil {
+			zap.L().Debug("nodeIDOf: found node-id", zap.String("node", name), zap.String("node_id", m[1]))
 			return m[1], true
 		}
 		depth += strings.Count(line, "{") - strings.Count(line, "}")
 		if depth <= 0 {
+			zap.L().Debug("nodeIDOf: on stanza has no node-id", zap.String("node", name))
 			return "", false
 		}
 	}
+	zap.L().Debug("nodeIDOf: node-id not found", zap.String("node", name), zap.Bool("in_block", inBlock))
 	return "", false
 }
 
@@ -190,11 +232,18 @@ func nodeIDOf(content, name string) (string, bool) {
 // resource can ever have — add-replica refuses once the slots run out. Best
 // effort: a survivor that refuses is named in the log with the command to run.
 func (rm *ResourceManager) forgetPeer(ctx context.Context, resource, peerID, peerName string, survivors []string) {
+	log := rm.resourcesLog()
 	if peerID == "" || len(survivors) == 0 {
+		log.Debug("forgetPeer: nothing to forget", zap.String("resource", resource), zap.String("peer", peerName),
+			zap.String("peer_id", peerID), zap.Int("survivors", len(survivors)))
 		return
 	}
 	cmd := fmt.Sprintf("sudo drbdsetup forget-peer %s %s", resource, peerID)
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, survivors, cmd)
+	log.Debug("forgetPeer: ran forget-peer", zap.String("resource", resource), zap.String("peer", peerName),
+		zap.String("peer_id", peerID), zap.Strings("hosts", survivors), zap.Array("failed_hosts", resourcesFailedHosts{res}),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		rm.controller.logger.Warn("forget-peer failed; the removed peer's bitmap slot stays allocated",
 			zap.String("resource", resource), zap.String("peer", peerName), zap.String("run", cmd), zap.Error(err))
