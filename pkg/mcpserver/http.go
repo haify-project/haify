@@ -37,10 +37,12 @@ type HTTPOptions struct {
 	TrustProxy bool
 	// AdminListen, when set, opens a second listener for the local network
 	// that is not capped by MaxRole: a token there gets the tools its own
-	// role allows, admin included. It serves bearer tokens only — no OAuth,
-	// no proxy headers — so the internet-facing listener can stay capped
-	// while an operator on the LAN keeps delete and evict. Never point a
-	// reverse proxy at it.
+	// role allows, admin included. It accepts only the tokens an operator
+	// made with `haify-mcp token create` — not the access tokens the OAuth
+	// flow hands to ChatGPT or claude.ai, and it runs no OAuth endpoints and
+	// reads no proxy headers — so the internet-facing listener can stay
+	// capped while an operator on the LAN keeps delete and evict. Never point
+	// a reverse proxy at it.
 	AdminListen string
 }
 
@@ -88,7 +90,7 @@ func ServeHTTP(ctx context.Context, c ControllerClient, logger *zap.Logger, base
 		zap.String("version", base.Version))
 
 	if h.AdminListen != "" {
-		admin := listener{addr: h.AdminListen, maxRole: mcpauth.RoleAdmin}
+		admin := listener{addr: h.AdminListen, maxRole: mcpauth.RoleAdmin, operatorTokensOnly: true}
 		adminSrv := newHTTPServer(h.AdminListen, newHandler(admin, h.Tokens, servers, limiter))
 		httpServers = append(httpServers, adminSrv)
 		go func() {
@@ -98,7 +100,7 @@ func ServeHTTP(ctx context.Context, c ControllerClient, logger *zap.Logger, base
 				errc <- adminSrv.ListenAndServe()
 			}
 		}()
-		logger.Info("Haify MCP admin listener (local network, not capped, no OAuth)",
+		logger.Info("Haify MCP admin listener (local network, not capped, operator tokens only)",
 			zap.String("addr", h.AdminListen), zap.Bool("tls", h.TLSCert != ""))
 	}
 
@@ -133,6 +135,11 @@ type listener struct {
 	maxRole    mcpauth.Role
 	publicURL  string
 	trustProxy bool
+	// operatorTokensOnly refuses OAuth access tokens. The admin listener is
+	// not capped by --max-role, so it takes only tokens an operator created
+	// and holds; a token a third-party client got through the OAuth flow on
+	// the public listener is no credential here.
+	operatorTokensOnly bool
 }
 
 // newHandler builds the routes for one listener: the token check, the tool
@@ -145,6 +152,9 @@ func newHandler(l listener, tokens *mcpauth.Store, servers map[mcpauth.Role]*mcp
 			return nil, auth.ErrInvalidToken
 		}
 		t, err := tokens.Verify(secret)
+		if err == nil && l.operatorTokensOnly && t.Kind != mcpauth.KindStatic {
+			err = mcpauth.ErrInvalid
+		}
 		if err != nil {
 			limiter.Fail("bearer:" + ip)
 			return nil, auth.ErrInvalidToken
@@ -176,7 +186,7 @@ func newHandler(l listener, tokens *mcpauth.Store, servers map[mcpauth.Role]*mcp
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	mux.Handle("/mcp", bearer(mcpHandler))
+	mux.Handle("/mcp", withChallenge(bearer, mcpHandler))
 	if public != "" {
 		meta := auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
 			Resource:               public + "/mcp",
@@ -191,6 +201,39 @@ func newHandler(l listener, tokens *mcpauth.Store, servers map[mcpauth.Role]*mcp
 		}).Mount(mux)
 	}
 	return mux
+}
+
+// challengeRealm is the WWW-Authenticate challenge for a refused request on
+// a listener that has no OAuth metadata to point at.
+const challengeRealm = `Bearer realm="haify-mcp"`
+
+// withChallenge puts the bearer check in front of next and makes every 401 it
+// answers carry a WWW-Authenticate challenge, as RFC 6750 asks. The SDK writes
+// one only when there is resource metadata to name, which a listener without
+// a public URL — the admin listener among them — does not have. next gets the
+// original ResponseWriter, so streaming is untouched.
+func withChallenge(bearer func(http.Handler) http.Handler, next http.Handler) http.Handler {
+	checked := bearer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cw, ok := w.(*challengeWriter); ok {
+			w = cw.ResponseWriter
+		}
+		next.ServeHTTP(w, r)
+	}))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		checked.ServeHTTP(&challengeWriter{ResponseWriter: w}, r)
+	})
+}
+
+// challengeWriter adds the challenge to a 401 that goes out without one.
+type challengeWriter struct {
+	http.ResponseWriter
+}
+
+func (c *challengeWriter) WriteHeader(code int) {
+	if code == http.StatusUnauthorized && c.Header().Get("WWW-Authenticate") == "" {
+		c.Header().Set("WWW-Authenticate", challengeRealm)
+	}
+	c.ResponseWriter.WriteHeader(code)
 }
 
 func publicOr(public, path string) string {

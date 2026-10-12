@@ -130,7 +130,9 @@ whatever role the token has. The default is admin, which caps nothing.
 `--admin-listen ADDR` opens a second listener that `--max-role` does not cap.
 It is for operators on the local network: an admin token there gets every
 tool, while the listener that a reverse proxy points at stays capped. The
-second listener accepts bearer tokens only and offers no OAuth. Never put it
+second listener accepts only tokens made with `token create`, sent as a
+bearer header. It has no OAuth endpoints, and it refuses the access tokens
+that ChatGPT or claude.ai got through OAuth on the main listener. Never put it
 behind the proxy. Bind it to a port the proxy does not forward, for example
 `--listen 0.0.0.0:43871 --max-role operate --admin-listen 0.0.0.0:43872`.
 

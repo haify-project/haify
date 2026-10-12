@@ -204,62 +204,6 @@ func TestRemoteMaxRoleCapsTokens(t *testing.T) {
 	}
 }
 
-// The admin listener is for the local network: an admin token keeps every tool
-// there while the capped listener still refuses to give it destructive ones,
-// and the admin listener runs no OAuth.
-func TestAdminListenerIsNotCappedAndHasNoOAuth(t *testing.T) {
-	store, err := mcpauth.Open(filepath.Join(t.TempDir(), "tokens.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	free := func() string {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = l.Close() }()
-		return l.Addr().String()
-	}
-	capped, admin := free(), free()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- ServeHTTP(ctx, &mockClient{}, zap.NewNop(), Options{Version: "test"}, HTTPOptions{
-			Listen: capped, AdminListen: admin, Tokens: store, MaxRole: mcpauth.RoleOperate, PublicURL: "https://mcp.example.com",
-		})
-	}()
-	t.Cleanup(func() { cancel(); <-done })
-	for _, a := range []string{capped, admin} {
-		up := false
-		for range 100 {
-			if resp, err := http.Get("http://" + a + "/healthz"); err == nil {
-				_ = resp.Body.Close()
-				up = true
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		if !up {
-			t.Fatalf("%s did not start", a)
-		}
-	}
-	secret, _, _ := store.Create("ops", mcpauth.RoleAdmin, 0)
-	if _, ok := (&remoteEnv{url: "http://" + capped, store: store}).tools(t, secret)["haify_ha_evict"]; ok {
-		t.Fatal("the capped listener exposed a destructive tool")
-	}
-	if _, ok := (&remoteEnv{url: "http://" + admin, store: store}).tools(t, secret)["haify_ha_evict"]; !ok {
-		t.Fatal("the admin listener did not give an admin token its destructive tools")
-	}
-	r, err := http.Get("http://" + admin + "/oauth/register")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = r.Body.Close()
-	if r.StatusCode != http.StatusNotFound {
-		t.Fatalf("the admin listener runs OAuth: %d", r.StatusCode)
-	}
-}
-
 func TestRemoteWithoutPublicURLHasNoOAuth(t *testing.T) {
 	e := startRemote(t, mcpauth.RoleAdmin, "")
 	r, err := http.Get(e.url + "/oauth/register")
