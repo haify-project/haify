@@ -25,22 +25,24 @@ haify / web UI / haify-mcp / haify-ai
                                             └─ OCF agents (gateways)
 ```
 
-- The control plane is one `haify-controller` process with a BBolt database
-  (`[database] path`, default `/var/lib/haify/haify.db`). It drives every node over
-  SSH through the `dispatch` library; there is no per-node Haify agent. Commands
-  aimed at the controller's own address run locally without SSH.
-- The controller listens for gRPC on `[server] port` (default `3374`), for the REST gateway on
-  `[server] rest_port` (default `3375`, bound to `[server] listen_address`), for the web UI on `[ui] port`
-  (default `3376`) and for Prometheus metrics on `[metrics] port` (default `9433`). The
-  UI proxies `/v1/` to the REST gateway and `/ai/` to the AI Copilot on
-  `127.0.0.1:7634`, so a browser needs only the UI port.
-- In the data plane, DRBD 9 replicates block volumes, `drbd-reactor` promoters
-  fail over mounts, VIPs and services, and gateways (NFS / iSCSI / NVMe-oF)
-  export a resource behind a floating service IP.
-- Optional components are the Kubernetes CSI driver, the `haify-ai` Copilot,
-  controller Self-HA (the controller floats on a DRBD-backed VIP), WAN
-  replication (DRBD over a per-resource `haify-proxy` pair), encrypted
-  replication (kernel TLS) and off-cluster backups (rclone).
+- One `haify-controller` process manages the whole cluster. It keeps its state
+  in a BBolt database (`[database] path`, default `/var/lib/haify/haify.db`).
+  It runs commands on the nodes over SSH through the `dispatch` library, so
+  nothing Haify-specific runs on the nodes. Commands for the controller's own
+  address run locally, without SSH.
+- The controller listens on four ports: gRPC on `[server] port` (default `3374`),
+  the REST gateway on `[server] rest_port` (default `3375`, bound to
+  `[server] listen_address`), the web UI on `[ui] port` (default `3376`), and
+  Prometheus metrics on `[metrics] port` (default `9433`). The UI passes `/v1/`
+  on to the REST gateway and `/ai/` on to the AI Copilot at `127.0.0.1:7634`,
+  so a browser only needs the UI port.
+- On the nodes, DRBD 9 replicates the block volumes. `drbd-reactor` promoters
+  move mounts, VIPs and services to another node when one fails. Gateways
+  (NFS / SMB / iSCSI / NVMe-oF) export a resource on a floating service IP.
+- These parts are optional: the Kubernetes CSI driver, the `haify-ai` Copilot,
+  controller Self-HA (the controller itself fails over, reached on a VIP), WAN
+  replication (DRBD through a `haify-proxy` pair for each resource), encrypted
+  replication (kernel TLS) and backups outside the cluster (rclone).
 
 Without Self-HA the controller can run on a storage node or on a separate host.
 Self-HA requires it to run on a registered node.
@@ -58,11 +60,12 @@ git clone https://github.com/haify-project/haify.git && cd haify
 make build
 ```
 
-`make build` builds the web UI, copies it into `ui/dist` (embedded into the
-controller via `go:embed`), and produces `bin/haify-controller`, `bin/haify`,
-`bin/haify-mcp`, `bin/service-ip` (always for Linux, on the build host's
-architecture), `bin/csi-controller` and `bin/csi-node`. Everything except
-`service-ip` is built for the build host's OS.
+`make build` builds the web UI and copies it into `ui/dist`, where the
+controller embeds it (`go:embed`). It then builds `bin/haify-controller`,
+`bin/haify`, `bin/haify-mcp`, `bin/service-ip`, `bin/csi-controller`,
+`bin/csi-node` and `bin/haify-docker` (the Docker volume plugin). All of them
+are built for the build host's OS and architecture, except `service-ip`,
+which is always built for Linux (on the build host's architecture).
 
 To build for Linux nodes from another OS or architecture, build the UI once and
 cross-compile:
@@ -75,17 +78,18 @@ done
 # arm64 nodes: GOARCH=arm64
 ```
 
-A controller built without `make ui-sync` serves a placeholder page instead of
-the UI; the API and `haify` are unaffected. The same holds for `go install`, which
-builds without the UI:
+A controller built without `make ui-sync` shows a placeholder page instead of
+the UI. The API and `haify` still work. `go install` also builds without the
+UI:
 
 ```bash
 go install github.com/haify-project/haify/cmd/...@latest
 ```
 
-`go install` names each binary after its directory: `controller`, `cli` and
-`mcp` are `haify-controller`, `haify` and `haify-mcp`; rename them when installing.
-When cross-compiling (`GOOS`/`GOARCH` set), it puts them in `$(go env GOPATH)/bin/linux_<arch>/`.
+`go install` names each binary after its directory, so you get `controller`,
+`cli` and `mcp`. Rename them to `haify-controller`, `haify` and `haify-mcp`
+when you install them. When cross-compiling (`GOOS`/`GOARCH` set), it
+puts them in `$(go env GOPATH)/bin/linux_<arch>/`.
 
 Tagged releases on GitHub carry a linux/amd64 archive with `haify-controller`
 (UI included), `haify`, `haify-mcp`, `service-ip`, both unit files and
@@ -114,7 +118,7 @@ symptoms.
    Keep drbd-utils and drbd-reactor versions matched on all nodes. Reactor parses
    `drbdsetup status --json`. A drbd-utils too old for it produces JSON that
    reactor cannot parse, so reactor logs `IGNORING resource … expected ','` and
-   never fails over (seen with drbd-utils 9.31 and reactor 1.11; drbd-utils 9.34
+   never fails over (drbd-utils 9.31 with reactor 1.11 does this; drbd-utils 9.34
    fixed it).
    drbd-reactor must be running (`systemctl enable --now drbd-reactor`);
    `ha self enable` refuses otherwise.
@@ -132,7 +136,12 @@ symptoms.
 
 4. Per gateway type, on the nodes of the exported resource:
    - iSCSI: `apt-get install -y targetcli-fb python3-rtslib-fb`
-   - NFS: `apt-get install -y nfs-kernel-server`
+   - NFS: `apt-get install -y nfs-kernel-server`. Per-directory quotas on an
+     NFS export also need the `quota_v2` kernel module, which Ubuntu cloud
+     kernels ship only in `linux-modules-extra`. Without it, the gateway is
+     still created, but without directory quotas.
+   - SMB: `apt-get install -y samba`, and the distribution's own smbd turned
+     off (`systemctl disable --now smbd nmbd`), because it holds port 445.
    - NVMe-oF: `apt-get install -y nvme-cli linux-modules-extra-$(uname -r)`
      (Ubuntu cloud kernels ship `nvmet-tcp` only in `linux-modules-extra`).
      Gateway creation loads `nvmet` and `nvmet-tcp` (or `nvmet-rdma` for
@@ -144,7 +153,8 @@ symptoms.
    - encryption at rest (`resource create --encrypt`): `cryptsetup`, `dm-crypt`
 
 6. A data disk per diskful node: a raw block device (`/dev/sdb`, `/dev/vdb`)
-   with no filesystem or mount on it.
+   that is not mounted. A disk with old data on it is refused unless you pass
+   `--wipe` to `pool create`, which erases it.
 
 Once the nodes are registered (section 5), `haify health-check` reports per
 node whether DRBD, drbd-reactor (installed and running) and the resource agents
@@ -194,24 +204,24 @@ user = "root"
 key_path = "/root/.ssh/id_ed25519"
 ```
 
-- **Key `[hosts.*]` by IP address.** The controller asks dispatch for hosts by
-  address. A section named after a node (`[hosts.node1]`) never matches, and
-  settings then fall through to `~/.ssh/config`: any `Host` entry whose
-  `HostName` is that IP supplies its user, port and key, which commonly yields
-  `unable to authenticate, attempted methods [none]`. dispatch takes each
-  setting from the host section first, then the group section, then
-  `~/.ssh/config`, then the `[ssh]` defaults, so `user` and `key_path` set
-  inside the IP-keyed section always win.
-- Point the controller at this file with `[dispatch] config_path`. If that is
-  unset, it uses `~/.dispatch/config.toml` of the user the controller runs as. A
-  path that does not exist stops the controller at startup.
-- dispatch records host keys in `known_hosts` (default
-  `~/.ssh/known_hosts`, i.e. `/root/.ssh/known_hosts`); `strict_host_key = false`
-  adds unknown hosts automatically. A key that *changed* (a rebuilt node, or a
-  VM that regenerates host keys) is rejected with `host key changed: <ip>`
-  regardless of that setting. Remove the stale entry with
-  `ssh-keygen -R <ip> -f /root/.ssh/known_hosts`; dispatch rereads the file when
-  it changes, so no restart is needed.
+- **Name each `[hosts.*]` section after the node's IP address.** The controller
+  looks hosts up by address, so a section named after the node
+  (`[hosts.node1]`) is never used. The settings then come from `~/.ssh/config`
+  instead: a `Host` entry that matches that IP (by its `HostName` or by its
+  name pattern) supplies the user, port and key. That often ends in `unable to authenticate, attempted methods [none]`.
+  dispatch looks for each setting in this order: the host section, the group
+  section, `~/.ssh/config`, then the `[ssh]` defaults. So a `user` or
+  `key_path` set in the IP-named section always wins.
+- Tell the controller where this file is with `[dispatch] config_path`. If you
+  leave it unset, the controller uses `~/.dispatch/config.toml` of the user it
+  runs as. If the path does not exist, the controller does not start.
+- dispatch keeps host keys in `known_hosts` (default `~/.ssh/known_hosts`, which
+  is `/root/.ssh/known_hosts` for root). With `strict_host_key = false` it adds
+  unknown hosts by itself. A key that *changed* is always rejected with
+  `host key changed: <ip>`, whatever that setting says. This happens after a
+  node is rebuilt, or with a VM that makes new host keys. Remove the old entry
+  with `ssh-keygen -R <ip> -f /root/.ssh/known_hosts`. dispatch rereads the file
+  when it changes, so you do not need to restart anything.
 
 ---
 
@@ -221,11 +231,14 @@ key_path = "/root/.ssh/id_ed25519"
 
 `make deb` builds `dist/haify-controller_<version>_amd64.deb` and `_arm64.deb`
 (plus the Proxmox plugin package; see `deploy/proxmox/README.md`) with plain
-`dpkg-deb`. It needs Go, `dpkg-deb` and the web UI's dependencies
-(`cd web-ui && npm ci`); `SKIP_UI_BUILD=1` embeds the UI already in `ui/dist`
-instead. The version comes from `git describe --tags`, or `VERSION=...`; a tree
-with no tag gets `0.0~git<commits>.<sha>`. The script is
-`scripts/build-deb.sh`.
+`dpkg-deb`. The script is `scripts/build-deb.sh`.
+
+- It needs Go, `dpkg-deb` and the web UI's dependencies
+  (`cd web-ui && npm ci`). With `SKIP_UI_BUILD=1` it embeds the UI that is
+  already in `ui/dist` instead of building it.
+- The version comes from `git describe --tags`, or from `VERSION=...`. A tree
+  with no tag gets `0.0~git<commits>.<sha>`, plus `+dirty` if it has
+  uncommitted changes.
 
 ```bash
 sudo apt install ./haify-controller_*_amd64.deb
@@ -246,24 +259,26 @@ The package differs from the manual install below in three places:
   Unit files copied to `/etc/systemd/system/` by hand likewise override the
   packaged ones.
 - The packaged `service-ip@.service` runs `/opt/haify/bin/service-ip`. The
-  controller still installs `/usr/local/bin/service-ip` and its own
-  `/etc/systemd/system/service-ip@.service` on any HA node that lacks them,
-  this one included, the same as without the package.
+  package does not change what the controller does on HA nodes: it still
+  installs `/usr/local/bin/service-ip` and its own
+  `/etc/systemd/system/service-ip@.service` on every HA node that lacks them,
+  this node too.
 - `/etc/haify/controller.toml` is created from the example only when no file
   exists at that path yet (mode 0600, because tokens go in it). It is not a
   conffile, so an upgrade never touches it.
 
-Installing never enables or starts the controller, and an upgrade never
-restarts it: one host per cluster runs it, or drbd-reactor does under
-Self-HA. After an upgrade, restart it yourself (`systemctl restart
-haify-controller`, or under Self-HA install the package on every node and then
-`haify ha evict haify-meta`). `apt remove` stops nothing; `apt purge` leaves
-`/etc/haify` and `/var/lib/haify` (the database) in place.
+Installing the package never enables or starts the controller, and upgrading
+it never restarts the controller. Only one host per cluster runs the
+controller, or drbd-reactor runs it under Self-HA, so the package leaves that
+choice to you. After an upgrade, restart the controller yourself: `systemctl restart
+haify-controller`, or under Self-HA install the package on
+every node and then run `haify ha evict haify-meta`. `apt remove` stops nothing.
+`apt purge` keeps `/etc/haify` and `/var/lib/haify` (the database).
 
 Self-HA copies the controller's unit to the standbys as
-`/etc/systemd/system/haify-controller.service`. When there is no copy in
-`/etc/systemd/system/`, it reads the packaged one in `/lib/systemd/system/`, so
-you do not need to copy anything first.
+`/etc/systemd/system/haify-controller.service`. If `/etc/systemd/system/` has
+no copy, it reads the packaged one in `/lib/systemd/system/`, so you do not
+need to copy anything first.
 
 Then configure and start the controller as described in "Configure and start"
 below.
@@ -305,18 +320,18 @@ Every other key is in `configs/controller.toml.example` with its default and a
 comment: `[server] rest_port`, `[database]`, `[wan]`, `[tls]` (gRPC/REST/UI
 transport), `[metrics]`, `[ui]`, `[resource]` (tiebreaker, fault domains),
 `[gateway]`, `[schedule]` (switches off snapshot, backup, verify and inspection
-schedules together), `[audit]`, `[self_ha]`, `[alert]`, `[inspect]`, and
-commented `[auth]` / `[rbac]` blocks. API authentication uses either
+schedules together), `[audit]`, `[self_ha]`, `[alert]`, `[inspect]`,
+`[self_heal]`, `[quota]`, and commented `[auth]` / `[rbac]` blocks. API authentication uses either
 `[auth] enabled` with a `token` (at least 16 characters) or `[rbac]` with
 per-user tokens.
 
 `configs/haify-controller.service` runs
 `/opt/haify/bin/haify-controller --config /etc/haify/controller.toml` as root with
-`Environment="HOME=/root"`. Keep the `HOME` line: systemd sets no `$HOME` for a
-system unit without it, and dispatch's default lookups (`~/.dispatch`,
-`~/.ssh/known_hosts`, default keys) then miss root's files; remote operations
-fail with `unable to authenticate, attempted methods [none]` while operations
-on the controller's own node still work.
+`Environment="HOME=/root"`. Keep the `HOME` line. dispatch finds root's files
+through `$HOME`. If the service runs without it, dispatch cannot find them (`~/.dispatch`,
+`~/.ssh/known_hosts`, the default keys). Operations on other nodes then fail
+with `unable to authenticate, attempted methods [none]`, while operations on
+the controller's own node still work.
 
 ```bash
 sudo systemctl daemon-reload
@@ -352,8 +367,8 @@ its own interface):
 haify node label <dr-node> haify.tiebreaker=false
 ```
 
-Without the label, a 2-node LAN resource can pull the DR node into its mesh and
-fail `drbdadm up` with `IP <addr> not found on this host`.
+Without the label, a 2-node LAN resource can pick the DR node as its
+tiebreaker. `drbdadm up` then fails with `IP <addr> not found on this host`.
 
 Create a pool on each diskful node's data disk. The name gets an `haify_` prefix
 (`vg0` becomes VG `haify_vg0`); without `--type` the controller's
@@ -376,14 +391,23 @@ haify resource create --name data --port 7000 --nodes node1,node2 --size 10G --p
 haify resource status data
 ```
 
-`--port` and `--size` are required. Omit `--nodes` to let the controller place
-`--replicas` (default 2) copies by free pool space. New resources get
-`quorum majority` and `on-no-quorum io-error`. With `[resource] auto_tiebreaker`
-(default on), a 2-node resource gains a diskless tiebreaker on a third
-registered node, so it keeps quorum when one node is lost. The controller also
-force-promotes once on create so the fresh resource has an UpToDate copy, and
-installs `haify-drbd-up.service` on its nodes so resources come back after a
-reboot.
+`--port` and `--size` are required. If you leave out `--nodes`, the controller
+picks `--replicas` nodes (default 2), preferring the pools with the most free
+space. New resources get `quorum majority` and `on-no-quorum io-error`. A
+`--wan` resource then has its quorum narrowed to the primary site, so the DR
+node gets no vote (section 11).
+
+With `[resource] auto_tiebreaker` (default on), a 2-node resource also gets a
+diskless tiebreaker on a third registered node. That way it keeps quorum when
+one node is lost.
+
+A new resource on a thin LVM or ZFS pool skips the initial sync. Its
+replicas are brand new and read as zeros, so the controller simply marks them
+identical. On thick LVM, or when the volume is encrypted, the controller
+force-promotes the resource once and DRBD copies the whole volume to the other
+replicas. A thin resource whose peers do not connect within 30 seconds gets
+the full sync too. The controller also installs `haify-drbd-up.service` on the
+resource's nodes, so the resource comes back after a reboot.
 
 To create a filesystem and mount it (the volume id is positional):
 
@@ -396,10 +420,10 @@ haify resource mount data 0 /mnt/data --node node1
 
 ## 7. Gateways
 
-A gateway is a DRBD resource plus a drbd-reactor promoter that mounts it, brings
-up a floating service IP (CIDR) and starts the export on whichever node holds
-Primary. Give each gateway its own resource; do not also mount it by hand or put
-it under `ha create`.
+A gateway is a DRBD resource plus a drbd-reactor promoter. On whichever node is
+Primary, the promoter mounts the resource, brings up a floating service IP
+(CIDR) and starts the export. Give each gateway its own resource. Do not also
+mount that resource by hand or put it under `ha create`.
 
 ```bash
 # NFS
@@ -414,13 +438,18 @@ haify gateway nvme create --resource ns1 \
     --nqn nqn.2026-01.com.example:haify.ns1 --service-ip 192.168.1.150/24
 ```
 
-Before writing anything, gateway creation checks the resource's diskful nodes
-for the needed OCF agents, plus `rpc.nfsd`/`exportfs` for NFS and `targetcli`
-for iSCSI. It then adds the cluster-private state volume
-when the resource has only one volume (`[gateway] auto_state_volume`), formats
-volumes that carry no filesystem, writes `/etc/drbd-reactor.d/haify-{nfs,iscsi,nvmeof}-<resource>.toml`
-and reloads drbd-reactor. iSCSI runs on LIO only: `--implementation tgt` or
-`iet` is refused.
+Gateway creation first checks the resource's diskful nodes, before it changes
+anything. It looks for the OCF agents the gateway needs, plus
+`rpc.nfsd`/`exportfs` for NFS and `targetcli` for iSCSI. Then it:
+
+1. adds the small cluster-private state volume if the resource has only one
+   volume (`[gateway] auto_state_volume`);
+2. formats the state volume with ext4 if it has no filesystem yet (for NFS,
+   the export volume too; iSCSI and NVMe-oF export the data volume raw);
+3. writes `/etc/drbd-reactor.d/haify-{nfs,iscsi,nvmeof}-<resource>.toml`;
+4. reloads drbd-reactor.
+
+iSCSI runs on LIO only: `--implementation tgt` or `iet` is refused.
 
 To check a gateway, run `haify gateway status --resource <r>` and, on the
 Primary, `drbd-reactorctl status` and `ss -tlnp`.
@@ -435,11 +464,11 @@ Primary, `drbd-reactorctl status` and `ss -tlnp`.
 haify ha create data --mount /mnt/data --fstype ext4 [--vip 192.168.1.210/24] [--services myapp.service]
 ```
 
-drbd-reactor promotes the resource, mounts it, raises the VIP and starts the
-services on a surviving node when the Primary fails. With `--vip`, the
-`service-ip` helper and `service-ip@.service` are installed on nodes that lack
-them (from the controller's own build; a node of another architecture is
-refused).
+When the Primary fails, drbd-reactor moves everything to a surviving node: it
+promotes the resource there, mounts it, raises the VIP and starts the
+services. With `--vip`, the controller installs the `service-ip` helper and
+`service-ip@.service` on nodes that lack them. It copies its own build, so a
+node of another architecture is refused.
 
 ### Controller Self-HA
 
@@ -459,7 +488,7 @@ Before enabling it, make sure that:
 - passwordless root SSH works between every pair of target nodes, and the
   dispatch key named in the dispatch config exists on each of them;
 - drbd-reactor is active on all of them, and `haify-controller` is not running on
-  any node but this one.
+  any of the other target nodes.
 
 ```bash
 haify ha self enable --pool vg0 --vip 192.168.1.250/24 [--nodes a,b,c] [--port 7999] [--size 1]
@@ -467,21 +496,27 @@ haify -c 192.168.1.250:3374 ha self status
 haify ha evict haify-meta          # move the controller to another node
 ```
 
-`enable` copies the running controller binary (or the node's `-<goarch>` build)
-to the path the unit's `ExecStart` names on the other nodes, along with
-`controller.toml`, the dispatch config and the unit itself. It then disables
-`haify-controller` autostart on the standbys and hands over to drbd-reactor; the
-command's own connection drops during the handoff. Afterwards, use the VIP for
-everything (`<vip>:3374`, `http://<vip>:3376/`).
+`enable` copies four things to the other nodes: the running controller binary
+(or the node's `-<goarch>` build), placed at the path the unit's `ExecStart`
+names; `controller.toml`; the dispatch config; and the unit itself. It then
+turns off `haify-controller` autostart on the standbys and hands the
+controller over to drbd-reactor. The command's own connection drops during the
+handoff. From then on, use the VIP for everything (`<vip>:3374`,
+`http://<vip>:3376/`).
 
-To ship a new controller build, install it at the unit's `ExecStart` path on
-**every** node (`mv` the running file aside first; overwriting it in place fails
-with `Text file busy`), then run `haify ha evict haify-meta` to restart it on
-another node. Restarting `haify-controller` on the active node also restarts the
-promoter target, which fails over the same way.
+To ship a new controller build:
 
-`[self_ha] extra_services = ["haify-ai.service"]` makes extra units follow the
-controller. `enable` reads it when it writes the promoter config.
+1. Install it at the unit's `ExecStart` path on **every** node. `mv` the
+   running file aside first; overwriting it in place fails with
+   `Text file busy`.
+2. Run `haify ha evict haify-meta`. The controller restarts on another node.
+
+Restarting `haify-controller` on the active node also restarts the promoter
+target, so the controller moves to another node the same way.
+
+`[self_ha] extra_services = ["haify-ai.service"]` makes more units move with the
+controller. `enable` reads this setting when it writes the promoter config, so
+set it first.
 
 ---
 
@@ -511,10 +546,11 @@ reached at an IP or VIP on port 3374.
    on.
 
 Both plugin pods use `hostNetwork` with `dnsPolicy: ClusterFirstWithHostNet`, so
-they resolve the `haify-controller` Service through cluster DNS. Pods move between
-replica nodes with their data. To fail over faster than the 300 s default, use a
-Deployment or StatefulSet and short `tolerationSeconds` for
-`node.kubernetes.io/unreachable` and `not-ready`.
+they find the `haify-controller` Service through cluster DNS. A pod can move to
+any node that holds a replica of its volume, and its data is already there.
+Kubernetes waits 300 s before it moves pods off a lost node. To fail over
+sooner, run the workload as a Deployment or StatefulSet and set a short
+`tolerationSeconds` for `node.kubernetes.io/unreachable` and `not-ready`.
 
 ---
 
@@ -542,16 +578,17 @@ and needs an OpenAI-compatible LLM and embedder.
   - `HAIFY_AI_ADDR`: default `127.0.0.1:7634`, where the UI proxies
     `/ai/`. On any non-loopback address haify-ai refuses to start without a token
     (`HAIFY_AI_TOKEN`, `HAIFY_TOKEN`, `~/.haify/token` or `/etc/haify/token`).
-- `HAIFY_AI_EMB_DIM` must equal the dimension the index was built with. Switching
-  to an embedder of a different width means rebuilding the knowledge base;
-  otherwise searches return nothing, without an error. `GET /ai/kb/list` shows
-  the width read from the index.
+- `HAIFY_AI_EMB_DIM` must match the dimension the index was built with. If you
+  switch to an embedder with a different dimension, rebuild the knowledge base.
+  If you don't, searches return nothing and report no error.
+  `GET /ai/kb/list` shows the dimension stored in the index.
 - Shared knowledge base: `make kb` (see `ai/kb/build.sh`) builds
   `dist/kb/haify-kb.db` and its manifest `haify-kb.json`. Install both at
   `/opt/haify/share/` on every node and set
   `HAIFY_AI_SHARED_KNOWLEDGE_DB=/opt/haify/share/haify-kb.db`; it is searched
-  read-only next to `HAIFY_AI_KNOWLEDGE_DB`. Startup fails if the cluster's
-  embedder model or dimension differs from the manifest's.
+  read-only next to `HAIFY_AI_KNOWLEDGE_DB`. haify-ai refuses to start if the
+  manifest is missing, if the cluster's embedder dimension differs from the
+  manifest's, or if both name an embedder model and the two differ.
 - Write a systemd unit `haify-ai.service` (the repository does not ship one)
   with `EnvironmentFile=/var/lib/haify/ai/haify-ai.env` and `WorkingDirectory`
   and `HOME` set to `/var/lib/haify/ai`. Install it on every node but leave it
@@ -570,13 +607,14 @@ reactor-managed unit for it. See [`mcp.md`](./mcp.md).
 
 ## 11. WAN replication (optional)
 
-WAN replication replicates a resource to a DR site over a per-resource
-`haify-proxy` pair (protocol A, mTLS). LAN resources are unaffected.
+WAN replication copies a resource to a DR site. Each resource gets its own
+`haify-proxy` pair (protocol A, mTLS) to carry the traffic. LAN resources are
+unaffected.
 
-- The controller pushes its own `/usr/local/bin/haify-proxy` to the WAN nodes;
-  for nodes of another architecture place
-  `/usr/local/bin/haify-proxy-<amd64|arm64>` beside it. Without a matching binary
-  the controller assumes it is already installed on the node.
+- The controller copies its own `/usr/local/bin/haify-proxy` to the WAN nodes.
+  For nodes of another architecture, put
+  `/usr/local/bin/haify-proxy-<amd64|arm64>` next to it. If no matching binary
+  is there, the controller assumes the node already has one installed.
 - The DR node's WAN port must be reachable over TCP from the primary site.
 - The controller keeps the proxy CA under `[wan] pki_dir`
   (default `/var/lib/haify/wanproxy-pki`).
@@ -635,7 +673,8 @@ journalctl -u haify-controller -f
 | Reactor logs `IGNORING resource … expected ','` and never fails over | drbd-utils too old for drbd-reactor; match versions on all nodes. |
 | Promoter fails: `Unit ocf.rs@….service not found` | drbd-reactor installed without its `ocf.rs@.service` template and wrapper (`node-prerequisites.md` §1). |
 | Reactor won't start: `Could not read config file: /etc/drbd-reactor.toml` | Create it: `snippets = "/etc/drbd-reactor.d"` plus a `[[log]]` table. |
-| Pool create fails with `Device or resource busy` | The disk is mounted or formatted: `umount`, remove from `/etc/fstab`, `wipefs -a <dev>`. |
+| Pool create refuses a disk: `<dev> on <node> is in use: mounted at <path>` | Unmount it and remove it from `/etc/fstab`. |
+| Pool create refuses a disk: `<dev> on <node> holds … retry with --wipe` | The disk has old data. If you don't need it, add `--wipe`, which erases it. |
 | One node loss stops I/O on a 2-node resource | No tiebreaker: register a third node (with `auto_tiebreaker` on) or add a replica. |
 | `gateway nfs create` fails with `missing: rpc.nfsd exportfs` | `apt-get install nfs-kernel-server` (EL: `nfs-utils`) on the resource's diskful nodes. |
 | `gateway nvme create` fails loading `nvmet`/`nvmet-tcp` | `apt-get install linux-modules-extra-$(uname -r)`. |

@@ -1,14 +1,15 @@
 # Storage node prerequisites
 
 This page lists what each node needs and what goes wrong without it. Most of
-these failures do not show up where the command was run. drbd-reactor accepts a
-promoter config whether or not the agents and units it names exist, so a
-missing piece shows up later as a promoter that never starts.
+these problems do not show up when you run the command. drbd-reactor accepts a
+promoter config even if the agents and units it names are missing. You only
+find out later, when the promoter never starts.
 
-Haify checks some of this itself but installs none of the packages. Gateway
-creation checks OCF agents, `targetcli` and the NFS server; `ha self enable` checks drbd-reactor and SSH; backups check
-`rclone`; `replication-tls setup` checks TLS support. `haify health-check`
-reports, per node, DRBD, drbd-reactor (installed, running) and resource-agents.
+Haify checks some of these things itself, but it installs none of the
+packages. Gateway creation checks OCF agents, `targetcli`, the NFS server and Samba.
+`ha self enable` checks drbd-reactor and SSH. Backups check `rclone`.
+`replication-tls setup` checks TLS support. `haify health-check` reports, for
+each node, DRBD, drbd-reactor (installed, running) and resource-agents.
 
 Package names are Ubuntu 24.04's. For installation order and controller setup,
 see [`deployment-guide.md`](./deployment-guide.md).
@@ -25,20 +26,20 @@ Install them from LINBIT's repositories or build them from source.
 
 **With the DKMS module, install the kernel headers metapackage**
 (`linux-headers-amd64` on Debian, `linux-headers-generic` on Ubuntu), not just
-the headers of the running kernel. A routine upgrade installs a newer kernel;
-without its headers DKMS builds nothing for it, and after the next reboot the
-distribution's own DRBD 8.4 module loads instead. drbd-utils then rejects every
-resource file (`Parse error: 'an option keyword' expected, but got
+the headers of the running kernel. A routine upgrade installs a newer kernel.
+Without that kernel's headers, DKMS builds no DRBD module for it. After the
+next reboot, the distribution's own DRBD 8.4 module loads instead. drbd-utils
+then rejects every resource file (`Parse error: 'an option keyword' expected, but got
 'auto-promote'`) and the node rejoins no resource. `dkms status drbd` lists the
-kernels a module was built for; `cat /proc/drbd` must say `version: 9.x`.
+kernels a module was built for. `cat /proc/drbd` must say `version: 9.x`.
 
-**Keep drbd-utils and drbd-reactor versions matched.** drbd-reactor parses
-`drbdsetup status --json <res>`. A drbd-utils too old for the reactor emits JSON
-it cannot parse; reactor logs `IGNORING resource '<res>': expected ',' or '}' at
-line NN` and stops managing that resource, so it never fails over. This was
-seen with drbd-utils 9.31.0 and drbd-reactor 1.11.0, and drbd-utils 9.34.0
-fixed it. Run in the foreground, reactor appears to work, which makes the
-problem look like a systemd one.
+**Keep drbd-utils and drbd-reactor versions matched.** drbd-reactor reads the
+output of `drbdsetup status --json <res>`. If drbd-utils is too old for the
+reactor, reactor cannot parse that JSON. It logs `IGNORING resource '<res>': expected ',' or '}' at
+line NN` and stops managing that resource, so the resource never fails over.
+drbd-utils 9.31.0 with drbd-reactor 1.11.0 has this problem; drbd-utils 9.34.0
+fixed it. If you run reactor in the foreground it seems to work, so the
+problem looks like a systemd problem, but it is not.
 
 Besides the binary, a working drbd-reactor install has three pieces:
 - `/etc/drbd-reactor.toml`. Without it reactor does not start
@@ -61,18 +62,18 @@ them copied too.
 
 **Install drbd-reactor non-interactively with
 `-o Dpkg::Options::=--force-confnew`** when `/etc/drbd-reactor.toml` may already
-exist. Otherwise dpkg stops at the conffile prompt, fails over SSH with
-`end of file on stdin at conffile prompt`, and rolls the whole transaction back;
-the node is left with drbdadm but no kernel module (`drbdadm --version` shows
-`DRBD_KERNEL_VERSION=0`).
+exist. Otherwise dpkg stops at the conffile prompt. Over SSH there is nobody to
+answer, so it fails with `end of file on stdin at conffile prompt` and rolls
+back the whole transaction. The node is left with drbdadm but no kernel module
+(`drbdadm --version` shows `DRBD_KERNEL_VERSION=0`).
 
 ### Boot-time bring-up: installed by Haify
 
-Nothing in the packages brings DRBD resources up at boot. The packaged
-`drbd.service` on Ubuntu 24.04 is an LSB script with an empty `Default-Start`, so
+None of the packages brings DRBD resources up at boot. On Ubuntu 24.04 the
+packaged `drbd.service` is an LSB script with an empty `Default-Start`, so
 `systemctl enable drbd.service` fails (`update-rc.d: error: drbd Default-Start
-contains no runlevels, aborting`). A node that reboots without a bring-up step
-rejoins no resource until someone runs `drbdadm adjust`.
+contains no runlevels, aborting`). Without a bring-up step, a node that
+reboots rejoins no resource until someone runs `drbdadm adjust`.
 
 `resource create` installs and enables `haify-drbd-up.service` on every node of the
 resource. It runs `/usr/local/sbin/haify-drbd-up.sh`, ordered `Before=drbd-reactor.service`,
@@ -110,6 +111,7 @@ looking for the agents under `/usr/lib/ocf/resource.d/heartbeat/`:
 | NFS | `Filesystem`, `IPaddr2`, `nfsserver`, `exportfs` | `rpc.nfsd`, `exportfs` |
 | iSCSI | `Filesystem`, `IPaddr2`, `iSCSITarget`, `iSCSILogicalUnit` | `targetcli` |
 | NVMe-oF | `Filesystem`, `IPaddr2`, `nvmet-subsystem`, `nvmet-namespace`, `nvmet-port` | |
+| SMB | `Filesystem`, `IPaddr2` | `smbd`, `smbpasswd`, `smbcontrol`, `pdbedit` |
 
 ---
 
@@ -120,12 +122,12 @@ looking for the agents under `/usr/lib/ocf/resource.d/heartbeat/`:
   it `ocf.rs@target_<res>.service` exits `5/NOTINSTALLED`. LIO is the only
   implementation Haify accepts; `--implementation tgt` and `iet` are refused.
 - NFS: `sudo apt-get install -y nfs-kernel-server` (EL: `nfs-utils`).
-  Without it, gateway creation fails with `missing: rpc.nfsd exportfs`. Without
-  that check the gateway would be created and never start, with
-  `ocf.rs@nfsserver_*` logging
+  Without it, gateway creation fails with `missing: rpc.nfsd exportfs`. That
+  check is there because otherwise the gateway would be created but never
+  start, and `ocf.rs@nfsserver_*` would log
   "No init script or systemd unit file detected for nfs server".
 - NVMe-oF: the `nvmet-*` agents work through configfs
-  (`/sys/kernel/config/nvmet`); `nvmetcli` is not used. What matters is the
+  (`/sys/kernel/config/nvmet`); `nvmetcli` is not used. They need the
   kernel modules, and Ubuntu cloud kernels ship `nvmet-tcp` only in
   `linux-modules-extra`:
   ```bash
@@ -135,6 +137,10 @@ looking for the agents under `/usr/lib/ocf/resource.d/heartbeat/`:
   `--transport rdma`, which also needs a device under `/sys/class/infiniband`),
   adds them to `/etc/modules-load.d/nvmet.conf`, and fails if they cannot load.
   Initiators need `nvme-tcp` (`modprobe nvme-tcp`) and `nvme-cli`.
+- SMB: `sudo apt-get install -y samba`. Each gateway runs its own smbd on the
+  service IP, so the distribution's smbd must not run: it holds port 445 on
+  every address. Gateway creation refuses while it runs; turn it off with
+  `systemctl disable --now smbd nmbd`.
 
 ---
 
@@ -157,7 +163,7 @@ sudo install -m 755 service-ip /usr/local/bin/service-ip
 sudo cp configs/service-ip@.service /etc/systemd/system/ && sudo systemctl daemon-reload
 ```
 
-If they are missing on a node, the result is `Unit service-ip@<vip>.service not found`
+If they are missing on a node, the result is `Unit service-ip@<IP>-<MASK>.service not found`
 and the VIP never comes up.
 
 ---
@@ -165,9 +171,13 @@ and the VIP never comes up.
 ## 5. Storage (diskful nodes)
 
 - `lvm2` for LVM pools; `zfsutils-linux` for ZFS pools.
-- A data disk with no filesystem, partition table or mount. Pool creation on a
-  used disk fails with `Device or resource busy`. To clear the disk, `umount`
-  it, remove it from `/etc/fstab` and run `wipefs -a <dev>`.
+- A data disk that nothing uses. Pool creation checks each disk before it
+  touches it. A disk that is mounted or used as swap is refused
+  (`<dev> on <node> is in use: mounted at <path>`); unmount it and remove it
+  from `/etc/fstab` first. A disk that only holds old data (a filesystem, a
+  partition table, an old pool label) is refused too, unless you pass
+  `--wipe`, which erases it. A node with no spare disk can use an image file
+  instead: `--devices file:PATH:SIZE`.
 - `thin-provisioning-tools` on nodes whose resources are backed up from thin
   pools: incremental backups run `thin_delta`.
 
@@ -220,8 +230,8 @@ with `haify ha evict haify-meta` (`deployment-guide.md` §8).
 - `ktls-utils` for `tlshd`: `apt install ktls-utils` / `dnf install ktls-utils`
 - `openssl`, and a system trust store (`update-ca-certificates` or `update-ca-trust`)
 
-`haify replication-tls setup` checks each of these and names what is missing
-per node, then creates a node key, issues a certificate from the controller's
+`haify replication-tls setup` checks these on each node. It stops at the first
+one that is missing and names it. When everything is there, it creates a node key, issues a certificate from the controller's
 replication CA, adds that CA to the trust store, writes `/etc/tlshd.conf`
 (keeping the original as `/etc/tlshd.conf.haify-orig`), loads `tls` at boot and
 enables `tlshd`. `haify resource tls <resource> on` then turns encrypted
@@ -233,8 +243,8 @@ replication on for one resource.
   transfer runs on a replica node). Haify checks for it before each backup and
   fails with `rclone is required on <node> and was not found`.
 - Encryption at rest (`resource create --encrypt`, LVM pools only) needs
-  `cryptsetup` and the `dm-crypt` module on every node of the resource. Haify
-  checks for both before it creates anything.
+  `cryptsetup` and the `dm-crypt` module on every diskful node of the resource.
+  Haify checks for both before it creates anything.
 
 ---
 
@@ -266,13 +276,13 @@ GOOS=linux GOARCH=<arch> CGO_ENABLED=0 go build -o haify-mcp ./cmd/mcp   # from 
   `/etc/drbd-reactor.d/haify-ha-haify-meta.toml` on every node and
   `systemctl reload drbd-reactor`.
 - **Restarting it is a failover.** drbd-reactor makes every service in the
-  promoter `PartOf` the `haify-meta` target, so `systemctl restart haify-ai` on the
-  active node stops the whole target, VIP and controller included, and the
-  resource is promoted again on whichever node wins the race (a few seconds
-  without a controller). `systemctl stop haify-ai` tears the target down the same way.
-  Install a new binary on every node first (keep the old one as
-  `/opt/haify/bin/haify-ai.prev`), then move deliberately with
-  `haify ha evict haify-meta`.
+  promoter `PartOf` the `haify-meta` target. So `systemctl restart haify-ai` on the
+  active node stops the whole target, VIP and controller included. The
+  resource is then promoted again on whichever node gets there first, and for
+  a few seconds there is no controller. `systemctl stop haify-ai` takes the
+  target down the same way. To upgrade, install the new binary on every node
+  first (keep the old one as `/opt/haify/bin/haify-ai.prev`), then move the
+  controller on purpose with `haify ha evict haify-meta`.
 
 ---
 
@@ -380,17 +390,18 @@ For a smoke test, run `scripts/csi-e2e.sh`.
 
 ## Per-node checklist
 
-| Item | All nodes | Controller / Self-HA nodes | iSCSI | NFS | NVMe-oF | HA with VIP |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: |
-| DRBD 9 + drbd-utils + drbd-reactor | yes | yes | yes | yes | yes | yes |
-| `resource-agents-extra` | | | yes | yes | yes | |
-| `targetcli-fb`, `python3-rtslib-fb` | | | yes | | | |
-| `nfs-kernel-server` | | | | yes | | |
-| `linux-modules-extra` (nvmet-tcp) | | | | | yes | |
-| `service-ip` + `service-ip@.service` | | yes (auto) | | | | yes (auto) |
-| `lvm2` + data disk | diskful only | | | | | |
-| SSH key + dispatch config | | yes | | | | |
-| `haify-controller` | | yes | | | | |
+| Item | All nodes | Controller / Self-HA nodes | iSCSI | NFS | NVMe-oF | SMB | HA with VIP |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| DRBD 9 + drbd-utils + drbd-reactor | yes | yes | yes | yes | yes | yes | yes |
+| `resource-agents-extra` | | | yes | yes | yes | yes | |
+| `targetcli-fb`, `python3-rtslib-fb` | | | yes | | | | |
+| `nfs-kernel-server` | | | | yes | | | |
+| `samba` (distribution smbd off) | | | | | | yes | |
+| `linux-modules-extra` (nvmet-tcp) | | | | | yes | | |
+| `service-ip` + `service-ip@.service` | | yes (auto) | | | | | yes (auto) |
+| `lvm2` + data disk | diskful only | | | | | | |
+| SSH key + dispatch config | | yes | | | | | |
+| `haify-controller` | | yes | | | | | |
 
 Optional: `rclone` (backups), `thin-provisioning-tools` (incremental backups),
 `ktls-utils` + `openssl` (encrypted replication), `cryptsetup` (encryption at

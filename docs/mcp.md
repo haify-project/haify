@@ -1,15 +1,16 @@
 # Haify MCP server (for AI agents)
 
-`haify-mcp` (in `cmd/mcp`) exposes the Haify controller as a
-[Model Context Protocol](https://modelcontextprotocol.io) server, so an AI
-agent can inspect and operate the cluster through tools. It talks to the
-controller's gRPC API, the same one `haify` uses. It runs in three ways:
+`haify-mcp` (in `cmd/mcp`) is a
+[Model Context Protocol](https://modelcontextprotocol.io) server for the Haify
+controller. An AI agent connects to it and uses its tools to inspect and
+operate the cluster. It calls the controller's gRPC API, the same API `haify`
+uses. It runs in three ways:
 
 | Command | Transport | Who may call what |
 | ------- | --------- | ----------------- |
 | `haify-mcp` | stdio, for a client on the same machine | every tool, or only reads with `--read-only` |
 | `haify-mcp serve` | HTTP at `/mcp`, for remote clients | decided by the role of each client's token |
-| `haify-mcp k8s` | stdio | the Kubernetes tools (`haify_k8s_*`), against a Kubernetes API server instead of the controller |
+| `haify-mcp k8s` | stdio | the Kubernetes tools (`haify_k8s_*`), which talk to a Kubernetes API server, not to the controller |
 
 ## Install
 
@@ -25,8 +26,8 @@ go build -o ~/.local/bin/haify-mcp ./cmd/mcp
 claude mcp add haify -- haify-mcp --controller 10.0.0.250:3374
 ```
 
-The same server as a project-scoped `.mcp.json`, which Claude Code loads from
-the directory it starts in:
+To set it up for one project instead, put it in a `.mcp.json` file. Claude Code
+loads that file from the directory it starts in:
 
 ```json
 {
@@ -41,94 +42,113 @@ the directory it starts in:
 }
 ```
 
-Use your cluster's address. Claude Code expands environment variables in
-`.mcp.json`, so `"${HAIFY_CONTROLLER_ADDR:-127.0.0.1:3374}"` also works there.
-The client reads the file once at startup: restart it after a change.
+Replace the address with your cluster's. Claude Code expands environment
+variables in `.mcp.json`, so `"${HAIFY_CONTROLLER_ADDR:-127.0.0.1:3374}"` also
+works there. The client reads the file only when it starts, so restart it after
+you change the file.
 
 Which address to use:
 
-- With Self-HA enabled, the VIP. The controller moves between nodes on
-  failover and the VIP follows it. `haify ha self status` prints it.
-- Without Self-HA, the controller node's own address.
-- On the controller node itself, nothing: the default `127.0.0.1:3374`
-  reaches it.
+- With Self-HA enabled, use the VIP. On failover the controller moves to
+  another node, and the VIP moves with it. `haify ha self status` prints it.
+- Without Self-HA, use the controller node's own address.
+- On the controller node itself, leave the flag out: the default
+  `127.0.0.1:3374` reaches it.
 
 Flags:
 
 - `--controller, -c`: controller `host:port` (default `127.0.0.1:3374`).
-- `--token`: API token when the controller has `[auth]` enabled. Without the
-  flag: `HAIFY_TOKEN`, then `~/.haify/token`, then `/etc/haify/token`.
+- `--token`: the API token, needed when the controller has `[auth]` or
+  `[rbac]` enabled. Without the flag, haify-mcp looks in `HAIFY_TOKEN`, then
+  `~/.haify/token`, then `/etc/haify/token`.
 - `--tls`, `--tls-ca`, `--tls-cert`, `--tls-key`, `--tls-server-name`,
-  `--tls-insecure`: connect to a controller with `[tls]` enabled. They have the
-  same meaning and `HAIFY_TLS*` environment variables as in the `haify` CLI
-  ([user guide §17](user-guide.md#17-access-control)).
+  `--tls-insecure`: use these to reach a controller that has `[tls]` enabled.
+  They mean the same as in the `haify` CLI and read the same `HAIFY_TLS*`
+  environment variables ([user guide §17](user-guide.md#17-access-control)).
 - `--read-only`: register only the read-only tools.
-- `--allow NAME[,NAME]`: register these mutating tools as well, e.g.
-  `--allow haify_ha_evict`. Implies `--read-only`. The server refuses to start
-  on a name that is not a tool.
-- `--debug`: debug logging on stderr. stdout carries the protocol.
+- `--allow NAME[,NAME]`: register these mutating tools as well, for example
+  `--allow haify_ha_evict`. It turns on `--read-only`, so every other tool that
+  changes the cluster stays off. The server refuses to start if a name is not
+  a mutating tool, so a typo cannot silently leave a tool out.
+- `--debug`: debug logging on stderr. stdout is kept for the protocol.
 
 ### Kubernetes tools
 
-`haify-mcp k8s` serves `haify_k8s_app_list`, `haify_k8s_app_create` and
-`haify_k8s_app_delete` (a database on Kubernetes whose data lives on a Haify
-volume). Delete removes the Deployment and Service and keeps the volume claim
-and password secret unless `delete_data` is set; it touches only objects
-`haify_k8s_app_create` made. It uses `--kubeconfig`
-(or `HAIFY_KUBECONFIG`), or the in-cluster config inside a pod, and takes
-`--read-only`, `--allow` and `--debug` like the main server.
+`haify-mcp k8s` serves three tools for databases on Kubernetes whose data
+lives on a Haify volume: `haify_k8s_app_list`, `haify_k8s_app_create` and
+`haify_k8s_app_delete`.
+
+Delete removes the Deployment and the Service. It keeps the volume claim and
+the password Secret, so creating the app again under the same name picks up
+the same data. Set `delete_data` to delete those too. Delete only touches
+objects that `haify_k8s_app_create` made.
+
+It finds the cluster through `--kubeconfig` (or `HAIFY_KUBECONFIG`), or uses
+the in-cluster config when it runs inside a pod. It also takes `--read-only`,
+`--allow` and `--debug`, which work as in the main server.
 
 ## Remote server (`haify-mcp serve`)
 
 `haify-mcp serve` serves the same tools over streamable HTTP at `/mcp`. Every
-request needs a token.
+call there needs a token.
 
 ```bash
 haify-mcp token create --name laptop --role read --url https://mcp.example.com/mcp
 haify-mcp serve --listen 0.0.0.0:43871 --public-url https://mcp.example.com
 ```
 
-`token create` prints the secret once, with the `claude mcp add` command for
-it. `--expires 720h` limits its life; the default `0` never expires.
+`token create` prints the secret once, together with the `claude mcp add`
+command that uses it. `--expires 720h` sets how long the token lasts. The
+default, `0`, means it never expires.
 
 ### Roles
 
-A token has a role, and the role decides which tools exist on that
-connection. A tool that is not registered cannot be called by name.
+Each token has a role. The role decides which tools exist on that connection
+at all. A tool outside the role is not registered, so it cannot be called,
+whatever the client sends.
 
 | Role | Tools |
 | ---- | ----- |
 | `read` | the read-only tools: lists, status, health, diagnose, inspection reports and runs (`haify_inspect_run` changes nothing on the cluster), events, logs, audit, gateway exports/LUNs/ACLs/CHAP settings, runbooks |
-| `operate` | plus every mutating tool not marked destructive (the middle column below) |
-| `admin` | plus the destructive ones: delete, remove, restore, stop, evict, drain, renumber, role change, unmount, filesystem creation, thin-pool conversion, moving a volume to another pool, promoter TOML sync, schedule delete, Self-HA enable/disable, DR failback, and adding or removing gateway exports, LUNs and ACL entries |
+| `operate` | plus every mutating tool that is not marked destructive (the middle column below) |
+| `admin` | plus the destructive ones: delete, remove, unregister, restore, stop, evict, drain, renumber, role change, unmount, filesystem creation, thin-pool conversion, moving a volume to another pool, promoter TOML sync, schedule delete, Self-HA enable/disable, DR failback, database app failover, and adding or removing gateway exports, SMB shares, LUNs, NVMe namespaces and allow-list entries |
 
-Anything that loses data, takes a volume away from the node serving it
-(role change, unmount, gateway stop, evict, drain), or stops future snapshots
-or backups is `admin`. `operate` can still briefly take replication links down
-and back, one at a time, while the Primary keeps serving:
-`haify_resource_set_options`, `haify_resource_tls`, `haify_wan_repair`,
-`haify_wan_set_endpoint`. It can also detach a diskless client
-(`haify_resource_detach_diskless`), which ends that node's access.
+A tool is `admin` if it can lose data, take a volume away from the node that
+serves it (role change, unmount, gateway stop, evict, drain, app failover), or
+stop future snapshots or backups.
 
-`--max-role read|operate|admin` caps every token on the main listener, whatever
-the token says. `--admin-listen ADDR` opens a second listener that
-`--max-role` does not cap, for operators on the local network: an admin token
-there gets every tool while the listener a reverse proxy points at stays
-capped. It takes bearer tokens only, no OAuth, and must never be proxied. Bind
-it to a port the proxy does not forward, e.g.
+`operate` tools can still interrupt replication for a moment.
+`haify_resource_set_options`, `haify_resource_tls`, `haify_wan_repair` and
+`haify_wan_set_endpoint` may take replication links down and bring them back,
+one link at a time, while the Primary keeps serving. This role can also detach
+a diskless client (`haify_resource_detach_diskless`), which ends that node's
+access to the volume.
+
+`--max-role read|operate|admin` caps every token on the main listener,
+whatever role the token has. The default is admin, which caps nothing.
+
+`--admin-listen ADDR` opens a second listener that `--max-role` does not cap.
+It is for operators on the local network: an admin token there gets every
+tool, while the listener that a reverse proxy points at stays capped. The
+second listener accepts bearer tokens only and offers no OAuth. Never put it
+behind the proxy. Bind it to a port the proxy does not forward, for example
 `--listen 0.0.0.0:43871 --max-role operate --admin-listen 0.0.0.0:43872`.
 
 ### Tokens
 
-Tokens are stored as SHA-256 hashes in `/var/lib/haify/mcp/tokens.json`
-(`--tokens` or `HAIFY_MCP_TOKENS` to change it). With Self-HA, `/var/lib/haify` is
-the haify-meta mount, so the store moves with the controller; run `haify-mcp token`
-commands on the node where haify-meta is mounted. `haify-mcp token list` and
-`haify-mcp token revoke <name|id>` work while the server runs: the server
-re-reads the file when it changes, and a revoked token is refused on its next
-request, including inside an open session. Revoking a token also revokes every
-OAuth token issued under it. The server starts with an empty store, logs a
-warning, and refuses every request until a token exists.
+Tokens are stored as SHA-256 hashes in `/var/lib/haify/mcp/tokens.json`.
+`--tokens` or `HAIFY_MCP_TOKENS` changes the path. With Self-HA,
+`/var/lib/haify` is the haify-meta mount, so the token store moves with the
+controller. Run `haify-mcp token` commands on the node where haify-meta is
+mounted.
+
+`haify-mcp token list` and `haify-mcp token revoke <name|id>` work while the
+server runs. The server re-reads the file when it changes, so a revoked token
+is refused on its next request, even inside a session that is already open.
+Revoking a token also revokes every OAuth token issued under it.
+
+If the store is empty, the server still starts. It logs a warning and refuses
+every request until you create a token.
 
 ### Clients
 
@@ -139,56 +159,67 @@ claude mcp add --transport http haify https://mcp.example.com/mcp \
     --header "Authorization: Bearer haifymcp_..."
 ```
 
-ChatGPT and claude.ai add a server by URL and run OAuth, which the server
-offers only with `--public-url`. The client discovers the endpoints and
-registers itself, and on the authorization page you paste a token made with
-`token create`. The client gets an access token valid for one hour and a
-refresh token valid for 30 days, with the pasted token's role, capped by
-`--max-role`, or lower if it asked for a smaller scope. Only S256 PKCE is
-accepted, and redirect URIs must be `https`, or `http` to a loopback address.
+ChatGPT and claude.ai add a server by its URL and then run OAuth. The server
+offers OAuth only when it is started with `--public-url`. The client finds the
+endpoints and registers itself. On the authorization page you paste a token
+made with `token create`. The client then gets an access token that is valid
+for one hour and a refresh token that is valid for 30 days. They carry the
+pasted token's role, capped by `--max-role`, or a lower role if the client
+asked for a smaller scope. Only S256 PKCE is accepted. Redirect URIs must be
+`https`, or `http` to a loopback address.
 
 ### Deployment
 
-Serve it over HTTPS: either `--tls-cert`/`--tls-key`, or terminate TLS in a
-reverse proxy, bind to a private address and pass `--trust-proxy` so the
-failed-login limit (an address is locked out after 10 failed attempts within
-5 minutes) sees the real client address from `X-Forwarded-For`.
+Serve it over HTTPS. Either give it `--tls-cert`/`--tls-key`, or let a
+reverse proxy terminate TLS. With a proxy, bind the server to a private
+address and pass `--trust-proxy`. The server then reads the real client
+address from `X-Forwarded-For`. The failed-login limit needs that address: it
+locks an address out after 10 failed attempts within 5 minutes.
 `GET /healthz` answers `ok` without a token.
 
-`serve` reaches the controller with `--controller` (default `127.0.0.1:3374`),
-`--controller-token` (same fallbacks as `--token` above) and, for a controller
-with `[tls]` enabled, `--controller-tls`, `--controller-tls-ca`,
+`serve` has its own flags for reaching the controller. `--controller`
+(default `127.0.0.1:3374`) is the address. `--controller-token` is the token
+and falls back to the same places as `--token` above. For a controller with
+`[tls]` enabled, use `--controller-tls`, `--controller-tls-ca`,
 `--controller-tls-cert`, `--controller-tls-key`,
-`--controller-tls-server-name` and `--controller-tls-insecure`, which also
-fall back to `HAIFY_TLS*`. `--tls-cert`/`--tls-key` are this server's own HTTPS
-certificate.
+`--controller-tls-server-name` and `--controller-tls-insecure`. These also
+fall back to the `HAIFY_TLS*` variables. Do not mix them up with
+`--tls-cert`/`--tls-key`, which are the HTTPS certificate of this server
+itself.
 
-Every tool call is logged with the token's name and role; arguments are not,
-since some carry secrets:
+Every tool call is logged with the token's name and role. The arguments are
+not logged, because some of them carry secrets:
 
 ```bash
 journalctl -u haify-mcp-http | grep 'tool call'
 ```
 
-To make the server follow the controller across failover, copy `haify-mcp` to
-`/opt/haify/bin/` and install `configs/haify-mcp-http.service` on every node, left
-disabled. It runs `/opt/haify/bin/haify-mcp serve --listen 0.0.0.0:43871` with the token store on the
-Self-HA mount, and reads site flags from `HAIFY_MCP_ARGS` in
-`/var/lib/haify/mcp/haify-mcp.env`. Then put `haify-mcp-http.service` in the haify-meta
-promoter's start list: before `ha self enable`, through
-`[self_ha] extra_services` in `controller.toml`; on a running cluster, in
-`/etc/drbd-reactor.d/haify-ha-haify-meta.toml` on every node.
+To make the server move with the controller on failover:
+
+1. Copy `haify-mcp` to `/opt/haify/bin/` and install
+   `configs/haify-mcp-http.service` on every node. Leave the unit disabled. It
+   runs `/opt/haify/bin/haify-mcp serve --listen 0.0.0.0:43871` with the token
+   store on the Self-HA mount, and reads your site's extra flags from
+   `HAIFY_MCP_ARGS` in `/var/lib/haify/mcp/haify-mcp.env`.
+2. Add `haify-mcp-http.service` to the haify-meta promoter's start list. If
+   Self-HA is not enabled yet, list it in `[self_ha] extra_services` in
+   `controller.toml` before you run `ha self enable`. On a cluster that
+   already runs Self-HA, add it to
+   `/etc/drbd-reactor.d/haify-ha-haify-meta.toml` on every node. List it in
+   that same setting as well, so the controller's stored copy of the
+   promoter matches and a later sync does not drop it.
 
 ## Runbooks
 
-A runbook gives the order in which to call the tools for a task, and what
-fails halfway if the order is wrong. The runbooks are embedded from
-`pkg/mcpserver/runbooks/*.md` and served two ways:
+A runbook says in which order to call the tools for a task, and what breaks
+halfway if you use another order. The runbooks are built into the binary from
+`pkg/mcpserver/runbooks/*.md` and are served in two ways:
 
-- as MCP prompts, which Claude Code offers as slash commands, with an optional
-  `target` argument (the resource or node);
-- through the read-only tool `haify_runbook`: no name lists them, a name returns
-  one. ChatGPT, claude.ai and the AI Copilot reach them this way.
+- as MCP prompts, which Claude Code offers as slash commands. Each takes an
+  optional `target` argument (the resource or node).
+- through the read-only tool `haify_runbook`. Without a name it lists the
+  runbooks; with a name it returns that one. ChatGPT, claude.ai and the AI
+  Copilot reach the runbooks this way.
 
 | Runbook | For | Needs |
 | ------- | --- | ----- |
@@ -217,27 +248,31 @@ fails halfway if the order is wrong. The runbooks are embedded from
 | HA, Self-HA | `haify_ha_list`, `haify_ha_status`, `haify_ha_promoter_status`, `haify_ha_get_toml`, `haify_self_ha_status` | `haify_ha_create` | `haify_ha_evict`, `haify_ha_delete`, `haify_ha_sync_toml`, `haify_self_ha_enable`, `haify_self_ha_disable` |
 
 `haify_nfs_exports`, `haify_iscsi_luns`, `haify_iscsi_initiators`,
-`haify_nvme_namespaces` and `haify_nvme_hosts` take an action (add, remove) and
-need `admin`; they still accept `list`, which the `*_list` tools answer at
-`read`. `haify_iscsi_chap` sets one-way CHAP at `operate` (mutual CHAP is
-refused) and still accepts `get`; `haify_iscsi_chap_get` answers it at `read`.
-Neither returns the password.
+`haify_nvme_namespaces` and `haify_nvme_hosts` add and remove entries, so they
+need `admin`. They still accept the `list` action, but the `*_list` tools give
+the same answer at `read`.
+
+`haify_iscsi_chap` sets one-way CHAP and needs `operate`. Mutual CHAP is
+refused. It still accepts `get`, which `haify_iscsi_chap_get` also answers at
+`read`. Neither tool returns the password.
 
 ### What has no tool
 
-- The password `haify app create` generates: `haify_app_create` reports where it
-  is kept (root-only, on the app's volume) instead of returning it, since a
-  tool result is recorded by whatever called it.
-- Commands that take a secret, since a tool argument is recorded by whatever
-  called it: `backup target add` (storage credentials), `channel add` (webhook
-  URLs and signing keys), `rbac`. The exception is `haify_iscsi_chap`, which sets
-  a CHAP password; the server does not log arguments and never returns the
-  password.
-- `resource dr-failover`: it force-promotes the DR node and loses the writes
-  still in the WAN buffer, a decision to take at the CLI with `--yes`.
-- `replication-tls setup`: it installs a CA into each node's system trust
+- Reading the password that `haify app create` generates. `haify_app_create`
+  tells you where the password is kept (root-only, on the app's volume)
+  instead of returning it, because whatever called the tool records its
+  result.
+- Commands that take a secret, because whatever calls a tool records its
+  arguments: `backup target add` (storage credentials), `channel add` (webhook
+  URLs and signing keys), `rbac`. The one exception is `haify_iscsi_chap`,
+  which sets a CHAP password. The server does not log tool arguments and
+  never returns the password.
+- `resource dr-failover`. It force-promotes the DR node and loses the writes
+  still in the WAN buffer. That decision is taken at the CLI, which asks for
+  `--yes`.
+- `replication-tls setup`. It installs a CA into each node's system trust
   store.
 - `inspect list` (`haify_inspect_report` reads the newest report, or one by id),
   `backup schedule run`, `channel delete`, `event watch` (a stream;
-  `haify_event_list` reads the history), `gateway nfs mount` (mounts on the
-  machine running the CLI).
+  `haify_event_list` reads the history) and `gateway nfs mount` (it mounts on
+  the machine running the CLI).

@@ -1,17 +1,18 @@
 # haify-csi Helm chart
 
-Installs the Haify CSI driver: Kubernetes volumes replicated by DRBD across your
-own servers, with snapshots, clones and online resizing.
+Installs the Haify CSI driver. It gives Kubernetes volumes that DRBD replicates
+across your own servers, with snapshots, clones, and resizing while the volume
+is in use.
 
 ## Before installing
 
-- A running Haify controller, with a pool on at least as many nodes as each
-  StorageClass wants replicas.
-- Every Kubernetes node that runs volumes registered with Haify **under the same
-  name as its Kubernetes node**, with DRBD 9 and `drbd-utils`. A node with no
-  replica of its own reads and writes over the network when the StorageClass
-  sets `allowRemoteVolumeAccess: "true"`.
-- The `haify-csi` image on every node, or in a registry (`image.repository`);
+- A running Haify controller, and a pool on at least as many nodes as the
+  number of replicas each StorageClass asks for.
+- Every Kubernetes node that runs volumes is registered with Haify **under the
+  same name as its Kubernetes node**, and has DRBD 9 and `drbd-utils`. When the
+  StorageClass sets `allowRemoteVolumeAccess: "true"`, a node with no replica
+  of its own can still use a volume; it reads and writes over the network.
+- The `haify-csi` image on every node, or in a registry (`image.repository`).
   `deploy/k8s/README.md` shows how to build it.
 
 ## Install
@@ -30,11 +31,13 @@ VALUES
 helm install haify-csi deploy/helm/haify-csi -n kube-system -f haify-values.yaml
 ```
 
-With API authentication on, add `token.value`, or create the Secret yourself and
-name it in `token.existingSecret` (key `token`).
+If the controller has API authentication on, set `token.value` and the chart
+creates the Secret. Or create the Secret yourself (key `token`) and put its
+name in `token.existingSecret`.
 
-Give StorageClasses in a values file: `--set storageClasses[0].pool=...`
-replaces the whole entry, name included.
+Define StorageClasses in a values file. A flag such as
+`--set storageClasses[0].pool=...` makes Helm replace the whole list, so the
+entry loses its name and every other field.
 
 ## Values
 
@@ -46,13 +49,15 @@ replaces the whole entry, name included.
 | `image.repository`, `image.tag`, `image.pullPolicy` | `haify-csi`, `latest`, `IfNotPresent` | The plugin image |
 | `storageClasses` | one class `haify` on pool `vg0`, 2 replicas | `name`, `pool`, `replicas`, `default`, `reclaimPolicy`, `volumeBindingMode`, `allowVolumeExpansion`, and any other driver `parameters` |
 | `snapshotClass.enabled` | `true` | Created only when the cluster has the snapshot CRDs |
+| `snapshotClass.name`, `snapshotClass.default`, `snapshotClass.deletionPolicy` | `haify-snapshot`, `false`, `Delete` | The VolumeSnapshotClass's name, whether it is the default class, and whether deleting a `VolumeSnapshot` also deletes the snapshot |
 | `kubeletDir` | `/var/lib/kubelet` | Change for distributions that move it |
 | `operationTimeout` | `120s` | How long provisioning, resizing or a snapshot may take |
 | `controllerPlugin.*`, `nodePlugin.*` | | `nodeSelector`, `tolerations`, `resources` |
+| `sidecars.*` | the registry.k8s.io sig-storage images | Images of the provisioner, resizer, snapshotter, liveness probe and node driver registrar |
 
 ## Changing a StorageClass
 
-Kubernetes does not let a StorageClass's parameters change. To change one,
-delete the StorageClass and upgrade the release; volumes already provisioned
-keep working, since they do not depend on the class after they are created. Or
-add a class under a new name.
+Kubernetes does not allow changing a StorageClass's parameters. To change one,
+delete the StorageClass and upgrade the release. Volumes that already exist keep
+working, because they do not need the class after they are created. Or add a
+class under a new name.

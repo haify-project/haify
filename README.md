@@ -8,7 +8,7 @@ English | [简体中文](README_cn.md) | [Documentation site](https://haify-proj
 
 ![Haify architecture](docs/img/architecture-en.png)
 
-No agent runs on the storage nodes: one controller drives them over SSH and keeps its state in an embedded BoltDB. The controller itself can run behind a floating VIP (Self-HA).
+There is no management agent on the storage nodes. One controller drives them over SSH and keeps its state in an embedded BoltDB. The controller itself can fail over to another node and stay reachable on a floating VIP (Self-HA).
 
 ## Features
 
@@ -18,10 +18,10 @@ No agent runs on the storage nodes: one controller drives them over SSH and keep
 - **Applications**: PostgreSQL, MySQL / MariaDB, Redis or an S3 object store (RustFS) run on a resource and fail over with it (`haify app`).
 - **Snapshots and backups**: LVM / ZFS snapshots with retention schedules; scheduled, incremental backups to S3, SMB or WebDAV, restorable on a rebuilt or different cluster; a resource copied straight into another Haify cluster.
 - **Cross-site**: asynchronous DR replicas over a TCP tunnel that works through NAT.
-- **Integrity**: scheduled DRBD verify with resync, alerts on degraded replicas, lost Primaries, out-of-sync data and full pools.
+- **Integrity**: scheduled DRBD verify, and on request a resync of the blocks it found different. Alerts on degraded replicas, lost Primaries, out-of-sync data and full pools.
 - **Kubernetes and Docker**: CSI driver (manifests or a Helm chart) with snapshots, clones, expansion, raw block and remote (diskless) access; a Docker volume plugin whose volumes follow containers between hosts.
 - **Virtual machines**: Proxmox VE storage plugin with a panel in the PVE web UI; an XCP-ng storage driver; a libvirt hook for plain KVM; an OpenStack Cinder driver with a Horizon panel. Live migration works on all four.
-- **AI**: MCP server for Claude Code, ChatGPT and others (local or remote with role-scoped tokens and OAuth), plus a Copilot in the web UI.
+- **AI**: MCP server for Claude Code, ChatGPT and others (local or remote with role-scoped tokens and OAuth), plus a Copilot in the web UI, which runs as a separate, optional service.
 - **Operations**: token auth, RBAC, audit log, TLS, Prometheus metrics, notifications to Feishu / Slack / WeCom / DingTalk / webhooks.
 
 ## Requirements

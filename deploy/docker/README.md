@@ -1,9 +1,9 @@
 # Docker volumes on Haify
 
-`haify-docker` is a Docker volume plugin. A volume made with it is a Haify
-resource, replicated across your servers, and a container that uses it can run
-on any host: in a Swarm, a service that moves to another node finds its data
-there.
+`haify-docker` is a Docker volume plugin. Each volume made with it is a Haify
+resource, replicated across your servers. A container that uses the volume can
+run on any host. In a Swarm, a service that moves to another node finds its
+data there.
 
 ## Install
 
@@ -11,16 +11,17 @@ On every Docker host, which must be a registered Haify node (`haify node list`)
 with DRBD 9 and `drbd-utils`:
 
 ```bash
-make build                                         # or GOOS=linux go build ./cmd/haify-docker
+make build                                         # or GOOS=linux go build -o bin/haify-docker ./cmd/haify-docker
 sudo install -m 0755 bin/haify-docker /usr/local/bin/
 sudo install -m 0644 deploy/docker/haify-docker.service /etc/systemd/system/
 echo 'HAIFY_DOCKER_ARGS="--controller 192.168.1.10:3374 --pool vg0"' | sudo tee /etc/default/haify-docker
 sudo systemctl daemon-reload && sudo systemctl enable --now haify-docker
 ```
 
-`--controller` is the controller's address (its floating IP with Self-HA). With
-API authentication on, put the token in `/etc/haify/token`. `--node` defaults
-to the short host name and must match the host's Haify node name.
+`--controller` is the controller's address (its floating IP with Self-HA). If
+the controller has API authentication on, put the token in `/etc/haify/token`.
+`--node` is this host's Haify node name and must match it exactly. It defaults
+to the short host name.
 
 ## Use
 
@@ -33,9 +34,10 @@ docker service create --mount type=volume,source=pgdata,target=/var/lib/postgres
 ```
 
 Options: `size` (default `--size`, 10G), `pool` (default `--pool`), `replicas`
-(default `--replicas`, 2), `fs` (`ext4` or `xfs`). A host without a replica of
-the volume reads and writes over the network.
+(default `--replicas`, 2), `fs` (`ext4` or `xfs`; default `--fs`, ext4). On a
+host that holds no replica of the volume, the plugin joins it as a diskless
+client and the host reads and writes over the network.
 
-A volume is in use on one host at a time: while a container on one host has it,
-starting one on another host with the same volume is refused. `docker volume
+Only one host can use a volume at a time. While a container on one host has it,
+starting a container with the same volume on another host is refused. `docker volume
 rm` deletes the volume and its data on every node.
