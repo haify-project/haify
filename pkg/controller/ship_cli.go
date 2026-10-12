@@ -49,8 +49,10 @@ echo "missing $(uname -m)"
 // a build for it placed next to the controller as haify-<goarch>.
 func haifyCLISources(exeDir, goarch string) []string {
 	if goarch != runtime.GOARCH {
+		zap.L().Debug("haifyCLISources: other architecture, only a build for it", zap.String("goarch", goarch))
 		return []string{filepath.Join(exeDir, "haify-"+goarch)}
 	}
+	zap.L().Debug("haifyCLISources: own architecture", zap.String("exe_dir", exeDir))
 	return []string{filepath.Join(exeDir, "haify"), "/usr/local/bin/haify", "/usr/bin/haify"}
 }
 
@@ -64,9 +66,11 @@ func isExecutableFile(p string) bool {
 func firstExecutable(paths []string) string {
 	for _, p := range paths {
 		if isExecutableFile(p) {
+			zap.L().Debug("firstExecutable: found", zap.String("path", p))
 			return p
 		}
 	}
+	zap.L().Debug("firstExecutable: none", zap.Strings("paths", paths))
 	return ""
 }
 
@@ -75,7 +79,10 @@ func firstExecutable(paths []string) string {
 var localCanShip = func(p string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, p, "ship", "--help").Run() == nil
+	start := time.Now()
+	err := exec.CommandContext(ctx, p, "ship", "--help").Run()
+	zap.L().Debug("localCanShip: ran ship --help", zap.String("path", p), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err == nil
 }
 
 // firstShipCapable returns the first executable in paths that can ship. An
@@ -84,9 +91,11 @@ var localCanShip = func(p string) bool {
 func firstShipCapable(paths []string) string {
 	for _, p := range paths {
 		if isExecutableFile(p) && localCanShip(p) {
+			zap.L().Debug("firstShipCapable: found", zap.String("path", p))
 			return p
 		}
 	}
+	zap.L().Debug("firstShipCapable: none", zap.Strings("paths", paths))
 	return ""
 }
 
@@ -101,23 +110,30 @@ func parseHaifyCLIProbe(out string) (path, machine string, err error) {
 	case kind == "missing" && val != "":
 		return "", val, nil
 	}
+	zap.L().Debug("parseHaifyCLIProbe: unexpected answer", zap.String("output", strings.TrimSpace(out)))
 	return "", "", fmt.Errorf("unexpected answer %q", strings.TrimSpace(out))
 }
 
 // probeHaifyCLI runs haifyCLIProbe on host.
 func (rm *ResourceManager) probeHaifyCLI(ctx context.Context, host string) (string, string, error) {
+	log := ctrlLogOrGlobal(rm.controller)
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{host}, "echo "+base64Std(haifyCLIProbe())+" | base64 -d | /bin/sh")
 	if err != nil {
+		log.Debug("probeHaifyCLI: probe errored", zap.String("host", host), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return "", "", fmt.Errorf("look for haify on %s: %w", rm.nodeLabel(host), err)
 	}
 	hr := res.Hosts[host]
 	if hr == nil || !hr.Success {
+		log.Debug("probeHaifyCLI: probe failed", zap.String("host", host), zap.Duration("took", time.Since(start)))
 		return "", "", fmt.Errorf("look for haify on %s: %s", rm.nodeLabel(host), hostFailure(hr))
 	}
 	path, machine, err := parseHaifyCLIProbe(hr.Output)
 	if err != nil {
 		return "", "", fmt.Errorf("look for haify on %s: %w", rm.nodeLabel(host), err)
 	}
+	log.Debug("probeHaifyCLI: probed", zap.String("host", host), zap.String("path", path), zap.String("machine", machine),
+		zap.Duration("took", time.Since(start)))
 	return path, machine, nil
 }
 
@@ -125,14 +141,18 @@ func (rm *ResourceManager) probeHaifyCLI(ctx context.Context, host string) (stri
 // installing this controller's copy at haifyCLIInstallPath when the node has
 // none. A node of another architecture gets only a build made for it.
 func (rm *ResourceManager) ensureHaifyCLI(ctx context.Context, host string) (string, error) {
+	log := ctrlLogOrGlobal(rm.controller)
+	log.Debug("ensureHaifyCLI: checking", zap.String("host", host))
 	path, machine, err := rm.probeHaifyCLI(ctx, host)
 	if err != nil || path != "" {
+		log.Debug("ensureHaifyCLI: probe decided", zap.String("host", host), zap.String("path", path), zap.Error(err))
 		return path, err
 	}
 
 	node := rm.nodeLabel(host)
 	exe, err := controllerExecutable()
 	if err != nil {
+		log.Debug("ensureHaifyCLI: controller executable unknown", zap.Error(err))
 		return "", fmt.Errorf("haify is not installed on %s, and this controller cannot locate itself to find a copy: %w", node, err)
 	}
 	goarch := goarchFromMachine(machine)
@@ -144,6 +164,8 @@ func (rm *ResourceManager) ensureHaifyCLI(ctx context.Context, host string) (str
 		src = firstShipCapable(candidates)
 	}
 	if src == "" {
+		log.Debug("ensureHaifyCLI: no copy to install", zap.String("node", node), zap.String("machine", machine),
+			zap.Strings("candidates", candidates))
 		return "", fmt.Errorf("no haify that can ship is installed on %s (%s), and this controller has none built for it "+
 			"(looked in %s); install a current haify at /usr/local/bin/haify on %s, or place a %s build at %s",
 			node, machine, strings.Join(candidates, ", "), node, machine, candidates[0])
@@ -151,18 +173,24 @@ func (rm *ResourceManager) ensureHaifyCLI(ctx context.Context, host string) (str
 
 	rm.controller.logger.Info("Installing haify CLI for ship",
 		zap.String("node", node), zap.String("source", src), zap.String("target", haifyCLIInstallPath))
+	start := time.Now()
 	inst, err := rm.deployment.InstallFile(ctx, []string{host}, src, haifyCLIInstallPath, 0o755)
 	if err != nil {
+		log.Debug("ensureHaifyCLI: install errored", zap.String("host", host), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return "", fmt.Errorf("install haify on %s: %w", node, err)
 	}
 	if !inst.Success {
+		log.Debug("ensureHaifyCLI: install failed", zap.String("host", host), zap.Duration("took", time.Since(start)))
 		return "", fmt.Errorf("install haify on %s: %s", node, hostFailure(inst.Hosts[host]))
 	}
+	log.Debug("ensureHaifyCLI: installed, probing again", zap.String("host", host), zap.Duration("took", time.Since(start)))
 	if path, _, err = rm.probeHaifyCLI(ctx, host); err != nil {
 		return "", err
 	}
 	if path == "" {
+		log.Debug("ensureHaifyCLI: installed copy cannot ship", zap.String("source", src))
 		return "", fmt.Errorf("the haify installed on %s from %s cannot ship; update %s on this controller's host", node, src, src)
 	}
+	log.Debug("ensureHaifyCLI: ready", zap.String("host", host), zap.String("path", path))
 	return path, nil
 }

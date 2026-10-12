@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Editing a resource's .res for a volume that moves to another pool one node
@@ -12,6 +14,8 @@ import (
 // moved carry their own `volume N { disk ...; }` inside their `on` section,
 // which overrides it for that node only. Once every node has moved, the
 // resource-level path changes and the overrides go.
+//
+// Traces here never carry the config text: it can hold a shared-secret.
 
 // onSectionSpan finds the lines of `on <name> { ... }` (the opening line and
 // the line that closes it), or -1, -1.
@@ -56,8 +60,11 @@ func setHostVolumeDisk(content, onName string, volNum, minor int, disk string) (
 	lines := strings.Split(content, "\n")
 	start, end := onSectionSpan(lines, onName)
 	if start < 0 {
+		zap.L().Debug("setHostVolumeDisk: no on section for the node", zap.String("node", onName))
 		return "", fmt.Errorf("no `on %s` section in the resource config", onName)
 	}
+	zap.L().Debug("setHostVolumeDisk: adding disk override", zap.String("node", onName), zap.Int("volume", volNum),
+		zap.Int("minor", minor), zap.String("disk", disk))
 	block := []string{
 		fmt.Sprintf("        volume %d {", volNum),
 		fmt.Sprintf("            device    minor %d;", minor),
@@ -75,17 +82,21 @@ func removeHostVolumeDisk(content, onName string, volNum int) string {
 	lines := strings.Split(content, "\n")
 	start, end := onSectionSpan(lines, onName)
 	if start < 0 {
+		zap.L().Debug("removeHostVolumeDisk: no on section, nothing to remove", zap.String("node", onName))
 		return content
 	}
 	vs, ve := volumeBlockSpan(lines, start+1, end, volNum)
 	if vs < 0 {
+		zap.L().Debug("removeHostVolumeDisk: no override, nothing to remove", zap.String("node", onName), zap.Int("volume", volNum))
 		return content
 	}
 	for _, l := range lines[vs : ve+1] {
 		if f := strings.Fields(strings.TrimSpace(l)); len(f) >= 2 && f[0] == "disk" && strings.TrimSuffix(f[1], ";") == "none" {
+			zap.L().Debug("removeHostVolumeDisk: diskless member, override kept", zap.String("node", onName), zap.Int("volume", volNum))
 			return content
 		}
 	}
+	zap.L().Debug("removeHostVolumeDisk: override removed", zap.String("node", onName), zap.Int("volume", volNum))
 	return strings.Join(append(append([]string{}, lines[:vs]...), lines[ve+1:]...), "\n")
 }
 
@@ -101,9 +112,11 @@ func setResourceVolumeDisk(content string, volNum int, disk string) (string, err
 			if len(f) >= 2 && f[0] == "disk" && !strings.HasSuffix(f[1], "{") {
 				indent := lines[i][:len(lines[i])-len(strings.TrimLeft(lines[i], " \t"))]
 				lines[i] = fmt.Sprintf("%sdisk      %s;", indent, disk)
+				zap.L().Debug("setResourceVolumeDisk: disk line rewritten", zap.Int("volume", volNum), zap.String("disk", disk))
 				return strings.Join(lines, "\n"), nil
 			}
 		}
 	}
+	zap.L().Debug("setResourceVolumeDisk: no disk line for the volume", zap.Int("volume", volNum))
 	return "", fmt.Errorf("volume %d has no disk line in the resource config", volNum)
 }

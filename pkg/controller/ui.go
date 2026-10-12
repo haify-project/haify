@@ -84,8 +84,11 @@ type UIServer struct {
 // restTLS, when set, is how to dial a REST gateway served over TLS.
 func NewUIServer(logger *zap.Logger, listenAddress string, port int, restPort, aiPort int, restTLS *tls.Config) (*UIServer, error) {
 	// Get the subdirectory from the embed
+	logger.Debug("NewUIServer: building", zap.String("listen_address", listenAddress), zap.Int("port", port),
+		zap.Int("rest_port", restPort), zap.Int("ai_port", aiPort), zap.Bool("rest_tls", restTLS != nil))
 	distFS, err := fs.Sub(ui.FS, "dist")
 	if err != nil {
+		logger.Debug("NewUIServer: embedded UI filesystem unavailable", zap.Error(err))
 		return nil, fmt.Errorf("failed to get UI filesystem: %w", err)
 	}
 
@@ -103,6 +106,7 @@ func NewUIServer(logger *zap.Logger, listenAddress string, port int, restPort, a
 			scheme = "https"
 		}
 		u, _ := url.Parse(fmt.Sprintf("%s://127.0.0.1:%d", scheme, p))
+		logger.Debug("NewUIServer: proxy target", zap.String("scheme", scheme), zap.Int("port", p))
 		proxy := httputil.NewSingleHostReverseProxy(u)
 		if tlsConf != nil {
 			transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -127,6 +131,7 @@ func NewUIServer(logger *zap.Logger, listenAddress string, port int, restPort, a
 		Handler: uiServer,
 	}
 
+	logger.Debug("NewUIServer: built", zap.String("address", uiAddr), zap.Bool("ui_built", built))
 	return uiServer, nil
 }
 
@@ -136,7 +141,10 @@ func (s *UIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
+	// One trace per request, at whichever exit it takes. Headers are not
+	// traced: they carry the bearer token.
 	if r.Method == "OPTIONS" {
+		s.logger.Debug("UIServer.ServeHTTP: CORS preflight", zap.String("path", r.URL.Path))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -145,15 +153,18 @@ func (s *UIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// enough to make the UI usable from anywhere.
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/v1/"):
+		s.logger.Debug("UIServer.ServeHTTP: proxying to REST", zap.String("method", r.Method), zap.String("path", r.URL.Path))
 		s.api.ServeHTTP(w, r)
 		return
 	case strings.HasPrefix(r.URL.Path, "/ai/"):
+		s.logger.Debug("UIServer.ServeHTTP: proxying to the AI Copilot", zap.String("method", r.Method), zap.String("path", r.URL.Path))
 		s.ai.ServeHTTP(w, r)
 		return
 	}
 
 	// Nothing to serve: explain why rather than 404 on every path.
 	if !s.built {
+		s.logger.Debug("UIServer.ServeHTTP: UI not built, placeholder served", zap.String("path", r.URL.Path))
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -197,6 +208,7 @@ func (s *UIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Read and serve the file
 	data, err := fs.ReadFile(s.distFS, fileToServe)
 	if err != nil {
+		s.logger.Debug("UIServer.ServeHTTP: asset unreadable", zap.String("path", r.URL.Path), zap.String("file", fileToServe), zap.Error(err))
 		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
@@ -238,6 +250,8 @@ func (s *UIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Encoding", "gzip")
 		data = enc
 	}
+	s.logger.Debug("UIServer.ServeHTTP: serving asset", zap.String("path", r.URL.Path), zap.String("file", fileToServe),
+		zap.String("content_type", contentType), zap.Int("bytes", len(data)), zap.Bool("gzip", w.Header().Get("Content-Encoding") == "gzip"))
 	// Set explicitly so the browser can show a progress bar rather than
 	// streaming a chunked response of unknown length.
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
@@ -293,13 +307,18 @@ func (s *UIServer) gzipped(name string, data []byte) ([]byte, bool) {
 	s.gzMu.Lock()
 	s.gz[name] = enc
 	s.gzMu.Unlock()
+	// Once per asset: later requests hit the cache above.
+	s.logger.Debug("UIServer.gzipped: compressed asset", zap.String("file", name), zap.Int("bytes", len(data)),
+		zap.Int("gzip_bytes", len(enc)), zap.Bool("worth_it", enc != nil), zap.Error(err))
 	return enc, enc != nil
 }
 
 // Start starts the UI server in a goroutine
 func (s *UIServer) Start() error {
+	s.logger.Debug("UIServer.Start: listening", zap.String("address", s.server.Addr))
 	listener, err := net.Listen("tcp", s.server.Addr)
 	if err != nil {
+		s.logger.Debug("UIServer.Start: listen failed", zap.String("address", s.server.Addr), zap.Error(err))
 		return err
 	}
 
@@ -307,6 +326,8 @@ func (s *UIServer) Start() error {
 	go func() {
 		if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			s.logger.Error("UI server error", zap.Error(err))
+		} else {
+			s.logger.Debug("UIServer.Start: server stopped", zap.Error(err))
 		}
 	}()
 
@@ -316,13 +337,17 @@ func (s *UIServer) Start() error {
 // Shutdown stops the UI server
 func (s *UIServer) Shutdown(ctx context.Context) error {
 	s.logger.Info("Stopping UI server")
-	return s.server.Shutdown(ctx)
+	err := s.server.Shutdown(ctx)
+	s.logger.Debug("UIServer.Shutdown: stopped", zap.Error(err))
+	return err
 }
 
 // restPort is the configured REST port, or the default when none is set.
 func (c *Controller) restPort() int {
 	if c.config != nil && c.config.Server.RESTPort > 0 {
+		ctrlLogOrGlobal(c).Debug("restPort: configured", zap.Int("port", c.config.Server.RESTPort))
 		return c.config.Server.RESTPort
 	}
+	ctrlLogOrGlobal(c).Debug("restPort: default", zap.Int("port", defaultRESTPort))
 	return defaultRESTPort
 }
