@@ -11,6 +11,7 @@ import (
 
 	"github.com/haify-project/haify/pkg/util"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 // diskStateOrder puts the disks a pool can use first.
@@ -31,15 +32,19 @@ func nodeDisks() *cobra.Command {
 
 A disk just put into a server shows up here as free.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("nodeDisks: running command", zap.Strings("args", args), zap.String("node", node))
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("nodeDisks: newHaifyClient failed", zap.Error(err))
 				return err
 			}
 			defer closeClient(c)
 			disks, err := c.ListNodeDisks(ctx, node)
 			if err != nil {
+				log.Debug("nodeDisks: ListNodeDisks failed", zap.Error(err))
 				return err
 			}
 			sort.SliceStable(disks, func(i, j int) bool {
@@ -52,6 +57,8 @@ A disk just put into a server shows up here as free.`,
 			_, _ = fmt.Fprintln(w, "NODE\tDISK\tSIZE\tSTATE\tDETAIL\tMODEL\tID")
 			var free []string
 			for _, d := range disks {
+				log.Debug("nodeDisks: disk", zap.String("node", d.Node), zap.String("device", d.Device),
+					zap.String("state", d.State), zap.Uint64("size_bytes", d.SizeBytes), zap.String("pool", d.Pool))
 				detail := d.Detail
 				if d.State == "pool" {
 					detail = d.Pool
@@ -63,12 +70,15 @@ A disk just put into a server shows up here as free.`,
 				}
 			}
 			if err := w.Flush(); err != nil {
+				log.Debug("nodeDisks: Flush failed", zap.Error(err))
 				return err
 			}
 			if len(free) > 0 {
+				log.Debug("nodeDisks: free disks found, printing a hint", zap.Strings("free", free))
 				f := strings.Fields(free[0])
 				fmt.Printf("\nTo give a free disk to a pool: haify pool add --pool <pool> --nodes %s --devices %s\n", f[0], f[1])
 			}
+			log.Debug("nodeDisks: done", zap.Int("count", len(disks)), zap.Int("free", len(free)))
 			return nil
 		},
 	}

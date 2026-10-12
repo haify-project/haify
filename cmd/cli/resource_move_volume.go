@@ -7,6 +7,7 @@ import (
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func resourceMoveVolumeCommand() *cobra.Command {
@@ -23,14 +24,19 @@ snapshots are locked is refused. A move that stops part-way carries on from
 where it stopped when asked again. Follow it with: haify pool jobs`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceMoveVolumeCommand: running command", zap.Strings("args", args), zap.String("pool", pool), zap.Int32("volume", volume))
 			if pool == "" {
+				log.Debug("resourceMoveVolumeCommand: --pool missing")
 				return fmt.Errorf("--pool is required")
 			}
 			return withController(time.Minute, func(ctx context.Context, c haifypb.HaifyControllerClient) error {
 				r, err := c.MoveVolume(ctx, &haifypb.MoveVolumeRequest{Resource: args[0], VolumeId: volume, Pool: pool})
 				if err != nil {
+					log.Debug("resourceMoveVolumeCommand: MoveVolume failed", zap.Error(err))
 					return err
 				}
+				log.Debug("resourceMoveVolumeCommand: move requested", zap.Bool("success", r.Success), zap.String("job_id", r.JobId))
 				if r.Success {
 					fmt.Printf("job %s: ", r.JobId)
 				}

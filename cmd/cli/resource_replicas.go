@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
@@ -39,11 +40,15 @@ gone; add a replica afterwards.
   haify resource remove-replica db --node node3 --lost --yes`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceRemoveReplica: running command", zap.Strings("args", args), zap.String("node", node), zap.Bool("yes", yes), zap.Bool("lost", lost))
 			resource := args[0]
 			if node == "" {
+				log.Debug("resourceRemoveReplica: --node missing")
 				return fmt.Errorf("--node is required")
 			}
 			if !yes {
+				log.Debug("resourceRemoveReplica: no --yes, asking for confirmation", zap.Bool("lost", lost))
 				if lost {
 					fmt.Printf("This drops %q from %q for good; if it ever comes back it must be cleaned before it rejoins. Re-run with --yes to proceed.\n", node, resource)
 				} else {
@@ -57,12 +62,14 @@ gone; add a replica afterwards.
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceRemoveReplica: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			msg, err := haifyClient.RemoveReplicaOptions(ctx, resource, node, lost)
 			if err != nil {
+				log.Debug("resourceRemoveReplica: RemoveReplicaOptions failed", zap.Error(err))
 				return fmt.Errorf("failed to remove replica: %w", err)
 			}
 			if lost {
@@ -71,6 +78,7 @@ gone; add a replica afterwards.
 				fmt.Printf("Replica removed from %q.\n", node)
 			}
 			fmt.Printf("  haify resource status %s\n", resource)
+			log.Debug("resourceRemoveReplica: done", zap.String("resource", resource), zap.String("node", node), zap.Bool("lost", lost))
 			return nil
 		},
 	}
@@ -99,8 +107,12 @@ replication the moment it was promoted.
   haify resource add-replica data --node node4`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceAddReplica: running command", zap.Strings("args", args), zap.String("node", node),
+				zap.Bool("ignore_free_space", ignoreFreeSpace), zap.Bool("allow_unreachable", allowUnreachable))
 			resource := args[0]
 			if node == "" {
+				log.Debug("resourceAddReplica: --node missing")
 				return fmt.Errorf("--node is required")
 			}
 
@@ -110,16 +122,19 @@ replication the moment it was promoted.
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceAddReplica: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			if err := haifyClient.AddReplicaWith(ctx, &haifypb.AddReplicaRequest{Resource: resource, Node: node,
 				IgnoreFreeSpace: ignoreFreeSpace, AllowUnreachable: allowUnreachable}); err != nil {
+				log.Debug("resourceAddReplica: AddReplicaWith failed", zap.Error(err))
 				return fmt.Errorf("failed to add replica: %w", err)
 			}
 			fmt.Printf("Replica added on %q. Initial sync runs in the background:\n", node)
 			fmt.Printf("  haify resource status %s\n", resource)
+			log.Debug("resourceAddReplica: done", zap.String("resource", resource), zap.String("node", node))
 			return nil
 		},
 	}
@@ -155,11 +170,16 @@ site. It does not vote: quorum stays a matter for the primary site alone.
   haify resource add-dr web --dr-node dr1 --dr-endpoint dr.example.com --wan-port 6612`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceAddDR: running command", zap.Strings("args", args), zap.String("dr_node", drNode),
+				zap.String("dr_endpoint", drEndpoint), zap.Uint32("wan_port", wanPort), zap.String("egress_address", egress))
 			resource := args[0]
 			if drNode == "" {
+				log.Debug("resourceAddDR: --dr-node missing")
 				return fmt.Errorf("--dr-node is required")
 			}
 			if drEndpoint == "" {
+				log.Debug("resourceAddDR: --dr-endpoint missing")
 				return fmt.Errorf("--dr-endpoint is required (the address the primary site dials)")
 			}
 
@@ -170,18 +190,21 @@ site. It does not vote: quorum stays a matter for the primary site alone.
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceAddDR: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			port, err := haifyClient.AddDR(ctx, resource, drNode, drEndpoint, wanPort, egress)
 			if err != nil {
+				log.Debug("resourceAddDR: AddDR failed", zap.Error(err))
 				return fmt.Errorf("failed to add DR site: %w", err)
 			}
 
 			fmt.Printf("DR site %q attached to %q (WAN base port %d)\n", drNode, resource, port)
 			fmt.Printf("Initial sync is running in the background; check it with:\n")
 			fmt.Printf("  haify resource status %s\n", resource)
+			log.Debug("resourceAddDR: done", zap.String("resource", resource), zap.String("dr_node", drNode), zap.Uint32("wan_port", port))
 			return nil
 		},
 	}
@@ -207,6 +230,8 @@ func resourceDRFailover() *cobra.Command {
 			"in the WAN link at failure time are lost. This action is deliberately manual.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceDRFailover: running command", zap.Strings("args", args), zap.Bool("yes", yes))
 			resource := args[0]
 
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -214,26 +239,32 @@ func resourceDRFailover() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceDRFailover: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			status, err := haifyClient.ResourceStatus(ctx, resource)
 			if err != nil {
+				log.Debug("resourceDRFailover: ResourceStatus failed", zap.Error(err))
 				return fmt.Errorf("failed to get resource status: %w", err)
 			}
 			if !status.GetWan() {
+				log.Debug("resourceDRFailover: not a WAN resource", zap.String("resource", resource))
 				return fmt.Errorf("%q is not a WAN resource; use `resource primary` for LAN promotion", resource)
 			}
 			drNode := status.GetDrNode()
 			if drNode == "" {
+				log.Debug("resourceDRFailover: no DR node recorded", zap.String("resource", resource))
 				return fmt.Errorf("%q has no DR node recorded", resource)
 			}
+			log.Debug("resourceDRFailover: DR node found", zap.String("resource", resource), zap.String("dr_node", drNode))
 
 			fmt.Printf("DR failover: promote %q on DR node %q.\n", resource, drNode)
 			fmt.Printf("WARNING: WAN replication is asynchronous — writes still in the WAN\n")
 			fmt.Printf("buffer at failure time will be LOST.\n")
 			if !yes {
+				log.Debug("resourceDRFailover: no --yes, stopping after the warning")
 				fmt.Printf("Re-run with --yes to proceed.\n")
 				return nil
 			}
@@ -241,9 +272,11 @@ func resourceDRFailover() *cobra.Command {
 			// Force is required: the DR peer may not be UpToDate relative to a lost
 			// primary, and a plain promote would refuse.
 			if err := haifyClient.SetPrimary(ctx, resource, drNode, true); err != nil {
+				log.Debug("resourceDRFailover: SetPrimary failed", zap.Error(err))
 				return fmt.Errorf("DR failover failed: %w", err)
 			}
 			fmt.Printf("Resource %q promoted on DR node %q. Mount its volume(s) and resume service there.\n", resource, drNode)
+			log.Debug("resourceDRFailover: done", zap.String("resource", resource), zap.String("dr_node", drNode))
 			return nil
 		},
 	}
@@ -269,6 +302,8 @@ func resourceDisklessAttach() *cobra.Command {
 		Short: "Attach a node as a diskless client so it can mount the resource over the network",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceDisklessAttach: running command", zap.Strings("args", args))
 			resource, node := args[0], args[1]
 
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -276,14 +311,17 @@ func resourceDisklessAttach() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceDisklessAttach: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			if err := haifyClient.AttachDisklessClient(ctx, resource, node); err != nil {
+				log.Debug("resourceDisklessAttach: AttachDisklessClient failed", zap.Error(err))
 				return fmt.Errorf("failed to attach diskless client: %w", err)
 			}
 			fmt.Printf("Node '%s' attached to '%s' as a diskless client\n", node, resource)
+			log.Debug("resourceDisklessAttach: done", zap.String("resource", resource), zap.String("node", node))
 			return nil
 		},
 	}
@@ -295,6 +333,8 @@ func resourceDisklessDetach() *cobra.Command {
 		Short: "Detach a diskless client from the resource",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceDisklessDetach: running command", zap.Strings("args", args))
 			resource, node := args[0], args[1]
 
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -302,14 +342,17 @@ func resourceDisklessDetach() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceDisklessDetach: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			if err := haifyClient.DetachDisklessClient(ctx, resource, node); err != nil {
+				log.Debug("resourceDisklessDetach: DetachDisklessClient failed", zap.Error(err))
 				return fmt.Errorf("failed to detach diskless client: %w", err)
 			}
 			fmt.Printf("Node '%s' detached from '%s'\n", node, resource)
+			log.Debug("resourceDisklessDetach: done", zap.String("resource", resource), zap.String("node", node))
 			return nil
 		},
 	}
@@ -327,24 +370,31 @@ func resourceDRFailback() *cobra.Command {
 			"unmounted for the last step, and each primary-site node for the first.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceDRFailback: running command", zap.Strings("args", args), zap.String("node", node), zap.Duration("wait", wait))
 			ctx, cancel := context.WithTimeout(context.Background(), wait+2*time.Minute)
 			defer cancel()
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceDRFailback: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 			resp, err := haifyClient.DRFailback(ctx, args[0], node, uint32(wait.Seconds()))
 			if err != nil {
+				log.Debug("resourceDRFailback: DRFailback failed", zap.Error(err))
 				return err
 			}
+			log.Debug("resourceDRFailback: failback result", zap.Bool("success", resp.Success), zap.Strings("steps", resp.Steps))
 			for _, s := range resp.Steps {
 				fmt.Printf("  %s\n", s)
 			}
 			fmt.Println(resp.Message)
 			if !resp.Success {
+				log.Debug("resourceDRFailback: failback not finished", zap.String("message", resp.Message))
 				return fmt.Errorf("failback did not finish")
 			}
+			log.Debug("resourceDRFailback: done")
 			return nil
 		},
 	}

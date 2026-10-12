@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func healthCommand() *cobra.Command {
@@ -16,17 +17,21 @@ func healthCommand() *cobra.Command {
 		Use:   "health-check [node...]",
 		Short: "Check node health (drbd, drbd-reactor, resource-agents)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("healthCommand: running command", zap.Strings("args", args), zap.String("nodes", nodes))
 			// Nodes may be named as arguments too; they used to be ignored
 			// without a word and every node checked instead.
 			if len(args) > 0 {
 				nodes = strings.Join(append(args, strings.Split(nodes, ",")...), ",")
 				nodes = strings.Trim(nodes, ",")
+				log.Debug("healthCommand: nodes merged from arguments and --nodes", zap.String("nodes", nodes))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("healthCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -38,18 +43,23 @@ func healthCommand() *cobra.Command {
 				for i := range nodeList {
 					nodeList[i] = strings.TrimSpace(nodeList[i])
 				}
+				log.Debug("healthCommand: checking the given nodes", zap.Strings("nodes", nodeList))
 			} else {
 				// Get all registered nodes
+				log.Debug("healthCommand: no nodes given, checking every registered node")
 				nodeInfos, err := haifyClient.ListNodes(ctx)
 				if err != nil {
+					log.Debug("healthCommand: ListNodes failed", zap.Error(err))
 					return fmt.Errorf("failed to list nodes: %w", err)
 				}
 				if len(nodeInfos) == 0 {
+					log.Debug("healthCommand: returning early", zap.String("condition", "len(nodeInfos) == 0"))
 					return fmt.Errorf("no registered nodes found")
 				}
 				for _, n := range nodeInfos {
 					nodeList = append(nodeList, n.Address)
 				}
+				log.Debug("healthCommand: registered nodes", zap.Strings("nodes", nodeList))
 			}
 
 			// Check health for each node
@@ -58,12 +68,17 @@ func healthCommand() *cobra.Command {
 				fmt.Printf("\n=== Node: %s ===\n", node)
 				healthy, err := haifyClient.HealthCheck(ctx, node)
 				if err != nil {
+					log.Debug("healthCommand: HealthCheck failed", zap.String("node", node), zap.Error(err))
 					fmt.Printf("  Error: %v\n", err)
 					allHealthy = false
 					continue
 				}
 
 				// Print DRBD status
+				log.Debug("healthCommand: node health", zap.String("node", node), zap.Bool("drbd", healthy.DrbdInstalled),
+					zap.String("drbd_version", healthy.DrbdVersion), zap.Bool("reactor", healthy.DrbdReactorInstalled),
+					zap.Bool("reactor_running", healthy.DrbdReactorRunning), zap.Bool("resource_agents", healthy.ResourceAgentsInstalled),
+					zap.Int("agents", len(healthy.AvailableAgents)))
 				if healthy.DrbdInstalled {
 					fmt.Printf("  [OK] DRBD: %s\n", healthy.DrbdVersion)
 				} else {
@@ -98,9 +113,11 @@ func healthCommand() *cobra.Command {
 
 			fmt.Println()
 			if allHealthy {
+				log.Debug("healthCommand: all nodes healthy", zap.Int("nodes", len(nodeList)))
 				fmt.Println("Overall: All nodes are healthy")
 				return nil
 			}
+			log.Debug("healthCommand: some nodes have issues", zap.Int("nodes", len(nodeList)))
 			fmt.Println("Overall: Some nodes have issues")
 			return fmt.Errorf("health check failed")
 		},

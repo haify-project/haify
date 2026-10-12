@@ -6,6 +6,7 @@ import (
 	"time"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 
 	"github.com/spf13/cobra"
 )
@@ -66,10 +67,15 @@ offered for restore.
 
 ` + backupLimits,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupCreateCommand: running command", zap.Strings("args", args), zap.String("resource", resource),
+				zap.String("target", target), zap.String("node", node), zap.Bool("full", full), zap.Duration("timeout", timeout))
 			if resource == "" {
+				log.Debug("backupCreateCommand: --resource missing")
 				return fmt.Errorf("--resource is required")
 			}
 			if target == "" {
+				log.Debug("backupCreateCommand: --target missing")
 				return fmt.Errorf("--target is required (see `haify backup target list`)")
 			}
 
@@ -77,14 +83,18 @@ offered for restore.
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupCreateCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 
 			info, err := c.CreateBackup(ctx, resource, target, node, full)
 			if err != nil {
+				log.Debug("backupCreateCommand: CreateBackup failed", zap.Error(err))
 				return fmt.Errorf("backup failed: %w", err)
 			}
+			log.Debug("backupCreateCommand: backup completed", zap.String("backup_id", info.Id), zap.String("node", info.Node),
+				zap.String("kind", info.Kind), zap.String("parent", info.Parent), zap.Uint64("total_bytes", info.TotalBytes), zap.Int("volumes", len(info.Volumes)))
 			out := cmd.OutOrStdout()
 			// Writes to the command's own output stream are best-effort. The only ways
 			// they fail are a closed pipe (`haify ... | head`) or a full disk, neither of
@@ -99,6 +109,7 @@ offered for restore.
 			} else {
 				_, _ = fmt.Fprintf(out, "  kind:     full\n")
 			}
+			log.Debug("backupCreateCommand: done")
 			return nil
 		},
 	}
@@ -119,24 +130,31 @@ func backupListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List backups, newest first",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupListCommand: running command", zap.Strings("args", args), zap.String("resource", resource), zap.String("target", target))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupListCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 
 			backups, err := c.ListBackups(ctx, resource, target)
 			if err != nil {
+				log.Debug("backupListCommand: ListBackups failed", zap.Error(err))
 				return fmt.Errorf("failed to list backups: %w", err)
 			}
 			out := cmd.OutOrStdout()
 			if len(backups) == 0 {
+				log.Debug("backupListCommand: no backups")
 				_, _ = fmt.Fprintln(out, "No backups found")
 				return nil
 			}
 			for _, b := range backups {
+				log.Debug("backupListCommand: backup", zap.String("backup_id", b.Id), zap.String("state", b.State),
+					zap.String("resource", b.Resource), zap.String("target", b.Target), zap.String("kind", b.Kind))
 				_, _ = fmt.Fprintf(out, "%s  [%s]\n", b.Id, b.State)
 				_, _ = fmt.Fprintf(out, "  resource=%s target=%s node=%s size=%s\n",
 					b.Resource, b.Target, b.Node, humanBytes(b.TotalBytes))
@@ -159,6 +177,7 @@ func backupListCommand() *cobra.Command {
 					_, _ = fmt.Fprintf(out, "  error: %s\n", b.Error)
 				}
 			}
+			log.Debug("backupListCommand: done", zap.Int("count", len(backups)))
 			return nil
 		},
 	}
@@ -185,24 +204,31 @@ Only a backup in the "completed" state can be restored. A run that was
 interrupted or that failed verification is never restorable, by design.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupRestoreCommand: running command", zap.Strings("args", args), zap.String("resource", resource),
+				zap.String("node", node), zap.Duration("timeout", timeout))
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupRestoreCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 
 			info, err := c.RestoreBackup(ctx, args[0], resource, node)
 			if err != nil {
+				log.Debug("backupRestoreCommand: RestoreBackup failed", zap.Error(err))
 				return fmt.Errorf("restore failed: %w", err)
 			}
 			dest := resource
 			if dest == "" {
+				log.Debug("backupRestoreCommand: restored into the source resource", zap.String("resource", info.Resource))
 				dest = info.Resource
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backup %s restored into %q (%s across %d volume(s))\n",
 				info.Id, dest, humanBytes(info.TotalBytes), len(info.Volumes))
+			log.Debug("backupRestoreCommand: done", zap.String("backup_id", info.Id), zap.String("resource", dest), zap.Uint64("total_bytes", info.TotalBytes))
 			return nil
 		},
 	}
@@ -227,18 +253,23 @@ nobody knows about. --force drops the record regardless, which is what to use
 when the target itself no longer exists.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupDeleteCommand: running command", zap.Strings("args", args), zap.String("node", node), zap.Bool("force", force))
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupDeleteCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 
 			if err := c.DeleteBackup(ctx, args[0], node, force); err != nil {
+				log.Debug("backupDeleteCommand: DeleteBackup failed", zap.Error(err))
 				return fmt.Errorf("failed to delete backup: %w", err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backup %s deleted\n", args[0])
+			log.Debug("backupDeleteCommand: done")
 			return nil
 		},
 	}
@@ -260,5 +291,6 @@ func changedBytes(b *haifypb.BackupInfo) uint64 {
 	for _, v := range b.Volumes {
 		n += v.ChangedBytes
 	}
+	zap.L().Debug("changedBytes: summed", zap.String("backup_id", b.Id), zap.Int("volumes", len(b.Volumes)), zap.Uint64("changed_bytes", n))
 	return n
 }

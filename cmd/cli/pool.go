@@ -8,6 +8,7 @@ import (
 	"time"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/util"
 	"github.com/spf13/cobra"
@@ -45,7 +46,12 @@ func poolCreate() *cobra.Command {
 		Use:   "create",
 		Short: "Create a new storage pool",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("poolCreate: running command", zap.Strings("args", args), zap.String("name", name), zap.String("type", poolType),
+				zap.String("nodes", nodes), zap.String("devices", devices), zap.String("size", size), zap.String("compression", compression),
+				zap.Bool("dedup", dedup), zap.Bool("wipe", wipe))
 			if name == "" {
+				log.Debug("poolCreate: --name missing")
 				return fmt.Errorf("pool name is required")
 			}
 			// An omitted type is left empty on purpose: the controller fills it
@@ -53,9 +59,11 @@ func poolCreate() *cobra.Command {
 			// what made haify and every other client disagree about what an
 			// unspecified pool is — see StorageManager.defaultedPoolType.
 			if nodes == "" {
+				log.Debug("poolCreate: --nodes missing")
 				return fmt.Errorf("nodes is required")
 			}
 			if devices == "" {
+				log.Debug("poolCreate: --devices missing")
 				return fmt.Errorf("devices is required (comma-separated)")
 			}
 
@@ -65,11 +73,14 @@ func poolCreate() *cobra.Command {
 				var err error
 				sizeBytes, err = util.ParseSize(size)
 				if err != nil {
+					log.Debug("poolCreate: ParseSize failed", zap.Error(err))
 					return fmt.Errorf("invalid size format: %s: %w", size, err)
 				}
 				if sizeBytes == 0 {
+					log.Debug("poolCreate: size parsed to zero", zap.String("size", size))
 					return fmt.Errorf("size must be greater than 0")
 				}
+				log.Debug("poolCreate: size parsed", zap.Uint64("size_bytes", sizeBytes))
 			}
 
 			// Parse comma-separated nodes
@@ -83,6 +94,7 @@ func poolCreate() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("poolCreate: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -91,9 +103,11 @@ func poolCreate() *cobra.Command {
 			successCount := 0
 			var failedNodes []string
 			for _, n := range nodeList {
+				log.Debug("poolCreate: creating pool on node", zap.String("pool", name), zap.String("node", n), zap.String("type", poolType))
 				var err error
 				switch poolType {
 				case "zfs":
+					log.Debug("poolCreate: ZFS pool", zap.Strings("vdevs", diskList))
 					// For ZFS, 'disks' are vdevs. A zpool has no thin/thick mode;
 					// thin provisioning is a per-zvol property set at volume creation.
 					err = haifyClient.CreateZFSPoolOptions(ctx, name, n, diskList, compression, dedup, wipe)
@@ -114,16 +128,20 @@ func poolCreate() *cobra.Command {
 					case "lvm-thin-vdo":
 						backendType = "thin_vdo"
 					}
+					log.Debug("poolCreate: LVM pool", zap.String("backend_type", backendType), zap.Strings("disks", diskList))
 					err = haifyClient.CreatePool(ctx, name, backendType, n, diskList, util.BytesToGiB(sizeBytes), wipe)
 				default:
+					log.Debug("poolCreate: unsupported pool type", zap.String("type", poolType))
 					err = fmt.Errorf("unsupported pool type: %s", poolType)
 				}
 
 				if err != nil {
+					log.Debug("poolCreate: pool creation failed on node", zap.String("node", n), zap.Error(err))
 					failedNodes = append(failedNodes, fmt.Sprintf("%s: %v", n, err))
 					continue
 				}
 				successCount++
+				log.Debug("poolCreate: pool created on node", zap.String("node", n))
 				if strings.HasPrefix(poolType, "zfs") {
 					fmt.Printf("ZFS Pool '%s' created successfully on node '%s' (type: %s)\n", name, n, poolType)
 				} else if sizeBytes > 0 {
@@ -145,8 +163,10 @@ func poolCreate() *cobra.Command {
 			}
 
 			if successCount == 0 {
+				log.Debug("poolCreate: no node succeeded", zap.Int("failed", len(failedNodes)))
 				return fmt.Errorf("failed to create pool on any node")
 			}
+			log.Debug("poolCreate: done", zap.Int("succeeded", successCount), zap.Int("failed", len(failedNodes)))
 			return nil
 		},
 	}
@@ -161,6 +181,8 @@ func poolCreate() *cobra.Command {
 	cmd.Flags().BoolVar(&wipe, "wipe", false, "Erase devices that hold only old data (a filesystem, a partition table, a stale array or pool label); without it they are refused. Devices in use are refused either way")
 	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
 		if (compression != "" || dedup) && poolType != "zfs" {
+			zap.L().Debug("poolCreate: ZFS-only flags on a non-ZFS pool", zap.String("type", poolType),
+				zap.String("compression", compression), zap.Bool("dedup", dedup))
 			return fmt.Errorf("--compression and --dedup apply to --type zfs only")
 		}
 		return nil
@@ -177,10 +199,14 @@ func poolDelete() *cobra.Command {
 		Use:   "delete",
 		Short: "Delete a storage pool",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("poolDelete: running command", zap.Strings("args", args), zap.String("name", name), zap.String("node", node))
 			if name == "" {
+				log.Debug("poolDelete: --name missing")
 				return fmt.Errorf("pool name is required")
 			}
 			if node == "" {
+				log.Debug("poolDelete: --node missing")
 				return fmt.Errorf("node is required")
 			}
 
@@ -189,16 +215,19 @@ func poolDelete() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("poolDelete: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			err = haifyClient.DeletePool(ctx, name, node)
 			if err != nil {
+				log.Debug("poolDelete: DeletePool failed", zap.Error(err))
 				return fmt.Errorf("failed to delete pool: %w", err)
 			}
 
 			fmt.Printf("Pool '%s' deleted successfully on node '%s'\n", name, node)
+			log.Debug("poolDelete: done")
 			return nil
 		},
 	}
@@ -220,10 +249,14 @@ func poolGet() *cobra.Command {
 		Use:   "get",
 		Short: "Get pool information",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("poolGet: running command", zap.Strings("args", args), zap.String("name", name), zap.String("node", node))
 			if name == "" {
+				log.Debug("poolGet: --name missing")
 				return fmt.Errorf("pool name is required")
 			}
 			if node == "" {
+				log.Debug("poolGet: --node missing")
 				return fmt.Errorf("node is required")
 			}
 
@@ -232,17 +265,22 @@ func poolGet() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("poolGet: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			pool, err := haifyClient.GetPool(ctx, name, node)
 			if err != nil {
+				log.Debug("poolGet: GetPool failed", zap.Error(err))
 				return fmt.Errorf("failed to get pool: %w", err)
 			}
 
 			fmt.Printf("Pool: %s\n", pool.Name)
 			kind, free, total := poolSpace(pool)
+			log.Debug("poolGet: pool", zap.String("pool", pool.Name), zap.String("node", pool.Node), zap.String("kind", kind),
+				zap.Uint64("free_bytes", free), zap.Uint64("total_bytes", total), zap.Bool("thin", pool.ThinPoolLv != ""),
+				zap.Bool("out_of_space", pool.ThinOutOfSpace), zap.Bool("vdo", pool.HasVdo), zap.Bool("cached", pool.Cached))
 			fmt.Printf("  Type: %s\n", kind)
 			fmt.Printf("  Node: %s\n", pool.Node)
 			fmt.Printf("  Total: %s\n", util.FormatBytes(total))
@@ -286,6 +324,7 @@ func poolGet() *cobra.Command {
 				}
 			}
 
+			log.Debug("poolGet: done")
 			return nil
 		},
 	}
@@ -301,21 +340,26 @@ func poolList() *cobra.Command {
 		Use:   "list",
 		Short: "List all pools",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("poolList: running command", zap.Strings("args", args))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("poolList: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			pools, err := haifyClient.ListPools(ctx)
 			if err != nil {
+				log.Debug("poolList: ListPools failed", zap.Error(err))
 				return fmt.Errorf("failed to list pools: %w", err)
 			}
 
 			if len(pools) == 0 {
+				log.Debug("poolList: no pools")
 				fmt.Println("No pools found")
 				return nil
 			}
@@ -327,6 +371,8 @@ func poolList() *cobra.Command {
 				for _, n := range nodes {
 					nodeNames[n.GetAddress()] = n.GetName()
 				}
+			} else {
+				log.Debug("poolList: node names unavailable, showing addresses", zap.Error(err))
 			}
 
 			fmt.Println("Pools:")
@@ -360,10 +406,13 @@ func poolList() *cobra.Command {
 					node = name
 				}
 				kind, free, total := poolSpace(p)
+				log.Debug("poolList: pool", zap.String("pool", p.Name), zap.String("node", node), zap.String("kind", kind),
+					zap.Uint64("free_bytes", free), zap.Uint64("total_bytes", total), zap.Bool("cached", p.Cached))
 				fmt.Printf("  - %s (type=%s, node=%s, %s free of %s%s)%s\n",
 					p.Name, kind, node, util.FormatBytes(free), util.FormatBytes(total), usage, tier)
 			}
 
+			log.Debug("poolList: done", zap.Int("count", len(pools)))
 			return nil
 		},
 	}
@@ -381,13 +430,19 @@ func poolAddDisk() *cobra.Command {
 		Use:   "add",
 		Short: "Add devices to a pool; it grows into them (`haify node disks` lists the empty ones)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("poolAddDisk: running command", zap.Strings("args", args), zap.String("pool", pool), zap.String("devices", devices),
+				zap.String("nodes", nodes), zap.Bool("wipe", wipe))
 			if pool == "" {
+				log.Debug("poolAddDisk: --pool missing")
 				return fmt.Errorf("pool name is required")
 			}
 			if devices == "" {
+				log.Debug("poolAddDisk: --devices missing")
 				return fmt.Errorf("devices is required")
 			}
 			if nodes == "" {
+				log.Debug("poolAddDisk: --nodes missing")
 				return fmt.Errorf("nodes is required")
 			}
 
@@ -402,6 +457,7 @@ func poolAddDisk() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("poolAddDisk: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -411,8 +467,10 @@ func poolAddDisk() *cobra.Command {
 
 			for _, node := range nodeList {
 				for _, device := range deviceList {
+					log.Debug("poolAddDisk: adding device", zap.String("pool", pool), zap.String("node", node), zap.String("device", device))
 					err = haifyClient.AddDiskToPool(ctx, pool, strings.TrimSpace(device), node, wipe)
 					if err != nil {
+						log.Debug("poolAddDisk: AddDiskToPool failed", zap.String("node", node), zap.String("device", device), zap.Error(err))
 						failedOps = append(failedOps, fmt.Sprintf("%s@%s: %v", device, node, err))
 						continue
 					}
@@ -429,8 +487,10 @@ func poolAddDisk() *cobra.Command {
 			}
 
 			if successCount == 0 {
+				log.Debug("poolAddDisk: no device added", zap.Int("failed", len(failedOps)))
 				return fmt.Errorf("failed to add any devices")
 			}
+			log.Debug("poolAddDisk: done", zap.Int("added", successCount), zap.Int("failed", len(failedOps)))
 			return nil
 		},
 	}
@@ -443,74 +503,19 @@ func poolAddDisk() *cobra.Command {
 	return cmd
 }
 
-// poolConvertThin rebuilds one node's pool as an LVM thin pool, in place.
-func poolConvertThin() *cobra.Command {
-	var node, pool string
-
-	cmd := &cobra.Command{
-		Use:   "convert-thin --node <node> --pool <pool>",
-		Short: "Rebuild a node's LVM pool as a thin pool, in place",
-		Long: `Rebuild one node's LVM pool as a thin pool without recreating its resources.
-
-A thick pool cannot hold a snapshot history. LVM makes every snapshot reserve a
-copy-on-write area up front — Haify reserves 20% of the origin — so a 10 GiB pool
-backing a 6 GiB volume fits two snapshots whether or not anything ever changes.
-A thin snapshot costs only the blocks that diverge.
-
-This destroys the node's backing volumes and resyncs them in full from the
-peers, so run it on ONE node at a time and let each resync finish first. The
-resource keeps serving throughout: the node goes diskless for the duration and
-its peers answer. The command refuses to start when the node holds a Primary,
-when any peer is not UpToDate, when a resync is already running, or when the
-node's copy is one of only two.
-
-Note that the rebuilt volume ends up fully allocated — DRBD's resync writes
-every block, zeroes included — so the pool is sized for the whole origin plus
-headroom, not for the live data.
-
-  haify pool convert-thin --node node2 --pool haify_pool0`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if node == "" || pool == "" {
-				return fmt.Errorf("--node and --pool are both required")
-			}
-
-			// A full resync of every volume on the node, from scratch.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-			defer cancel()
-
-			haifyClient, err := newHaifyClient()
-			if err != nil {
-				return fmt.Errorf("failed to connect to controller: %w", err)
-			}
-			defer closeClient(haifyClient)
-
-			if err := haifyClient.ConvertPoolToThin(ctx, node, pool); err != nil {
-				return fmt.Errorf("failed to convert pool: %w", err)
-			}
-
-			fmt.Printf("Pool %s on %s rebuilt as thin.\n", pool, node)
-			fmt.Printf("Its volumes are resyncing from their peers; watch with:\n")
-			fmt.Printf("  haify resource status <resource>\n")
-			fmt.Printf("Wait for every volume to read UpToDate before converting the next node.\n")
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVar(&node, "node", "", "Node whose pool will be rebuilt")
-	cmd.Flags().StringVar(&pool, "pool", "", "Pool (volume group) to rebuild as thin")
-	return cmd
-}
-
 // poolSpace is what a pool can still hold, in the pool's own terms. A thin
 // pool lives inside a volume group whose free extents are what is left after
 // the thin pool was carved out — a full-looking "1 of 10 GB" on a pool that is
 // empty. Its capacity is the thin pool's size less the data it holds.
 func poolSpace(p *haifypb.PoolInfo) (kind string, free, total uint64) {
+	log := zap.L()
 	if p.GetThinPoolLv() != "" && p.GetThinSizeBytes() > 0 {
 		used := uint64(float64(p.GetThinSizeBytes()) * p.GetThinDataPercent() / 100)
 		if used > p.GetThinSizeBytes() {
 			used = p.GetThinSizeBytes()
 		}
+		log.Debug("poolSpace: thin pool, capacity is the thin pool's own", zap.String("pool", p.GetName()),
+			zap.Uint64("thin_size_bytes", p.GetThinSizeBytes()), zap.Uint64("used_bytes", used))
 		return "thin", p.GetThinSizeBytes() - used, p.GetThinSizeBytes()
 	}
 	kind = p.GetType()
@@ -519,7 +524,9 @@ func poolSpace(p *haifypb.PoolInfo) (kind string, free, total uint64) {
 	}
 	free, total = p.GetFreeBytes(), p.GetTotalBytes()
 	if total == 0 {
+		log.Debug("poolSpace: no byte counts, falling back to GB", zap.String("pool", p.GetName()))
 		free, total = p.GetFreeGb()*1000*1000*1000, p.GetTotalGb()*1000*1000*1000
 	}
+	log.Debug("poolSpace: space", zap.String("pool", p.GetName()), zap.String("kind", kind), zap.Uint64("free_bytes", free), zap.Uint64("total_bytes", total))
 	return kind, free, total
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func nodeSetPaths() *cobra.Command {
@@ -22,11 +23,15 @@ are rewritten and adjusted in place; connections stay up.
   haify node set-paths node1 --clear`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("nodeSetPaths: running command", zap.Strings("args", args), zap.Bool("clear", clear))
 			var addrs []string
 			switch {
 			case clear && len(args) == 2:
+				log.Debug("nodeSetPaths: both addresses and --clear given")
 				return fmt.Errorf("give addresses or --clear, not both")
 			case !clear && len(args) == 1:
+				log.Debug("nodeSetPaths: neither addresses nor --clear given")
 				return fmt.Errorf("give the addresses, or --clear to remove them")
 			case len(args) == 2:
 				for _, a := range strings.Split(args[1], ",") {
@@ -34,16 +39,22 @@ are rewritten and adjusted in place; connections stay up.
 						addrs = append(addrs, a)
 					}
 				}
+				log.Debug("nodeSetPaths: setting replication paths", zap.String("node", args[0]), zap.Strings("addresses", addrs))
+			default:
+				log.Debug("nodeSetPaths: clearing replication paths", zap.String("node", args[0]))
 			}
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("nodeSetPaths: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 			resp, err := c.SetNodeReplicationPaths(cmd.Context(), args[0], addrs)
 			if err != nil {
+				log.Debug("nodeSetPaths: SetNodeReplicationPaths failed", zap.Error(err))
 				return err
 			}
+			log.Debug("nodeSetPaths: result", zap.Bool("success", resp.Success), zap.Strings("resources", resp.Resources), zap.Strings("failed", resp.Failed))
 			fmt.Println(resp.Message)
 			for _, r := range resp.Resources {
 				fmt.Printf("  %-24s rewritten\n", r)
@@ -52,11 +63,14 @@ are rewritten and adjusted in place; connections stay up.
 				fmt.Printf("  FAILED %s\n", f)
 			}
 			if !resp.Success {
+				log.Debug("nodeSetPaths: controller reported failure", zap.String("message", resp.Message))
 				if len(resp.Resources) == 0 && len(resp.Failed) == 0 {
+					log.Debug("nodeSetPaths: nothing was rewritten")
 					return fmt.Errorf("%s", resp.Message)
 				}
 				return fmt.Errorf("%d resource(s) not rewritten; fix them and run resource repair on those", len(resp.Failed))
 			}
+			log.Debug("nodeSetPaths: done")
 			return nil
 		},
 	}

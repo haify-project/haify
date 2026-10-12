@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"go.uber.org/zap"
 )
 
 // TableModel represents the table UI model
@@ -40,6 +41,8 @@ func WithTitle(title string) TableOption {
 
 // NewTableModel creates a new table model with the given options
 func NewTableModel(opts ...TableOption) TableModel {
+	log := zap.L()
+	log.Debug("NewTableModel: building interactive table", zap.Int("options", len(opts)))
 	t := table.New(
 		table.WithColumns([]table.Column{
 			{Title: "Node", Width: 15},
@@ -55,6 +58,7 @@ func NewTableModel(opts ...TableOption) TableModel {
 		opt(&m)
 	}
 
+	log.Debug("NewTableModel: done", zap.Int("rows", len(m.table.Rows())))
 	return m
 }
 
@@ -71,6 +75,7 @@ func (m TableModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
+			zap.L().Debug("TableModel.Update: quit key pressed", zap.String("key", msg.String()))
 			m.quit = true
 			return m, tea.Quit
 		}
@@ -98,6 +103,8 @@ func (m TableModel) View() string {
 
 // RenderTableToFile renders the table directly to stdout (non-interactive)
 func RenderStaticTable(title string, headers []string, rows [][]string, infoLines []string) string {
+	log := zap.L()
+	log.Debug("RenderStaticTable: rendering table", zap.String("title", title), zap.Strings("headers", headers), zap.Int("rows", len(rows)), zap.Int("info_lines", len(infoLines)))
 	// Define styles
 	borderColor := lipgloss.Color("69")
 	headerColor := lipgloss.Color("230")
@@ -168,16 +175,20 @@ func RenderStaticTable(title string, headers []string, rows [][]string, infoLine
 
 	// Render title if provided
 	if title != "" {
+		log.Debug("RenderStaticTable: adding title row", zap.String("title", title))
 		titleRow := lipgloss.NewStyle().Width(lipgloss.Width(content)).Render(title)
 		titleRendered := titleStyle.Render(titleRow)
 		content = titleRendered + "\n" + content
 	}
 
+	log.Debug("RenderStaticTable: rendered", zap.Int("rows", len(dataRows)), zap.Ints("col_widths", colWidths))
 	return borderStyle.Render(content)
 }
 
 // RenderResourceTable renders a resource status table
 func RenderResourceTable(resourceName, role string, nodeStates []NodeStateInfo) string {
+	log := zap.L()
+	log.Debug("RenderResourceTable: rendering resource table", zap.String("resource", resourceName), zap.String("role", role), zap.Int("nodes", len(nodeStates)))
 	headers := []string{"Node", "Role", "Disk State", "Replication"}
 
 	var rows [][]string

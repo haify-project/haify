@@ -7,6 +7,7 @@ import (
 	"time"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 
 	"github.com/spf13/cobra"
 )
@@ -45,13 +46,19 @@ func backupScheduleCreateCommand() *cobra.Command {
 		Example: `  haify backup schedule create --resource db --target offsite \
       --cron "30 2 * * *" --keep-daily 7 --keep-weekly 4 --keep-monthly 6`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupScheduleCreateCommand: running command", zap.Strings("args", args), zap.String("resource", resource),
+				zap.String("target", target), zap.String("cron", cronExpr), zap.Int("keep_hourly", hourly), zap.Int("keep_daily", daily),
+				zap.Int("keep_weekly", weekly), zap.Int("keep_monthly", monthly), zap.Int("keep_yearly", yearly), zap.Bool("disabled", disabled))
 			if resource == "" || target == "" || cronExpr == "" {
+				log.Debug("backupScheduleCreateCommand: required flag missing")
 				return fmt.Errorf("--resource, --target and --cron are required")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupScheduleCreateCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
@@ -61,10 +68,12 @@ func backupScheduleCreateCommand() *cobra.Command {
 					Monthly: int32(monthly), Yearly: int32(yearly)},
 			})
 			if err != nil {
+				log.Debug("backupScheduleCreateCommand: CreateBackupSchedule failed", zap.Error(err))
 				return fmt.Errorf("failed to save backup schedule: %w", err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backup schedule %s saved (cron %q, next run %s)\n",
 				sc.Name, sc.Cron, orDash(sc.NextRun))
+			log.Debug("backupScheduleCreateCommand: done", zap.String("schedule", sc.Name), zap.String("next_run", sc.NextRun))
 			return nil
 		},
 	}
@@ -85,23 +94,30 @@ func backupScheduleListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List backup schedules and how their last run went",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupScheduleListCommand: running command", zap.Strings("args", args))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupScheduleListCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 			schedules, err := c.ListBackupSchedules(ctx)
 			if err != nil {
+				log.Debug("backupScheduleListCommand: ListBackupSchedules failed", zap.Error(err))
 				return fmt.Errorf("failed to list backup schedules: %w", err)
 			}
 			out := cmd.OutOrStdout()
 			if len(schedules) == 0 {
+				log.Debug("backupScheduleListCommand: no schedules")
 				_, _ = fmt.Fprintln(out, "No backup schedules")
 				return nil
 			}
 			for _, s := range schedules {
+				log.Debug("backupScheduleListCommand: schedule", zap.String("schedule", s.Name), zap.Bool("enabled", s.Enabled),
+					zap.String("last_run", s.LastRun), zap.Bool("last_failed", s.LastError != ""))
 				state := "enabled"
 				if !s.Enabled {
 					state = "disabled"
@@ -120,6 +136,7 @@ func backupScheduleListCommand() *cobra.Command {
 					_, _ = fmt.Fprintf(out, "  next run: %s\n", s.NextRun)
 				}
 			}
+			log.Debug("backupScheduleListCommand: done", zap.Int("count", len(schedules)))
 			return nil
 		},
 	}
@@ -131,17 +148,22 @@ func backupScheduleDeleteCommand() *cobra.Command {
 		Short: "Delete a backup schedule (its backups are kept)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupScheduleDeleteCommand: running command", zap.Strings("args", args))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupScheduleDeleteCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 			if err := c.DeleteBackupSchedule(ctx, args[0]); err != nil {
+				log.Debug("backupScheduleDeleteCommand: DeleteBackupSchedule failed", zap.Error(err))
 				return fmt.Errorf("failed to delete backup schedule: %w", err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backup schedule %s deleted\n", args[0])
+			log.Debug("backupScheduleDeleteCommand: done")
 			return nil
 		},
 	}
@@ -154,18 +176,23 @@ func backupScheduleRunCommand() *cobra.Command {
 		Short: "Run a schedule now, retention included, and wait for it",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupScheduleRunCommand: running command", zap.Strings("args", args), zap.Duration("timeout", timeout))
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupScheduleRunCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 			sc, err := c.RunBackupSchedule(ctx, args[0])
 			if err != nil {
+				log.Debug("backupScheduleRunCommand: RunBackupSchedule failed", zap.Error(err))
 				return err
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backup %s completed\n", sc.LastBackup)
+			log.Debug("backupScheduleRunCommand: done", zap.String("backup_id", sc.LastBackup))
 			return nil
 		},
 	}
@@ -199,18 +226,24 @@ same versions.
 
   haify backup import --target vault --as-of 2026-10-01T00:00:00Z`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupImportCommand: running command", zap.Strings("args", args), zap.String("target", target),
+				zap.String("node", node), zap.String("as_of", asOf))
 			if target == "" {
+				log.Debug("backupImportCommand: --target missing")
 				return fmt.Errorf("--target is required")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupImportCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 			res, err := c.ImportBackupsAsOf(ctx, target, node, asOf)
 			if err != nil {
+				log.Debug("backupImportCommand: ImportBackupsAsOf failed", zap.Error(err))
 				return fmt.Errorf("import failed: %w", err)
 			}
 			out := cmd.OutOrStdout()
@@ -226,6 +259,7 @@ same versions.
 			for _, k := range keys {
 				_, _ = fmt.Fprintf(out, "  - %s: %s\n", k, res.Skipped[k])
 			}
+			log.Debug("backupImportCommand: done", zap.Int("imported", len(res.Imported)), zap.Int("skipped", len(res.Skipped)))
 			return nil
 		},
 	}

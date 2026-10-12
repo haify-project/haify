@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func resourcePrimary() *cobra.Command {
@@ -16,6 +17,8 @@ func resourcePrimary() *cobra.Command {
 		Short: "Set resource primary on node",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourcePrimary: running command", zap.Strings("args", args), zap.Bool("force", force))
 			resource := args[0]
 			node := args[1]
 
@@ -24,16 +27,19 @@ func resourcePrimary() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourcePrimary: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			err = haifyClient.SetPrimary(ctx, resource, node, force)
 			if err != nil {
+				log.Debug("resourcePrimary: SetPrimary failed", zap.Error(err))
 				return fmt.Errorf("failed to set primary: %w", err)
 			}
 
 			fmt.Printf("Resource '%s' primary set to '%s'\n", resource, node)
+			log.Debug("resourcePrimary: done", zap.String("resource", resource), zap.String("node", node))
 			return nil
 		},
 	}
@@ -49,6 +55,8 @@ func resourceSecondary() *cobra.Command {
 		Short: "Set resource secondary on node",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceSecondary: running command", zap.Strings("args", args))
 			resource := args[0]
 			node := args[1]
 
@@ -57,16 +65,19 @@ func resourceSecondary() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceSecondary: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			err = haifyClient.SetSecondary(ctx, resource, node)
 			if err != nil {
+				log.Debug("resourceSecondary: SetSecondary failed", zap.Error(err))
 				return fmt.Errorf("failed to set secondary: %w", err)
 			}
 
 			fmt.Printf("Resource '%s' set to secondary on '%s'\n", resource, node)
+			log.Debug("resourceSecondary: done", zap.String("resource", resource), zap.String("node", node))
 			return nil
 		},
 	}
@@ -90,6 +101,8 @@ func resourceDualPrimary() *cobra.Command {
 			"`off` is idempotent and verifies that no node is left dual-primary.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceDualPrimary: running command", zap.Strings("args", args))
 			resource := args[0]
 			var enable bool
 			switch args[1] {
@@ -98,19 +111,23 @@ func resourceDualPrimary() *cobra.Command {
 			case "off":
 				enable = false
 			default:
+				log.Debug("resourceDualPrimary: neither on nor off", zap.String("value", args[1]))
 				return fmt.Errorf("invalid state %q (use on or off)", args[1])
 			}
+			log.Debug("resourceDualPrimary: setting dual-primary", zap.String("resource", resource), zap.Bool("enable", enable))
 
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceDualPrimary: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			if err := haifyClient.SetDualPrimary(ctx, resource, enable); err != nil {
+				log.Debug("resourceDualPrimary: SetDualPrimary failed", zap.Error(err))
 				return fmt.Errorf("failed to set dual-primary: %w", err)
 			}
 
@@ -120,6 +137,7 @@ func resourceDualPrimary() *cobra.Command {
 			} else {
 				fmt.Printf("Dual-primary window closed on '%s'.\n", resource)
 			}
+			log.Debug("resourceDualPrimary: done", zap.String("resource", resource), zap.Bool("enable", enable))
 			return nil
 		},
 	}
@@ -133,6 +151,8 @@ func resourcePromote() *cobra.Command {
 		Short: "Promote DRBD resource to primary",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourcePromote: running command", zap.Strings("args", args), zap.Bool("force", force))
 			resource := args[0]
 			node := args[1]
 
@@ -141,16 +161,19 @@ func resourcePromote() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourcePromote: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			err = haifyClient.SetPrimary(ctx, resource, node, force)
 			if err != nil {
+				log.Debug("resourcePromote: SetPrimary failed", zap.Error(err))
 				return fmt.Errorf("failed to promote resource: %w", err)
 			}
 
 			fmt.Printf("Resource '%s' promoted on '%s'\n", resource, node)
+			log.Debug("resourcePromote: done", zap.String("resource", resource), zap.String("node", node))
 			return nil
 		},
 	}
@@ -166,6 +189,8 @@ func resourceDemote() *cobra.Command {
 		Short: "Demote DRBD resource to secondary",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceDemote: running command", zap.Strings("args", args))
 			resource := args[0]
 			node := args[1]
 
@@ -174,16 +199,19 @@ func resourceDemote() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceDemote: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			err = haifyClient.SetSecondary(ctx, resource, node)
 			if err != nil {
+				log.Debug("resourceDemote: SetSecondary failed", zap.Error(err))
 				return fmt.Errorf("failed to demote resource: %w", err)
 			}
 
 			fmt.Printf("Resource '%s' demoted on '%s'\n", resource, node)
+			log.Debug("resourceDemote: done", zap.String("resource", resource), zap.String("node", node))
 			return nil
 		},
 	}

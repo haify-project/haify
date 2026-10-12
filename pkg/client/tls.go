@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc/credentials"
 )
 
@@ -49,6 +50,11 @@ func (o TLSOptions) Active() bool {
 
 // Credentials builds the transport credentials for these options.
 func (o TLSOptions) Credentials() (credentials.TransportCredentials, error) {
+	log := zap.L()
+	log.Debug("TLSOptions.Credentials: building transport credentials",
+		zap.String("ca_cert", o.CACert), zap.String("client_cert", o.ClientCert),
+		zap.String("client_key", o.ClientKey), zap.String("server_name", o.ServerName),
+		zap.Bool("insecure", o.Insecure))
 	conf := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		ServerName:         o.ServerName,
@@ -58,6 +64,7 @@ func (o TLSOptions) Credentials() (credentials.TransportCredentials, error) {
 	if o.CACert != "" {
 		pemBytes, err := os.ReadFile(o.CACert)
 		if err != nil {
+			log.Debug("TLSOptions.Credentials: CA bundle not readable", zap.String("ca_cert", o.CACert), zap.Error(err))
 			return nil, fmt.Errorf("read TLS CA %q: %w", o.CACert, err)
 		}
 		pool := x509.NewCertPool()
@@ -65,22 +72,32 @@ func (o TLSOptions) Credentials() (credentials.TransportCredentials, error) {
 		// fails every handshake with an error about the server's certificate —
 		// pointing the operator at the wrong end of the connection.
 		if !pool.AppendCertsFromPEM(pemBytes) {
+			log.Debug("TLSOptions.Credentials: CA bundle holds no PEM certificate", zap.String("ca_cert", o.CACert), zap.Int("bytes", len(pemBytes)))
 			return nil, fmt.Errorf("TLS CA %q contains no PEM certificate", o.CACert)
 		}
 		conf.RootCAs = pool
+		log.Debug("TLSOptions.Credentials: verifying against CA bundle", zap.String("ca_cert", o.CACert))
+	} else {
+		log.Debug("TLSOptions.Credentials: verifying against the system trust store")
 	}
 
 	if (o.ClientCert == "") != (o.ClientKey == "") {
+		log.Debug("TLSOptions.Credentials: client certificate and key not given together",
+			zap.Bool("has_client_cert", o.ClientCert != ""), zap.Bool("has_client_key", o.ClientKey != ""))
 		return nil, fmt.Errorf("TLS client certificate and key must be given together")
 	}
 	if o.ClientCert != "" {
 		cert, err := tls.LoadX509KeyPair(o.ClientCert, o.ClientKey)
 		if err != nil {
+			log.Debug("TLSOptions.Credentials: client key pair not loadable",
+				zap.String("client_cert", o.ClientCert), zap.String("client_key", o.ClientKey), zap.Error(err))
 			return nil, fmt.Errorf("load TLS client certificate %q with key %q: %w", o.ClientCert, o.ClientKey, err)
 		}
 		conf.Certificates = []tls.Certificate{cert}
+		log.Debug("TLSOptions.Credentials: presenting client certificate", zap.String("client_cert", o.ClientCert))
 	}
 
+	log.Debug("TLSOptions.Credentials: transport credentials ready", zap.Bool("mutual", o.ClientCert != ""))
 	return credentials.NewTLS(conf), nil
 }
 
@@ -118,6 +135,12 @@ func ResolveTLS(explicit TLSOptions) TLSOptions {
 	if !o.Insecure {
 		o.Insecure = envBool(envTLSInsecure)
 	}
+	zap.L().Debug("ResolveTLS: resolved TLS options",
+		zap.Bool("enabled", o.Enabled), zap.Bool("active", o.Active()),
+		zap.String("ca_cert", o.CACert), zap.Bool("ca_cert_from_env", explicit.CACert == "" && o.CACert != ""),
+		zap.String("client_cert", o.ClientCert), zap.Bool("client_cert_from_env", explicit.ClientCert == "" && o.ClientCert != ""),
+		zap.String("client_key", o.ClientKey), zap.Bool("client_key_from_env", explicit.ClientKey == "" && o.ClientKey != ""),
+		zap.String("server_name", o.ServerName), zap.Bool("insecure", o.Insecure))
 	return o
 }
 

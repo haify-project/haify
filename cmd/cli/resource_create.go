@@ -10,6 +10,7 @@ import (
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/util"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func resourceCreate() *cobra.Command {
@@ -39,21 +40,35 @@ func resourceCreate() *cobra.Command {
 		Use:   "create",
 		Short: "Create a new DRBD resource",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			// DRBD option values are not traced: net/shared-secret is one of them.
+			log.Debug("resourceCreate: running command", zap.Strings("args", args), zap.String("name", name), zap.Uint32("port", port),
+				zap.String("nodes", nodes), zap.Uint32("replicas", replicas), zap.Strings("replicas_on_different", replicasOnDifferent),
+				zap.Strings("replicas_on_same", replicasOnSame), zap.Strings("do_not_place_with", doNotPlaceWith), zap.String("pool", pool),
+				zap.String("storage_type", storageType), zap.String("protocol", protocol), zap.String("size", size),
+				zap.Bool("exact_size", exactSize), zap.Int("drbd_options", len(drbdOptions)), zap.Bool("wan", wan),
+				zap.String("dr_node", drNode), zap.String("dr_endpoint", drEndpoint), zap.Uint32("wan_port", wanPort),
+				zap.String("wan_egress_address", wanEgress), zap.String("profile", profile), zap.Int("labels", len(labels)),
+				zap.Bool("encrypt", encrypt))
 			ctx := cmd.Context()
 
 			if name == "" {
+				log.Debug("resourceCreate: --name missing")
 				return fmt.Errorf("resource name is required")
 			}
 			if port == 0 {
+				log.Debug("resourceCreate: --port missing")
 				return fmt.Errorf("DRBD port is required (use --port)")
 			}
 			if size == "" {
+				log.Debug("resourceCreate: --size missing")
 				return fmt.Errorf("size is required (use --size)")
 			}
 
 			// WAN master switch (mirrors the server guard): the --dr-* / --wan-port
 			// flags only apply with --wan.
 			if !wan && (drNode != "" || drEndpoint != "" || wanPort != 0 || wanEgress != "") {
+				log.Debug("resourceCreate: WAN flags given without --wan")
 				return fmt.Errorf("--dr-node/--dr-endpoint/--wan-port/--wan-egress-address require --wan")
 			}
 
@@ -64,7 +79,11 @@ func resourceCreate() *cobra.Command {
 			// No --nodes ⇒ auto-placement: the controller picks the nodes with the
 			// most free space in --pool. WAN needs an explicit primary, so require
 			// --nodes there.
+			if len(nodeList) == 0 && !wan {
+				log.Debug("resourceCreate: no --nodes, the controller auto-places", zap.Uint32("replicas", replicas))
+			}
 			if len(nodeList) == 0 && wan {
+				log.Debug("resourceCreate: WAN resource without --nodes")
 				return fmt.Errorf("WAN resource requires an explicit --nodes primary")
 			}
 
@@ -74,40 +93,49 @@ func resourceCreate() *cobra.Command {
 				// site with one asynchronous DR copy (两地三中心). The DR node
 				// is named separately with --dr-node.
 				if len(nodeList) < 1 {
+					log.Debug("resourceCreate: WAN resource without a primary-site node")
 					return fmt.Errorf("WAN resource requires at least one primary-site node in --nodes")
 				}
 				if drNode == "" {
+					log.Debug("resourceCreate: WAN resource without --dr-node")
 					return fmt.Errorf("WAN resource requires --dr-node")
 				}
 				if drEndpoint == "" {
+					log.Debug("resourceCreate: WAN resource without --dr-endpoint")
 					return fmt.Errorf("WAN resource requires --dr-endpoint")
 				}
+				log.Debug("resourceCreate: WAN resource", zap.Strings("primary_site", nodeList), zap.String("dr_node", drNode))
 			}
 
 			if pool == "" && profile == "" {
+				log.Debug("resourceCreate: no --pool or --profile, using data-pool")
 				pool = "data-pool"
 			}
 
 			sizeBytes, err := util.ParseSize(size)
 			if err != nil {
+				log.Debug("resourceCreate: size not parsable", zap.String("size", size), zap.Error(err))
 				return fmt.Errorf("invalid size format: %s: %w", size, err)
 			}
 			// Round up: a volume smaller than asked for is the one outcome a
 			// size must never have. --exact-size keeps the exact byte count.
 			sizeGiB := util.BytesToGiB(sizeBytes + (1<<30 - 1))
 			if sizeGiB == 0 || (!exactSize && sizeBytes < 1<<30) {
+				log.Debug("resourceCreate: size below 1 GiB without --exact-size", zap.Uint64("size_bytes", sizeBytes))
 				return fmt.Errorf("size too small (minimum 1 GiB, or use --exact-size)")
 			}
 			var exactBytes uint64
 			if exactSize {
 				exactBytes = sizeBytes
 			}
+			log.Debug("resourceCreate: size", zap.Uint64("size_bytes", sizeBytes), zap.Uint64("size_gib", sizeGiB), zap.Uint64("exact_bytes", exactBytes))
 
 			// Say it here rather than only in the docs. The distinction between
 			// at-rest and in-transit is the one an operator is most likely to
 			// get wrong about this flag, and getting it wrong means believing
 			// replication traffic is protected when it is not.
 			if encrypt {
+				log.Debug("resourceCreate: --encrypt, printing the at-rest-only note")
 				fmt.Fprintf(os.Stderr,
 					"Note: --encrypt encrypts each replica's backing volume (at rest).\n"+
 						"      DRBD sits above the crypt layer, so replication between nodes stays PLAINTEXT.\n"+
@@ -117,6 +145,7 @@ func resourceCreate() *cobra.Command {
 
 			grpcClient, conn, err := newResourceGRPCClient()
 			if err != nil {
+				log.Debug("resourceCreate: newResourceGRPCClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(conn)
@@ -142,6 +171,8 @@ func resourceCreate() *cobra.Command {
 			if wan {
 				requestProtocol = "A"
 			}
+			log.Debug("resourceCreate: request built", zap.Uint32("replicas", requestReplicas), zap.String("pool", requestPool),
+				zap.String("storage_type", requestStorageType), zap.String("protocol", requestProtocol), zap.String("profile", profile))
 			resp, err := grpcClient.CreateResource(ctx, &haifypb.CreateResourceRequest{
 				Name:                name,
 				Port:                port,
@@ -166,12 +197,15 @@ func resourceCreate() *cobra.Command {
 				Encrypt:             encrypt,
 			})
 			if err != nil {
+				log.Debug("resourceCreate: CreateResource failed", zap.Error(err))
 				return fmt.Errorf("failed to create resource: %w", err)
 			}
 			if !resp.Success {
+				log.Debug("resourceCreate: controller reported failure", zap.String("message", resp.Message))
 				return fmt.Errorf("failed to create resource: %s", resp.Message)
 			}
 
+			log.Debug("resourceCreate: resource created", zap.String("resource", name), zap.String("message", resp.Message))
 			fmt.Printf("Resource created successfully\n")
 			fmt.Printf("  Name:        %s\n", name)
 			fmt.Printf("  Port:        %d\n", port)
@@ -218,6 +252,7 @@ func resourceCreate() *cobra.Command {
 			fmt.Printf("  1. haify resource get %s\n", name)
 			fmt.Printf("  2. haify resource primary %s <node>\n", name)
 
+			log.Debug("resourceCreate: done")
 			return nil
 		},
 	}
@@ -272,6 +307,8 @@ func resourceAdopt() *cobra.Command {
 			"protocol are auto-discovered from the config when not supplied.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceAdopt: running command", zap.Strings("args", args), zap.String("nodes", nodes), zap.Uint32("port", port), zap.String("protocol", protocol))
 			name := args[0]
 
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -284,15 +321,19 @@ func resourceAdopt() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceAdopt: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			resp, err := haifyClient.AdoptResource(ctx, name, nodeList, port, protocol)
 			if err != nil {
+				log.Debug("resourceAdopt: AdoptResource failed", zap.Error(err))
 				return fmt.Errorf("failed to adopt resource: %w", err)
 			}
 
+			log.Debug("resourceAdopt: adopted", zap.String("resource", name), zap.Strings("nodes", resp.Nodes), zap.Uint32("port", resp.Port),
+				zap.String("protocol", resp.Protocol), zap.Uint32("volumes", resp.Volumes))
 			fmt.Printf("Resource '%s' adopted into Haify management\n", name)
 			fmt.Printf("  Nodes:    %v\n", resp.Nodes)
 			fmt.Printf("  Port:     %d\n", resp.Port)
@@ -301,6 +342,7 @@ func resourceAdopt() *cobra.Command {
 			fmt.Printf("\nThe DRBD resource and its data were not modified.\n")
 			fmt.Printf("Next: haify ha create %s\n", name)
 
+			log.Debug("resourceAdopt: done")
 			return nil
 		},
 	}

@@ -70,6 +70,7 @@ func main() {
 	rootCmd.AddCommand(replicationTLSCommand())
 
 	if cmd, err := rootCmd.ExecuteC(); err != nil {
+		zap.L().Debug("main: command failed", zap.String("command", cmd.CommandPath()), zap.Error(err))
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		if strings.HasPrefix(err.Error(), "required flag") {
 			fmt.Fprint(os.Stderr, "\n"+cmd.UsageString())

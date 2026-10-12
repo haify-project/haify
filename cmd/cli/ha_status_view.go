@@ -8,6 +8,7 @@ import (
 	"time"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 )
 
 // Rendering a promoter's live status for `haify ha status`: the service chain
@@ -16,6 +17,9 @@ import (
 
 // printHaChain prints the chain of units on the node running it.
 func printHaChain(w io.Writer, p *haifypb.HaPromoterStatus) {
+	log := zap.L()
+	log.Debug("printHaChain: printing service chain", zap.String("resource", p.GetDrbdResource()), zap.String("active_node", p.GetActiveNode()),
+		zap.Int("deps", len(p.GetDeps())))
 	where := "no node is running it"
 	if p.GetActiveNode() != "" {
 		where = "on " + p.GetActiveNode()
@@ -25,8 +29,10 @@ func printHaChain(w io.Writer, p *haifypb.HaPromoterStatus) {
 	_, _ = fmt.Fprintln(tw, "  KIND\tWHAT\tSTATE\tSINCE\tRESTARTS\tUNIT")
 	row := func(s *haifypb.HaServiceStatus) {
 		if s == nil || s.GetName() == "" {
+			log.Debug("printHaChain: skipping unnamed unit")
 			return
 		}
+		log.Debug("printHaChain: unit", zap.String("unit", s.GetName()), zap.String("kind", s.GetKind()), zap.String("status", s.GetStatus()), zap.Int32("restarts", s.GetRestarts()))
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%d\t%s\n",
 			dashIfEmpty(s.GetKind()), dashIfEmpty(s.GetLabel()), unitState(s),
 			dashIfEmpty(sinceLocal(s.GetSince())), s.GetRestarts(), s.GetName())
@@ -40,14 +46,19 @@ func printHaChain(w io.Writer, p *haifypb.HaPromoterStatus) {
 
 // printHaStandbys prints whether each standby could take the chain over.
 func printHaStandbys(w io.Writer, p *haifypb.HaPromoterStatus) {
+	log := zap.L()
+	log.Debug("printHaStandbys: printing standbys", zap.Int("count", len(p.GetStandbys())))
 	_, _ = fmt.Fprintf(w, "\nStandbys:\n")
 	if len(p.GetStandbys()) == 0 {
+		log.Debug("printHaStandbys: no standby can take over")
 		_, _ = fmt.Fprintf(w, "  none: no other node holds an enabled promoter, so nothing can take over\n")
 		return
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "  NODE\tREADY\tDISK\tWHY NOT")
 	for _, s := range p.GetStandbys() {
+		log.Debug("printHaStandbys: standby", zap.String("node", s.GetNode()), zap.Bool("ready", s.GetReady()),
+			zap.String("disk_state", s.GetDiskState()), zap.Strings("reasons", s.GetReasons()))
 		ready := "✗ no"
 		if s.GetReady() {
 			ready = "● yes"
@@ -60,11 +71,16 @@ func printHaStandbys(w io.Writer, p *haifypb.HaPromoterStatus) {
 
 // printHaOutside prints the services outside the chain using its mounts.
 func printHaOutside(w io.Writer, p *haifypb.HaPromoterStatus) {
+	log := zap.L()
 	if p.GetActiveNode() == "" {
+		log.Debug("printHaOutside: chain runs nowhere, nothing to check")
 		return
 	}
+	log.Debug("printHaOutside: printing outside users", zap.String("active_node", p.GetActiveNode()),
+		zap.Int("units", len(p.GetOutside())), zap.Int32("sessions", p.GetOutsideSessions()))
 	_, _ = fmt.Fprintf(w, "\nUsing the chain's mounts from outside it (on %s):\n", p.GetActiveNode())
 	if len(p.GetOutside()) == 0 && p.GetOutsideSessions() == 0 {
+		log.Debug("printHaOutside: nothing outside the chain uses its mounts")
 		_, _ = fmt.Fprintf(w, "  nothing\n")
 		return
 	}

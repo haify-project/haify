@@ -7,6 +7,7 @@ import (
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func wanCommand() *cobra.Command {
@@ -31,17 +32,23 @@ func wanSetEndpointCommand() *cobra.Command {
 			"firewall is not open yet; run wan repair once it is.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("wanSetEndpointCommand: running command", zap.Strings("args", args), zap.String("dr_endpoint", req.DrEndpoint),
+				zap.String("egress_address", req.EgressAddress), zap.Bool("clear_egress", req.ClearEgress), zap.Bool("skip_check", req.SkipReachabilityCheck))
 			req.Name = args[0]
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("wanSetEndpointCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 			resp, err := haifyClient.SetWanEndpoint(cmd.Context(), &req)
 			if err != nil {
+				log.Debug("wanSetEndpointCommand: SetWanEndpoint failed", zap.Error(err))
 				return err
 			}
 			fmt.Println(resp.Message)
+			log.Debug("wanSetEndpointCommand: done")
 			return nil
 		},
 	}
@@ -66,20 +73,25 @@ func wanRepairCommand() *cobra.Command {
 			"This restarts the tunnels, so run it with --dry-run first.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("wanRepairCommand: running command", zap.Strings("args", args), zap.Bool("dry_run", dryRun))
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel()
 
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("wanRepairCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 
 			resp, err := c.RepairWanProxy(ctx, args[0], dryRun)
 			if err != nil {
+				log.Debug("wanRepairCommand: RepairWanProxy failed", zap.Error(err))
 				return err
 			}
 
+			log.Debug("wanRepairCommand: repair result", zap.Strings("expected_legs", resp.ExpectedLegs), zap.Strings("removed_legs", resp.RemovedLegs))
 			out := cmd.OutOrStdout()
 			// Writes to the command's own output stream are best-effort. The only ways
 			// they fail are a closed pipe (`haify ... | head`) or a full disk, neither of
@@ -102,6 +114,7 @@ func wanRepairCommand() *cobra.Command {
 				}
 			}
 			_, _ = fmt.Fprintf(out, "\n%s\n", resp.Message)
+			log.Debug("wanRepairCommand: done")
 			return nil
 		},
 	}
