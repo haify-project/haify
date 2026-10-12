@@ -43,7 +43,7 @@ func (s *Server) VerifyResource(ctx context.Context, req *pb.VerifyResourceReque
 // Verify is VerifyResource for callers inside the controller: the verify
 // schedule, and the RPC. A failure is reported in the response.
 func (rm *ResourceManager) Verify(ctx context.Context, req *pb.VerifyResourceRequest) *pb.VerifyResourceResponse {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("Verify: starting", zap.String("resource", req.GetName()), zap.String("node", req.GetNode()),
 		zap.Bool("resync", req.GetResync()), zap.Uint32("wait_seconds", req.GetWaitSeconds()))
 	resp := &pb.VerifyResourceResponse{}
@@ -143,7 +143,7 @@ func (rm *ResourceManager) Verify(ctx context.Context, req *pb.VerifyResourceReq
 // Primary — whose data is by definition what the application sees — else the
 // first diskful node.
 func (rm *ResourceManager) verifySource(ctx context.Context, name, node string) (string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	if rm.controller.db == nil {
 		log.Debug("verifySource: no database")
 		return "", fmt.Errorf("database not available")
@@ -179,7 +179,7 @@ func (rm *ResourceManager) verifySource(ctx context.Context, name, node string) 
 // ensureVerifyAlg gives a resource created before verify-alg was a default
 // one, in its config and on every node, so verify can start.
 func (rm *ResourceManager) ensureVerifyAlg(ctx context.Context, name, addr string) (bool, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{addr}, "sudo drbdsetup show "+name)
 	if err != nil {
@@ -209,7 +209,7 @@ func (rm *ResourceManager) ensureVerifyAlg(ctx context.Context, name, addr strin
 // fail outright on one disconnected peer, and a diskless tiebreaker has
 // nothing to compare. It returns how many peers it started on.
 func (rm *ResourceManager) startVerify(ctx context.Context, name, addr string, st *drbdsetupStatus, step func(string, ...any)) (int, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	started := 0
 	for _, c := range st.Connections {
 		if reason := verifiable(c.ConnectionState, c.PeerDevices); reason != "" {
@@ -259,7 +259,7 @@ func verifiable(connection string, pds []drbdPeerDevice) string {
 // least one other diskful replica. A peer that is Primary is never
 // overwritten — that is the data the running service reads.
 func (rm *ResourceManager) resyncOutOfSync(ctx context.Context, name, source string, st *drbdsetupStatus, step func(string, ...any)) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("resyncOutOfSync: checking peers", zap.String("resource", name), zap.String("source", source), zap.String("role", st.Role))
 	var differ []string
 	agrees := 0
@@ -309,7 +309,7 @@ func (rm *ResourceManager) resyncOutOfSync(ctx context.Context, name, source str
 // waitOutOfSyncCleared waits for the peers' resync to finish, so the caller
 // reports the result rather than the start of it.
 func (rm *ResourceManager) waitOutOfSyncCleared(ctx context.Context, name, addr string, peers []string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	deadline := time.Now().Add(2 * time.Minute)
 	log.Debug("waitOutOfSyncCleared: waiting", zap.String("resource", name), zap.Strings("peers", peers))
 	for {
@@ -418,7 +418,7 @@ func (sm *ScheduleManager) runVerifySweep() {
 	}
 	defer sm.verifying.Store(false)
 	ctx := context.Background()
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("runVerifySweep: tick, sweep starting")
 	start := time.Now()
 	resources, err := sm.controller.db.ListResources(ctx)
@@ -459,7 +459,7 @@ func (rm *ResourceManager) rememberMarks(resource string, st *drbdsetupStatus) {
 		for _, pd := range c.PeerDevices {
 			kib += pd.OutOfSyncKiB
 		}
-		ctrlLogOrGlobal(rm.controller).Debug("rememberMarks: baseline", zap.String("resource", resource), zap.String("peer", c.Name),
+		rm.controller.traceLogger().Debug("rememberMarks: baseline", zap.String("resource", resource), zap.String("peer", c.Name),
 			zap.Uint64("out_of_sync_kib", kib))
 		rm.verifyMarks.Store(marksKey(resource, c.Name), kib)
 	}
@@ -470,7 +470,7 @@ func (rm *ResourceManager) rememberMarks(resource string, st *drbdsetupStatus) {
 func (rm *ResourceManager) marksBefore(resource, peer string) (uint64, bool) {
 	v, ok := rm.verifyMarks.Load(marksKey(resource, peer))
 	if !ok {
-		ctrlLogOrGlobal(rm.controller).Debug("marksBefore: no baseline", zap.String("resource", resource), zap.String("peer", peer))
+		rm.controller.traceLogger().Debug("marksBefore: no baseline", zap.String("resource", resource), zap.String("peer", peer))
 		return 0, false
 	}
 	return v.(uint64), true

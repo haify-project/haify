@@ -12,7 +12,7 @@ import (
 
 // CreateLvmSnapshot creates an LVM snapshot
 func (sm *StorageManager) CreateLvmSnapshot(ctx context.Context, vgName, lvName, snapshotName, node, size string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("CreateLvmSnapshot: taking", zap.String("pool", vgName), zap.String("lv", lvName),
 		zap.String("snapshot", snapshotName), zap.String("node", node), zap.String("size", size))
 	vgName = normalizeManagedName(vgName)
@@ -67,7 +67,7 @@ func (sm *StorageManager) CreateLvmSnapshot(ctx context.Context, vgName, lvName,
 // resource narrows the result to that DRBD resource's volumes; empty lists the
 // whole group.
 func (sm *StorageManager) ListLvmSnapshots(ctx context.Context, vgName, node, resource string) ([]*SnapshotInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ListLvmSnapshots: listing", zap.String("pool", vgName), zap.String("node", node), zap.String("resource", resource))
 	vgName = normalizeManagedName(vgName)
 
@@ -151,7 +151,7 @@ func parseSnapshotLine(line, vgName string) (*SnapshotInfo, bool) {
 // second copy of it here would keep working right up until the day the first
 // one changed.
 func (sm *StorageManager) backingVolumesOf(ctx context.Context, resource string) (map[string]bool, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	if sm.controller.db == nil {
 		log.Debug("backingVolumesOf: no database", zap.String("resource", resource))
 		return nil, fmt.Errorf("database not available, cannot resolve volumes of resource %s", resource)
@@ -177,7 +177,7 @@ func (sm *StorageManager) backingVolumesOf(ctx context.Context, resource string)
 
 // DeleteLvmSnapshot deletes an LVM snapshot
 func (sm *StorageManager) DeleteLvmSnapshot(ctx context.Context, vgName, snapshotName, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("DeleteLvmSnapshot: deleting", zap.String("pool", vgName), zap.String("snapshot", snapshotName), zap.String("node", node))
 	vgName = normalizeManagedName(vgName)
 	if err := sm.controller.assertSnapshotUnlocked(ctx, snapshotName); err != nil {
@@ -214,7 +214,7 @@ func (sm *StorageManager) DeleteLvmSnapshot(ctx context.Context, vgName, snapsho
 // resource's replicas in step; see snapshot_restore.go.
 func (sm *StorageManager) RestoreLvmSnapshot(ctx context.Context, vgName, snapshotName, node string) error {
 	vgName = normalizeManagedName(vgName)
-	ctrlLogOrGlobal(sm.controller).Debug("RestoreLvmSnapshot: handing to the snapshot manager", zap.String("pool", vgName),
+	sm.controller.traceLogger().Debug("RestoreLvmSnapshot: handing to the snapshot manager", zap.String("pool", vgName),
 		zap.String("snapshot", snapshotName), zap.String("node", node))
 	sm.controller.logger.Info("Restoring LVM snapshot",
 		zap.String("vg_name", vgName),

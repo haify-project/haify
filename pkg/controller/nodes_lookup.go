@@ -20,12 +20,12 @@ func (nm *NodeManager) GetNodeAddressByName(name string) string {
 
 	for addr, node := range nm.nodes {
 		if node.Name == name || node.Hostname == name || addr == name {
-			loggerOfController(nm.controller).Debug("NodeManager.GetNodeAddressByName: found",
+			nm.controller.traceLogger().Debug("NodeManager.GetNodeAddressByName: found",
 				zap.String("node", name), zap.String("address", addr))
 			return addr
 		}
 	}
-	loggerOfController(nm.controller).Debug("NodeManager.GetNodeAddressByName: no registered node matches", zap.String("node", name))
+	nm.controller.traceLogger().Debug("NodeManager.GetNodeAddressByName: no registered node matches", zap.String("node", name))
 	return ""
 }
 
@@ -46,7 +46,7 @@ func (nm *NodeManager) GetDRBDNameByRef(ref string) string {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
 
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	for addr, node := range nm.nodes {
 		if node.Name == ref || node.Hostname == ref || addr == ref {
 			if node.Hostname != "" {
@@ -73,7 +73,7 @@ func (nm *NodeManager) GetReplicationAddressByName(name string) string {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
 
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	for addr, node := range nm.nodes {
 		if node.Name == name || node.Hostname == name || addr == name {
 			if r := strings.TrimSpace(node.ReplicationAddress); r != "" {
@@ -99,12 +99,12 @@ func (nm *NodeManager) GetNodeNameByAddress(address string) string {
 
 	for addr, node := range nm.nodes {
 		if addr == address || node.Name == address || node.Hostname == address {
-			loggerOfController(nm.controller).Debug("NodeManager.GetNodeNameByAddress: found",
+			nm.controller.traceLogger().Debug("NodeManager.GetNodeNameByAddress: found",
 				zap.String("address", address), zap.String("node", node.Name))
 			return node.Name
 		}
 	}
-	loggerOfController(nm.controller).Debug("NodeManager.GetNodeNameByAddress: no registered node matches", zap.String("address", address))
+	nm.controller.traceLogger().Debug("NodeManager.GetNodeNameByAddress: no registered node matches", zap.String("address", address))
 	return ""
 }
 
@@ -113,7 +113,7 @@ func (nm *NodeManager) GetNode(ctx context.Context, address string) (*NodeInfo, 
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
 
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	resolved := address
 	if node := nm.nodes[resolved]; node != nil {
 		log.Debug("NodeManager.GetNode: found by address", zap.String("address", address), zap.String("node", node.Name))
@@ -153,6 +153,6 @@ func (nm *NodeManager) ListNodes(ctx context.Context) ([]*NodeInfo, error) {
 	// where something actually changed.
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 
-	loggerOfController(nm.controller).Debug("NodeManager.ListNodes: listed", zap.Int("count", len(nodes)))
+	nm.controller.traceLogger().Debug("NodeManager.ListNodes: listed", zap.Int("count", len(nodes)))
 	return nodes, nil
 }

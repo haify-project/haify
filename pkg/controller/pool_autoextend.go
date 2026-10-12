@@ -41,14 +41,14 @@ type thinAutoextender struct {
 }
 
 func newThinAutoextender(c *Controller) *thinAutoextender {
-	loggerOfController(c).Debug("newThinAutoextender: created")
+	c.traceLogger().Debug("newThinAutoextender: created")
 	return &thinAutoextender{c: c, busy: map[string]bool{}, last: map[string]time.Time{}, warnedVG: map[string]bool{}}
 }
 
 // Observed implements alert.Observer. It must not block the poll, so the
 // growing itself runs in its own goroutine.
 func (a *thinAutoextender) Observed(obs alert.Observation) {
-	log := loggerOfController(a.c)
+	log := a.c.traceLogger()
 	cfg := a.c.config.Storage.Thin
 	if cfg.AutoextendThreshold <= 0 || !obs.Pools.Enabled || !obs.Pools.OK {
 		log.Debug("thinAutoextender.Observed: skipped", zap.Int("threshold", cfg.AutoextendThreshold),
@@ -124,7 +124,7 @@ func extendPlan(dataBytes, metaBytes, free uint64, growData, growMeta bool, perc
 
 func (a *thinAutoextender) extend(ctx context.Context, p alert.PoolStatusInfo, growData, growMeta bool, key string) {
 	c := a.c
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	host := c.ResolveHost(p.Node)
 	log.Debug("thinAutoextender.extend: start", zap.String("pool", key), zap.String("host", host),
 		zap.String("thin_pool", p.ThinPool), zap.Bool("grow_data", growData), zap.Bool("grow_meta", growMeta))
@@ -209,11 +209,11 @@ func (a *thinAutoextender) extend(ctx context.Context, p alert.PoolStatusInfo, g
 func (a *thinAutoextender) publish(p alert.PoolStatusInfo, sev event.Severity, msg string) {
 	a.c.logger.Info(msg)
 	if a.c.events != nil {
-		loggerOfController(a.c).Debug("thinAutoextender.publish: publishing event", zap.String("node", p.Node),
+		a.c.traceLogger().Debug("thinAutoextender.publish: publishing event", zap.String("node", p.Node),
 			zap.String("pool", p.Name), zap.String("severity", string(sev)))
 		a.c.events.Publish(event.Event{Type: event.TypePoolExtended, Severity: sev, Status: event.StatusInfo,
 			Node: p.Node, Message: msg, Details: map[string]string{"pool": p.Name, "thin_pool": p.ThinPool}})
 	} else {
-		loggerOfController(a.c).Debug("thinAutoextender.publish: no event bus", zap.String("pool", p.Name))
+		a.c.traceLogger().Debug("thinAutoextender.publish: no event bus", zap.String("pool", p.Name))
 	}
 }

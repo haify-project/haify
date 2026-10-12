@@ -24,7 +24,7 @@ const alertWindow = 24 * time.Hour
 // be read is left empty and the checks report it.
 func (im *InspectionManager) gather(ctx context.Context) *inspect.Input {
 	c := im.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("InspectionManager.gather: starting")
 	in := &inspect.Input{
 		Now:         im.now(),
@@ -71,7 +71,7 @@ func (im *InspectionManager) gather(ctx context.Context) *inspect.Input {
 // probe runs inspect.ProbeScript on every node in one SSH round.
 func (im *InspectionManager) probe(ctx context.Context, in *inspect.Input) {
 	c := im.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	if len(in.Nodes) == 0 {
 		log.Debug("InspectionManager.probe: no nodes, skipping probe")
 		return
@@ -146,7 +146,7 @@ func (im *InspectionManager) nodeRefs(refs []string) []string {
 
 func (im *InspectionManager) gatherResources(ctx context.Context, in *inspect.Input) {
 	c := im.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("InspectionManager.gatherResources: starting")
 	served := map[string]string{}
 	start := time.Now()
@@ -213,7 +213,7 @@ func (im *InspectionManager) gatherResources(ctx context.Context, in *inspect.In
 // raised in the window.
 func (im *InspectionManager) gatherAlerts(ctx context.Context, in *inspect.Input) {
 	c := im.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	if c.config == nil || !c.config.Alert.Enabled {
 		log.Debug("InspectionManager.gatherAlerts: alerting off, skipping", zap.Bool("has_config", c.config != nil))
 		return
@@ -288,7 +288,7 @@ func (im *InspectionManager) gatherAlerts(ctx context.Context, in *inspect.Input
 
 func (im *InspectionManager) gatherBackups(ctx context.Context, in *inspect.Input) {
 	c := im.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	b := &in.Backups
 	b.SchedulerEnabled = c.config != nil && c.config.Schedule.Enabled
 	log.Debug("InspectionManager.gatherBackups: starting", zap.Bool("scheduler_enabled", b.SchedulerEnabled))
@@ -353,7 +353,7 @@ func (im *InspectionManager) gatherBackups(ctx context.Context, in *inspect.Inpu
 // gatherTLS reads the certificates kept on the controller itself.
 func (im *InspectionManager) gatherTLS(in *inspect.Input) {
 	c := im.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	if c.config == nil {
 		log.Debug("InspectionManager.gatherTLS: no config, skipping")
 		return
@@ -411,7 +411,7 @@ func receiverName(url string) string {
 // URL, token included.
 func (c *Controller) recordDelivery(channel string) func(event.Event, error) {
 	return func(e event.Event, err error) {
-		log := loggerOfController(c)
+		log := c.traceLogger()
 		if c.db == nil || e.Type == event.TypeChannelTest {
 			log.Debug("Controller.recordDelivery: not recording", zap.String("channel", channel),
 				zap.Bool("has_db", c.db != nil), zap.String("type", string(e.Type)))

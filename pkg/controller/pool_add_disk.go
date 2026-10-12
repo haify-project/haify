@@ -19,7 +19,7 @@ import (
 
 // nodeInventory probes the disks on one node.
 func (sm *StorageManager) nodeInventory(ctx context.Context, address, node string) (*blockInventory, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("nodeInventory: listing block devices", zap.String("node", node), zap.String("host", address))
 	start := time.Now()
 	res, err := sm.controller.deployment.ListBlockDevices(ctx, address)
@@ -46,7 +46,7 @@ func (sm *StorageManager) nodeInventory(ctx context.Context, address, node strin
 // ListNodeDisks lists the disks of node, or of every online node when node
 // is empty, and says which of them a pool can use.
 func (sm *StorageManager) ListNodeDisks(ctx context.Context, node string) ([]NodeDisk, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ListNodeDisks: start", zap.String("node", node))
 	nodes, err := sm.controller.nodes.ListNodes(ctx)
 	if err != nil {
@@ -120,7 +120,7 @@ func (sm *StorageManager) ListNodeDisks(ctx context.Context, node string) ([]Nod
 // device is refused. The returned paths are the devices as the node names
 // them, with by-id links resolved.
 func (sm *StorageManager) prepareDisks(ctx context.Context, address, node string, devices []string, wipe bool) ([]string, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("prepareDisks: start", zap.String("node", node), zap.String("host", address),
 		zap.Strings("devices", devices), zap.Bool("wipe", wipe))
 	inv, err := sm.nodeInventory(ctx, address, node)
@@ -132,7 +132,7 @@ func (sm *StorageManager) prepareDisks(ctx context.Context, address, node string
 }
 
 func (sm *StorageManager) prepareInventoried(ctx context.Context, inv *blockInventory, address, node string, devices []string, wipe bool) ([]string, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("prepareInventoried: start", zap.String("node", node), zap.String("host", address),
 		zap.Strings("devices", devices), zap.Bool("wipe", wipe))
 	checked := make([]NodeDisk, 0, len(devices))
@@ -193,7 +193,7 @@ func zfsVdevDevices(vdevs []string) []string {
 // AddDiskToPool gives disk on node to pool. A disk holding old data is
 // refused unless wipe is set.
 func (sm *StorageManager) AddDiskToPool(ctx context.Context, pool, disk, node string, wipe bool) error {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	pool = normalizeManagedName(pool)
 	log.Debug("AddDiskToPool: start", zap.String("pool", pool), zap.String("disk", disk),
 		zap.String("node", node), zap.Bool("wipe", wipe))
@@ -288,7 +288,7 @@ func (sm *StorageManager) logDiskAdded(pool, disk, node string) {
 
 // recordPoolDevice appends disk to the pool's persisted device list.
 func (sm *StorageManager) recordPoolDevice(ctx context.Context, pool, disk string) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("recordPoolDevice: start", zap.String("pool", pool), zap.String("disk", disk))
 	if sm.controller.db == nil {
 		log.Debug("recordPoolDevice: no database, not recorded", zap.String("pool", pool))

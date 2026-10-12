@@ -24,7 +24,7 @@ const rsDiscardGranularity = "65536"
 // it. The caller's map is not modified. Thick volumes are left alone: on them
 // a discard can reach a device that does not read back zeros afterwards.
 func (rm *ResourceManager) withThinResyncDefaults(ctx context.Context, options map[string]string, storageType string, volumes []resolvedVolume) map[string]string {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("withThinResyncDefaults: checking", zap.String("storage_type", storageType), zap.Int("volumes", len(volumes)),
 		zap.Int("options", len(options)))
 	for k := range options {

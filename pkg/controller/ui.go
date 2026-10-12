@@ -345,9 +345,9 @@ func (s *UIServer) Shutdown(ctx context.Context) error {
 // restPort is the configured REST port, or the default when none is set.
 func (c *Controller) restPort() int {
 	if c.config != nil && c.config.Server.RESTPort > 0 {
-		ctrlLogOrGlobal(c).Debug("restPort: configured", zap.Int("port", c.config.Server.RESTPort))
+		c.traceLogger().Debug("restPort: configured", zap.Int("port", c.config.Server.RESTPort))
 		return c.config.Server.RESTPort
 	}
-	ctrlLogOrGlobal(c).Debug("restPort: default", zap.Int("port", defaultRESTPort))
+	c.traceLogger().Debug("restPort: default", zap.Int("port", defaultRESTPort))
 	return defaultRESTPort
 }

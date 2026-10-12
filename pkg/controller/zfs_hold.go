@@ -47,7 +47,7 @@ func zfsNameRune(r rune) bool {
 
 // holdLockedZFSSnapshot places the lock hold on a snapshot just taken.
 func (c *Controller) holdLockedZFSSnapshot(ctx context.Context, host, snapshot string) {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	log.Debug("holdLockedZFSSnapshot: placing hold", zap.String("host", host), zap.String("snapshot", snapshot))
 	ref, err := zfsSnapshotRef(snapshot)
 	if err == nil {
@@ -73,7 +73,7 @@ func (c *Controller) holdLockedZFSSnapshot(ctx context.Context, host, snapshot s
 // releaseZFSLockHold lifts the lock hold before haify deletes a snapshot whose
 // lock has passed. A snapshot without the hold is fine.
 func (c *Controller) releaseZFSLockHold(ctx context.Context, host, snapshot string) {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	log.Debug("releaseZFSLockHold: releasing hold", zap.String("host", host), zap.String("snapshot", snapshot))
 	ref, err := zfsSnapshotRef(snapshot)
 	if err != nil {

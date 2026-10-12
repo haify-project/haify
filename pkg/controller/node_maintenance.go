@@ -17,7 +17,7 @@ func (nm *NodeManager) setMaintenance(ctx context.Context, address string, on bo
 	if on {
 		state = NodeStateMaintenance
 	}
-	loggerOfController(nm.controller).Debug("NodeManager.setMaintenance: start",
+	nm.controller.traceLogger().Debug("NodeManager.setMaintenance: start",
 		zap.String("address", address), zap.Bool("on", on), zap.String("state", string(state)))
 	return nm.SetNodeState(ctx, address, state)
 }
@@ -25,7 +25,7 @@ func (nm *NodeManager) setMaintenance(ctx context.Context, address string, on bo
 // SetNodeState sets a node's state by its address, in the registry and the
 // database alike; maintenance and eviction (self_heal_evict.go) use it.
 func (nm *NodeManager) SetNodeState(ctx context.Context, address string, state NodeState) error {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.SetNodeState: start", zap.String("address", address), zap.String("state", string(state)))
 
 	nm.mu.Lock()
@@ -73,7 +73,7 @@ func (nm *NodeManager) SetNodeState(ctx context.Context, address string, state N
 // nodeStateByName returns the registry state of a node named by name,
 // hostname or address, and false when the controller does not know it.
 func (nm *NodeManager) nodeStateByName(name string) (NodeState, bool) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	addr := nm.GetNodeAddressByName(name)
 	if addr == "" {
 		log.Debug("NodeManager.nodeStateByName: unknown node", zap.String("node", name))

@@ -141,7 +141,7 @@ func newWriteAnomalyDetector(c *Controller) *writeAnomalyDetector {
 	if c.db != nil {
 		d.store = c.db
 	}
-	ctrlLogOrGlobal(c).Debug("newWriteAnomalyDetector: built", zap.Bool("enabled", d.cfg.Enabled), zap.Float64("factor", d.cfg.Factor),
+	c.traceLogger().Debug("newWriteAnomalyDetector: built", zap.Bool("enabled", d.cfg.Enabled), zap.Float64("factor", d.cfg.Factor),
 		zap.Float64("min_mbps", d.cfg.MinMBps), zap.Int("freeze_hours", d.cfg.FreezeHours),
 		zap.Bool("has_actions", d.actions != nil), zap.Bool("has_store", d.store != nil))
 	return d

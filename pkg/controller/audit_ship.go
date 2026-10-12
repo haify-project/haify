@@ -208,7 +208,7 @@ type webhookDestination struct {
 	client     *http.Client
 }
 
-func (d *webhookDestination) Name() string { return "webhook:" + d.url }
+func (d *webhookDestination) Name() string { return "webhook:" + event.RedactURL(d.url) }
 
 func (d *webhookDestination) Send(ctx context.Context, records []database.AuditRecord) error {
 	log := zap.L()
@@ -230,6 +230,7 @@ func (d *webhookDestination) Send(ctx context.Context, records []database.AuditR
 	start := time.Now()
 	resp, err := d.client.Do(req)
 	if err != nil {
+		err = event.RedactRequestError(err)
 		log.Debug("webhookDestination.Send: POST failed", zap.String("host", req.URL.Host),
 			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return err

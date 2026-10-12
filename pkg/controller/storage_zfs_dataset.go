@@ -14,7 +14,7 @@ import (
 
 // CreateZFSDataset creates a ZFS dataset
 func (sm *StorageManager) CreateZFSDataset(ctx context.Context, datasetPath, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("CreateZFSDataset: creating", zap.String("dataset", datasetPath), zap.String("node", node))
 	datasetPath = normalizeManagedZFSPath(datasetPath)
 	address := sm.controller.ResolveHost(node)
@@ -41,7 +41,7 @@ func (sm *StorageManager) CreateZFSDataset(ctx context.Context, datasetPath, nod
 
 // ZFSDeleteDataset destroys a ZFS dataset or volume
 func (sm *StorageManager) ZFSDeleteDataset(ctx context.Context, datasetPath, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ZFSDeleteDataset: destroying", zap.String("dataset", datasetPath), zap.String("node", node))
 	datasetPath = normalizeManagedZFSPath(datasetPath)
 	address := sm.controller.ResolveHost(node)
@@ -72,7 +72,7 @@ func (sm *StorageManager) ZFSDeleteDataset(ctx context.Context, datasetPath, nod
 
 // CreateZFSThinVolume creates a thin-provisioned ZFS volume
 func (sm *StorageManager) CreateZFSThinVolume(ctx context.Context, poolName, volumeName, size, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("CreateZFSThinVolume: creating", zap.String("pool", poolName), zap.String("volume", volumeName),
 		zap.String("size", size), zap.String("node", node))
 	poolName = normalizeManagedName(poolName)
@@ -107,7 +107,7 @@ func (sm *StorageManager) CreateZFSThinVolume(ctx context.Context, poolName, vol
 
 // ZFSSnapshot creates a ZFS snapshot
 func (sm *StorageManager) ZFSSnapshot(ctx context.Context, dataset, snapshotName, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ZFSSnapshot: taking", zap.String("dataset", dataset), zap.String("snapshot", snapshotName), zap.String("node", node))
 	dataset = normalizeManagedZFSPath(dataset)
 	address := sm.controller.ResolveHost(node)
@@ -135,7 +135,7 @@ func (sm *StorageManager) ZFSSnapshot(ctx context.Context, dataset, snapshotName
 
 // ZFSListSnapshots lists ZFS snapshots for a dataset
 func (sm *StorageManager) ZFSListSnapshots(ctx context.Context, dataset, node string) ([]*SnapshotInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ZFSListSnapshots: listing", zap.String("dataset", dataset), zap.String("node", node))
 	// Resolve node name to address
 	dataset = normalizeManagedZFSPath(dataset)
@@ -189,7 +189,7 @@ func (sm *StorageManager) ZFSListSnapshots(ctx context.Context, dataset, node st
 
 // ZFSDeleteSnapshot deletes a ZFS snapshot
 func (sm *StorageManager) ZFSDeleteSnapshot(ctx context.Context, snapshot, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ZFSDeleteSnapshot: destroying", zap.String("snapshot", snapshot), zap.String("node", node))
 	snapshot = normalizeManagedZFSPath(snapshot)
 	if _, name, ok := strings.Cut(snapshot, "@"); ok {
@@ -226,7 +226,7 @@ func (sm *StorageManager) ZFSDeleteSnapshot(ctx context.Context, snapshot, node 
 // ZFSRestoreSnapshot restores a ZFS snapshot (rollback)
 func (sm *StorageManager) ZFSRestoreSnapshot(ctx context.Context, dataset, snapshotName, node string) error {
 	dataset = normalizeManagedZFSPath(dataset)
-	ctrlLogOrGlobal(sm.controller).Debug("ZFSRestoreSnapshot: handing to the snapshot manager", zap.String("dataset", dataset),
+	sm.controller.traceLogger().Debug("ZFSRestoreSnapshot: handing to the snapshot manager", zap.String("dataset", dataset),
 		zap.String("snapshot", snapshotName), zap.String("node", node))
 	sm.controller.logger.Info("Restoring ZFS snapshot",
 		zap.String("dataset", dataset),
@@ -237,7 +237,7 @@ func (sm *StorageManager) ZFSRestoreSnapshot(ctx context.Context, dataset, snaps
 
 // ZFSCloneSnapshot creates a clone from a ZFS snapshot
 func (sm *StorageManager) ZFSCloneSnapshot(ctx context.Context, snapshot, clonePath, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ZFSCloneSnapshot: cloning", zap.String("snapshot", snapshot), zap.String("clone", clonePath), zap.String("node", node))
 	snapshot = normalizeManagedZFSPath(snapshot)
 	clonePath = normalizeManagedZFSPath(clonePath)
@@ -266,7 +266,7 @@ func (sm *StorageManager) ZFSCloneSnapshot(ctx context.Context, snapshot, cloneP
 
 // ZFSResizeVolume resizes a ZFS volume
 func (sm *StorageManager) ZFSResizeVolume(ctx context.Context, volumePath, newSize, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ZFSResizeVolume: resizing", zap.String("volume", volumePath), zap.String("size", newSize), zap.String("node", node))
 	volumePath = normalizeManagedZFSPath(volumePath)
 	address := sm.controller.ResolveHost(node)

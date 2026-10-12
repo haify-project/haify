@@ -264,10 +264,10 @@ written without `lifecycle.go`'s invariants looks correct and isn't.
 | `placement.go` | Keeping the promoter on exactly the diskful replicas when replicas are added or removed (`SyncPlacement`); the controller's `promoter_placement.go` does the same for `ha create` configs and leaves a WAN resource's DR node out |
 | `live_edit.go` + `live_protocols.go` + `reactor_units.go` | Editing a running gateway: applied live on the node serving it (targetcli, nvmet configfs, single-unit start/stop) because a drbd-reactor reload of a changed promoter stops the whole gateway; the edited config waits as `.toml.pending` there |
 | `validate.go` | IQN/NQN/transport validation, rejected before any side effect |
-| `nfs.go` | NFS gateway — Filesystem, IPaddr2, nfsserver, exportfs OCF agents |
+| `nfs.go` + `nfs_exports.go` | NFS gateway — Filesystem, IPaddr2, nfsserver, exportfs OCF agents; adding, removing and listing exports |
 | `iscsi.go` + `iscsi_target.go` + `iscsi_acl.go` | iSCSI gateway — iSCSITarget/iSCSILogicalUnit agents; target and LUNs; initiator allow-list and CHAP |
 | `nvmeof.go` + `nvmeof_subsystem.go` + `nvmeof_hosts.go` | NVMe-oF gateway — nvmet-subsystem/nvmet-namespace agents; namespaces, subsystem and port; host allow-list |
-| `smb.go` + `smb_shares.go` | SMB gateway (workgroup) — one `haify-smbd@<resource>` per gateway bound to the service IP (so the IP starts *before* smbd); Samba state, shares and passdb on the state volume; shares and users edited live on the serving node |
+| `smb.go` + `smb_shares.go` + `smb_users.go` | SMB gateway (workgroup) — one `haify-smbd@<resource>` per gateway bound to the service IP (so the IP starts *before* smbd); Samba state, shares and passdb on the state volume; shares and users edited live on the serving node |
 
 **Limitation**: Each file must be under 600 lines — see "File size" below.
 

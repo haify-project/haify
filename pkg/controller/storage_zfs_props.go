@@ -19,7 +19,7 @@ import (
 // OpenZFS 2.2 and later compress by default, so a ZFS pool is very likely
 // compressing already; without this nothing said whether, or how well.
 func (sm *StorageManager) fillZFSCompression(ctx context.Context, pools []*PoolInfo, addrs map[string]string) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	byHost := map[string][]*PoolInfo{}
 	for _, p := range pools {
 		if addr := addrs[p.Node]; addr != "" {

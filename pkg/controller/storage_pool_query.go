@@ -16,7 +16,7 @@ import (
 
 // GetPool gets pool information
 func (sm *StorageManager) GetPool(ctx context.Context, poolName, node string) (*PoolInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("GetPool: looking up", zap.String("pool", poolName), zap.String("node", node))
 	poolName = normalizeManagedName(poolName)
 	persisted, persistedErr := sm.getPersistedPool(ctx, poolName)
@@ -115,7 +115,7 @@ func (sm *StorageManager) GetPool(ctx context.Context, poolName, node string) (*
 
 // ListPools lists all pools across all nodes (LVM and ZFS)
 func (sm *StorageManager) ListPools(ctx context.Context) ([]*PoolInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	var pools []*PoolInfo
 	// Use map to deduplicate by normalized node name
 	seen := make(map[string]bool)

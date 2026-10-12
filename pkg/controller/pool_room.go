@@ -28,7 +28,7 @@ import (
 // not knowing is not a refusal, and if the pool really is missing there the
 // lvcreate or lvresize that follows fails on its own, plainly.
 func (rm *ResourceManager) knownPoolFree(ctx context.Context, pool string) (map[string]uint64, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("knownPoolFree: start", zap.String("pool", pool))
 	pools, err := rm.controller.storage.ListPools(ctx)
 	if err != nil {
@@ -73,7 +73,7 @@ func (rm *ResourceManager) knownPoolFree(ctx context.Context, pool string) (map[
 // Unknown is not a refusal: when the pool or the volume size cannot be read,
 // the add goes on as it did before.
 func (rm *ResourceManager) assertPoolRoom(ctx context.Context, resource, node string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	pool, sizeGB := rm.memberPoolAndSize(ctx, resource, "")
 	log.Debug("assertPoolRoom: start", zap.String("resource", resource), zap.String("node", node),
 		zap.String("pool", pool), zap.Uint64("size_gb", sizeGB))
@@ -119,7 +119,7 @@ func freeText(b uint64) string {
 // onto a full pool did to one test node while a 3 GiB volume grew to
 // 4 GiB. Volumes on ZFS are not checked here.
 func (rm *ResourceManager) assertPoolRoomForGrowth(ctx context.Context, resource string, volumeID uint32, newSizeGB uint64) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("assertPoolRoomForGrowth: start", zap.String("resource", resource), zap.Uint32("volume", volumeID),
 		zap.Uint64("new_size_gb", newSizeGB))
 	if rm.controller.db == nil {
@@ -198,7 +198,7 @@ func (rm *ResourceManager) assertPoolRoomForGrowth(ctx context.Context, resource
 
 // liveVolumeBytes reads the size of a volume's backing LV on one node.
 func (rm *ResourceManager) liveVolumeBytes(ctx context.Context, node string, vol *database.Volume) (uint64, bool) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	if vol.VolumeName == "" {
 		log.Debug("liveVolumeBytes: volume has no LV name", zap.String("node", node))
 		return 0, false

@@ -116,7 +116,7 @@ func parseHaifyCLIProbe(out string) (path, machine string, err error) {
 
 // probeHaifyCLI runs haifyCLIProbe on host.
 func (rm *ResourceManager) probeHaifyCLI(ctx context.Context, host string) (string, string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{host}, "echo "+base64Std(haifyCLIProbe())+" | base64 -d | /bin/sh")
 	if err != nil {
@@ -141,7 +141,7 @@ func (rm *ResourceManager) probeHaifyCLI(ctx context.Context, host string) (stri
 // installing this controller's copy at haifyCLIInstallPath when the node has
 // none. A node of another architecture gets only a build made for it.
 func (rm *ResourceManager) ensureHaifyCLI(ctx context.Context, host string) (string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ensureHaifyCLI: checking", zap.String("host", host))
 	path, machine, err := rm.probeHaifyCLI(ctx, host)
 	if err != nil || path != "" {

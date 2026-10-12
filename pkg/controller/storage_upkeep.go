@@ -17,7 +17,7 @@ import (
 const storageJobKeep = 14 * 24 * time.Hour
 
 func (c *Controller) startStorageUpkeep(ctx context.Context) {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	if c.db == nil || c.resources == nil {
 		log.Debug("startStorageUpkeep: no database or resource manager, skipped")
 		return
@@ -50,7 +50,7 @@ func (c *Controller) startStorageUpkeep(ctx context.Context) {
 // resource's options, so a resource that already has the option is skipped
 // and this is cheap to repeat on every takeover.
 func (rm *ResourceManager) backfillThinResyncDefaults(ctx context.Context) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	resources, err := rm.controller.db.ListResources(ctx)
 	if err != nil {
 		log.Debug("backfillThinResyncDefaults: resource list failed", zap.Error(err))
@@ -104,7 +104,7 @@ func (rm *ResourceManager) backfillThinResyncDefaults(ctx context.Context) {
 // volume on host. ZFS datasets are left alone: their discards are a matter of
 // the pool's own settings.
 func (rm *ResourceManager) resourceOnThinStorage(ctx context.Context, resource, host string) bool {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	vols, err := rm.controller.db.ListVolumes(ctx, resource)
 	if err != nil {
 		log.Debug("resourceOnThinStorage: volume list failed", zap.String("resource", resource), zap.Error(err))

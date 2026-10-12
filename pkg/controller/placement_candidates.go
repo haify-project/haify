@@ -23,7 +23,7 @@ import (
 // warning is set when the replicas could not be spread across fault domains
 // (see placement_domain.go).
 func (rm *ResourceManager) selectPlacementNodes(ctx context.Context, pool string, sizeGB uint32, replicas int, onDifferent, onSame, doNotPlaceWith []string) ([]string, string, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.selectPlacementNodes: start", zap.String("pool", pool), zap.Uint32("size_gb", sizeGB),
 		zap.Int("replicas", replicas), zap.Strings("on_different", onDifferent), zap.Strings("on_same", onSame),
 		zap.Strings("do_not_place_with", doNotPlaceWith))
@@ -63,7 +63,7 @@ func (rm *ResourceManager) selectPlacementNodes(ctx context.Context, pool string
 // volume of sizeGB, minus every node holding a diskful replica of a
 // doNotPlaceWith resource. Zero admits any size.
 func (rm *ResourceManager) placementCandidates(ctx context.Context, pool string, sizeGB uint64, doNotPlaceWith []string) ([]placementNode, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.placementCandidates: start", zap.String("pool", pool), zap.Uint64("size_gb", sizeGB),
 		zap.Strings("do_not_place_with", doNotPlaceWith))
 	start := time.Now()
@@ -141,7 +141,7 @@ func (rm *ResourceManager) placementCandidates(ctx context.Context, pool string,
 // barred are never picked: a resource's tiebreaker or diskless client, which
 // AddReplica refuses, for a caller that cannot turn one into a replica.
 func (rm *ResourceManager) selectAdditionalReplicas(ctx context.Context, pool string, sizeGB uint64, count int, existing, barred, onDifferent, onSame []string) ([]string, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.selectAdditionalReplicas: start", zap.String("pool", pool), zap.Uint64("size_gb", sizeGB),
 		zap.Int("count", count), zap.Strings("existing", existing), zap.Strings("barred", barred),
 		zap.Strings("on_different", onDifferent), zap.Strings("on_same", onSame))
@@ -235,7 +235,7 @@ func fitsExistingReplicas(labels map[string]string, existing []string, labelsByN
 // resource names are reported as an error so a typo does not silently weaken the
 // anti-affinity constraint.
 func (rm *ResourceManager) nodesHostingResources(ctx context.Context, resources []string) (map[string]bool, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	excluded := make(map[string]bool)
 	if len(resources) == 0 || rm.controller.db == nil {
 		log.Debug("ResourceManager.nodesHostingResources: nothing to exclude",

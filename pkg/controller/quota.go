@@ -44,7 +44,7 @@ func (c poolCapacity) overcommitted(sizeGB uint64) bool {
 // assertOvercommit refuses adding addGB of thin volume to pool on nodes when
 // a node's pool would pass the ratio.
 func (rm *ResourceManager) assertOvercommit(ctx context.Context, pool string, nodes []string, addGB uint64) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	ratio := rm.maxOvercommit()
 	log.Debug("assertOvercommit: checking", zap.String("pool", pool), zap.Strings("nodes", nodes),
 		zap.Uint64("add_gb", addGB), zap.Float64("ratio", ratio))
@@ -85,7 +85,7 @@ func (rm *ResourceManager) assertOvercommit(ctx context.Context, pool string, no
 // assertProjectQuota refuses growing the project labels name by addGB (and,
 // for a new resource, by one resource) past its quota.
 func (rm *ResourceManager) assertProjectQuota(ctx context.Context, labels map[string]string, addGB uint64, newResource bool) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	if rm.controller.config == nil || rm.controller.db == nil {
 		log.Debug("assertProjectQuota: no config or database, not checking")
 		return nil
@@ -133,7 +133,7 @@ func (rm *ResourceManager) assertProjectQuota(ctx context.Context, labels map[st
 func (rm *ResourceManager) resourceSizeGB(ctx context.Context, r *database.Resource) uint64 {
 	start := time.Now()
 	vols, err := rm.controller.db.ListVolumes(ctx, r.Name)
-	loggerOfController(rm.controller).Debug("resourceSizeGB: listed volumes", zap.String("resource", r.Name),
+	rm.controller.traceLogger().Debug("resourceSizeGB: listed volumes", zap.String("resource", r.Name),
 		zap.Int("count", len(vols)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return 0
@@ -147,7 +147,7 @@ func (rm *ResourceManager) resourceSizeGB(ctx context.Context, r *database.Resou
 
 // assertQuotaForResource checks both for growing resource by addGB on nodes.
 func (rm *ResourceManager) assertQuotaForResource(ctx context.Context, resource, pool string, nodes []string, addGB uint64) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("assertQuotaForResource: checking", zap.String("resource", resource), zap.String("pool", pool),
 		zap.Strings("nodes", nodes), zap.Uint64("add_gb", addGB))
 	if rm.controller.db != nil {
@@ -168,7 +168,7 @@ func (rm *ResourceManager) assertQuotaForResource(ctx context.Context, resource,
 // assertCreateQuota checks a new resource against its project's quota and
 // every target node's thin pools.
 func (rm *ResourceManager) assertCreateQuota(ctx context.Context, volumes []resolvedVolume, nodes []string, labels map[string]string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	var total uint64
 	perPool := map[string]uint64{}
 	for _, v := range volumes {
@@ -192,7 +192,7 @@ func (rm *ResourceManager) assertCreateQuota(ctx context.Context, volumes []reso
 
 // assertResizeQuota checks the growth of a resize.
 func (rm *ResourceManager) assertResizeQuota(ctx context.Context, resource string, volumeID uint32, newSizeGB uint64, hosts []string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("assertResizeQuota: checking", zap.String("resource", resource), zap.Uint32("volume", volumeID),
 		zap.Uint64("new_size_gb", newSizeGB), zap.Strings("hosts", hosts))
 	if rm.controller.db == nil {

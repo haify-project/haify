@@ -34,7 +34,7 @@ func (rm *ResourceManager) SetOptions(ctx context.Context, resource string, opti
 	}
 	rm.controller.logger.Info("Updated DRBD options",
 		zap.String("resource", resource),
-		zap.Any("options", options))
+		zap.Strings("options", optionKeys(options)))
 	return nil
 }
 

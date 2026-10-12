@@ -32,7 +32,7 @@ const (
 // volumePeerStates reads, on address, each peer's state for volume vol of
 // resource, keyed by peer name.
 func (rm *ResourceManager) volumePeerStates(ctx context.Context, address, resource string, vol int) (map[string]drbdPeerDevice, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{address}, "sudo drbdsetup status "+resource+" --json")
 	if err != nil {
@@ -108,7 +108,7 @@ func peersNotUpToDate(peers map[string]drbdPeerDevice) []string {
 // left, or wait passes; it returns the last ones reported.
 func (rm *ResourceManager) waitVolumePeers(ctx context.Context, address, resource string, vol int, wait time.Duration,
 	done func(map[string]drbdPeerDevice) []string) ([]string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	deadline := time.Now().Add(wait)
 	var left []string
 	for {
@@ -138,7 +138,7 @@ func (rm *ResourceManager) waitVolumePeers(ctx context.Context, address, resourc
 // settleNewVolume declares a freshly added, empty volume UpToDate on every
 // replica without a sync, as described above.
 func (rm *ResourceManager) settleNewVolume(ctx context.Context, address, resource string, vol int) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("settleNewVolume: waiting for the handshake", zap.String("host", address), zap.String("resource", resource), zap.Int("volume", vol))
 	left, err := rm.waitVolumePeers(ctx, address, resource, vol, volumeHandshakeWait, unsettledPeers)
 	if err != nil {

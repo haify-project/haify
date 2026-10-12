@@ -53,7 +53,7 @@ func parseLaSizeSectors(out string) uint64 {
 // DRBD metadata on it, so the target's own size bounds the copy), growing the
 // still-empty target first when the source's data region is larger.
 func (sm *SnapshotManager) fitTargetToSource(ctx context.Context, resource string, volumeID uint32, address, target, sourceDevice string) (uint64, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("fitTargetToSource: reading source data size", zap.String("resource", resource), zap.Uint32("volume", volumeID),
 		zap.String("host", address), zap.String("target", target), zap.String("source", sourceDevice))
 	dep := sm.controller.deployment

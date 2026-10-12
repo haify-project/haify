@@ -158,7 +158,7 @@ func formatGatewayNodeStates(nodeStates map[string]*ResourceNodeState) string {
 }
 
 func (s *Server) gatewayConfigOptions(ctx context.Context, resource string) map[string]string {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.gatewayConfigOptions: start", zap.String("resource", resource))
 	options := make(map[string]string)
 	if s.ctrl.db == nil {
@@ -219,7 +219,7 @@ func gatewayInfoFromDBRecord(record *database.Gateway) *gateway.GatewayInfo {
 }
 
 func (s *Server) getGatewayInfo(ctx context.Context, resource string) (*gateway.GatewayInfo, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.getGatewayInfo: start", zap.String("resource", resource),
 		zap.Bool("has_gateway_manager", s.gateway != nil), zap.Bool("has_db", s.ctrl.db != nil))
 	if s.gateway != nil {
@@ -247,7 +247,7 @@ func (s *Server) getGatewayInfo(ctx context.Context, resource string) (*gateway.
 }
 
 func (s *Server) listGatewayInfos(ctx context.Context) ([]*gateway.GatewayInfo, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.listGatewayInfos: start",
 		zap.Bool("has_gateway_manager", s.gateway != nil), zap.Bool("has_db", s.ctrl.db != nil))
 	if s.gateway != nil {
@@ -283,7 +283,7 @@ func (s *Server) listGatewayInfos(ctx context.Context) ([]*gateway.GatewayInfo, 
 }
 
 func (s *Server) gatewayRuntimeInfo(ctx context.Context, resource string) (string, string, map[string]string) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.gatewayRuntimeInfo: start", zap.String("resource", resource))
 	options := make(map[string]string)
 	state := "configured"
@@ -345,7 +345,7 @@ func (s *Server) gatewayRuntimeInfo(ctx context.Context, resource string) (strin
 }
 
 func (s *Server) enrichGatewayInfo(ctx context.Context, gw *gateway.GatewayInfo) *haifypb.GatewayInfo {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.enrichGatewayInfo: start", zap.String("resource", gw.Resource), zap.String("type", gw.Type))
 	options := s.gatewayConfigOptions(ctx, gw.Resource)
 	state, node, runtimeOptions := s.gatewayRuntimeInfo(ctx, gw.Resource)

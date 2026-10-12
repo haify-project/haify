@@ -35,7 +35,7 @@ import (
 //
 // The .res body is never traced: it can hold a shared-secret.
 func (rm *ResourceManager) SetTiebreaker(ctx context.Context, resource, newNode string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("SetTiebreaker: moving", zap.String("resource", resource), zap.String("node", newNode))
 	if rm.deployment == nil {
 		log.Debug("SetTiebreaker: no deployment client")
@@ -288,7 +288,7 @@ func (rm *ResourceManager) SetTiebreaker(ctx context.Context, resource, newNode 
 // agrees it is gone — no SSH, and no answering member still connected to it.
 // The incoming node is never skipped: it is the point of the change.
 func (rm *ResourceManager) withoutGoneMembers(ctx context.Context, resource, config string, participants []string, newNode string) ([]string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	newHost := ""
 	if newNode != "" {
 		newHost = rm.controller.ResolveHost(newNode)

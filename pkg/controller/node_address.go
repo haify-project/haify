@@ -49,7 +49,7 @@ type NodeAddressChange struct {
 
 // SetNodeAddress renumbers one registered node; see SetNodeAddresses.
 func (nm *NodeManager) SetNodeAddress(ctx context.Context, nodeRef, address, replicationAddress string) (*NodeAddressChange, error) {
-	loggerOfController(nm.controller).Debug("NodeManager.SetNodeAddress: start", zap.String("node", nodeRef),
+	nm.controller.traceLogger().Debug("NodeManager.SetNodeAddress: start", zap.String("node", nodeRef),
 		zap.String("address", address), zap.String("replication_address", replicationAddress))
 	return nm.SetNodeAddresses(ctx, []AddressMove{{Node: nodeRef, Address: address, ReplicationAddress: replicationAddress}})
 }
@@ -69,7 +69,7 @@ func (nm *NodeManager) SetNodeAddress(ctx context.Context, nodeRef, address, rep
 // anything changes, and the registry takes all the new addresses before any
 // config is rewritten.
 func (nm *NodeManager) SetNodeAddresses(ctx context.Context, moves []AddressMove) (*NodeAddressChange, error) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.SetNodeAddresses: start", zap.Int("count", len(moves)))
 	if len(moves) == 0 {
 		log.Debug("NodeManager.SetNodeAddresses: refusing, no move given")
@@ -217,7 +217,7 @@ func replicationOf(n *NodeInfo) string {
 // any new one arrives, and every mapping is applied once to the original
 // values: two nodes trading addresses must not clobber each other halfway.
 func (nm *NodeManager) rekey(ctx context.Context, moves []NodeMove, byName map[string]*NodeInfo) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.rekey: start", zap.Int("count", len(moves)))
 	oldToNew := make(map[string]string, len(moves))
 	updated := make([]NodeInfo, 0, len(moves))

@@ -20,7 +20,7 @@ const diskProbeTimeout = 2 * time.Minute
 // DiskHealth lists the disks of pool on node; empty pool or node means all.
 func (sm *StorageManager) DiskHealth(ctx context.Context, pool, node string) ([]inspect.Disk, error) {
 	c := sm.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("DiskHealth: start", zap.String("pool", pool), zap.String("node", node))
 	nodes, err := c.nodes.ListNodes(ctx)
 	if err != nil {
@@ -85,7 +85,7 @@ func (sm *StorageManager) DiskHealth(ctx context.Context, pool, node string) ([]
 // rather than inside the inspection summary.
 func (im *InspectionManager) gatherDisks(ctx context.Context, in *inspect.Input) {
 	c := im.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("InspectionManager.gatherDisks: start")
 	disks, err := c.storage.DiskHealth(ctx, "", "")
 	if err != nil {

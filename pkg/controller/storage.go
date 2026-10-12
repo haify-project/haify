@@ -57,7 +57,7 @@ type StorageManager struct {
 
 // NewStorageManager creates a new storage manager
 func NewStorageManager(ctrl *Controller) *StorageManager {
-	ctrlLogOrGlobal(ctrl).Debug("NewStorageManager: building storage manager")
+	ctrl.traceLogger().Debug("NewStorageManager: building storage manager")
 	return &StorageManager{
 		controller: ctrl,
 	}
@@ -99,7 +99,7 @@ func bytesToGB(b uint64) uint64 {
 }
 
 func (sm *StorageManager) getPersistedPool(ctx context.Context, name string) (*PoolInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	if sm.controller.db == nil {
 		log.Debug("getPersistedPool: no database", zap.String("pool", name))
 		return nil, fmt.Errorf("database not available")
@@ -117,7 +117,7 @@ func (sm *StorageManager) getPersistedPool(ctx context.Context, name string) (*P
 }
 
 func (sm *StorageManager) listPersistedPools(ctx context.Context) ([]*PoolInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	if sm.controller.db == nil {
 		log.Debug("listPersistedPools: no database")
 		return nil, fmt.Errorf("database not available")
@@ -189,7 +189,7 @@ func (sm *StorageManager) defaultedPoolType(poolType string) string {
 // CreatePool creates a pool from disks on node. A disk holding old data is
 // refused unless wipe is set.
 func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node string, disks []string, sizeGB uint64, wipe bool) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("CreatePool: creating", zap.String("pool", name), zap.String("type", poolType), zap.String("node", node),
 		zap.Strings("disks", disks), zap.Uint64("size_gb", sizeGB), zap.Bool("wipe", wipe))
 	normalizedType, err := normalizeLVMPoolType(sm.defaultedPoolType(poolType))
@@ -336,7 +336,7 @@ func (sm *StorageManager) CreatePool(ctx context.Context, name, poolType, node s
 
 // DeletePool deletes a storage pool
 func (sm *StorageManager) DeletePool(ctx context.Context, name, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("DeletePool: deleting", zap.String("pool", name), zap.String("node", node))
 	name = normalizeManagedName(name)
 	if persisted, err := sm.getPersistedPool(ctx, name); err == nil && isZFSPoolType(persisted.Type) {

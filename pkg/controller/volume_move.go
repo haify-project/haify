@@ -36,7 +36,7 @@ const (
 // is resumed by asking again with the same pool.
 func (rm *ResourceManager) MoveVolume(ctx context.Context, resource string, volID int, pool string) (string, error) {
 	c := rm.controller
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	log.Debug("MoveVolume: checking", zap.String("resource", resource), zap.Int("volume", volID), zap.String("pool", pool))
 	pool = normalizeManagedName(pool)
 	r, err := c.db.GetResource(ctx, resource)
@@ -105,7 +105,7 @@ func (rm *ResourceManager) MoveVolume(ctx context.Context, resource string, volI
 }
 
 func (rm *ResourceManager) dbVolume(ctx context.Context, resource string, volID int) (*database.Volume, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	vols, err := rm.controller.db.ListVolumes(ctx, resource)
 	if err != nil {
 		log.Debug("dbVolume: volume list failed", zap.String("resource", resource), zap.Error(err))
@@ -141,14 +141,14 @@ func (rm *ResourceManager) secondariesFirst(ctx context.Context, resource string
 	if contains(nodes, primary) {
 		out = append(out, primary)
 	}
-	ctrlLogOrGlobal(rm.controller).Debug("secondariesFirst: order", zap.String("resource", resource), zap.String("primary", primary),
+	rm.controller.traceLogger().Debug("secondariesFirst: order", zap.String("resource", resource), zap.String("primary", primary),
 		zap.Strings("order", out))
 	return out
 }
 
 func (rm *ResourceManager) runVolumeMove(ctx context.Context, j *database.StorageJob) {
 	c := rm.controller
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	log.Debug("runVolumeMove: running", zap.String("job", j.ID), zap.String("resource", j.Resource), zap.Int("volume", j.VolumeID),
 		zap.Strings("nodes", j.Nodes), zap.Strings("done", j.Done))
 	for _, n := range j.Nodes {
@@ -176,7 +176,7 @@ func (rm *ResourceManager) runVolumeMove(ctx context.Context, j *database.Storag
 // pool and waits for DRBD to fill it.
 func (rm *ResourceManager) moveVolumeOnNode(ctx context.Context, j *database.StorageJob, node string) error {
 	c := rm.controller
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	host := c.ResolveHost(node)
 	vol, err := rm.dbVolume(ctx, j.Resource, j.VolumeID)
 	if err != nil {
@@ -238,7 +238,7 @@ func (rm *ResourceManager) moveVolumeOnNode(ctx context.Context, j *database.Sto
 // writeHostVolumeDisk points node's copy at disk in the config every member
 // holds.
 func (rm *ResourceManager) writeHostVolumeDisk(ctx context.Context, j *database.StorageJob, node, disk string) error {
-	ctrlLogOrGlobal(rm.controller).Debug("writeHostVolumeDisk: rewriting", zap.String("resource", j.Resource),
+	rm.controller.traceLogger().Debug("writeHostVolumeDisk: rewriting", zap.String("resource", j.Resource),
 		zap.String("node", node), zap.Int("volume", j.VolumeID), zap.String("disk", disk))
 	return rm.editResourceConfig(ctx, j.Resource, func(conf string) (string, error) {
 		minor := -1
@@ -248,7 +248,7 @@ func (rm *ResourceManager) writeHostVolumeDisk(ctx context.Context, j *database.
 			}
 		}
 		if minor < 0 {
-			ctrlLogOrGlobal(rm.controller).Debug("writeHostVolumeDisk: volume not in the config", zap.Int("volume", j.VolumeID))
+			rm.controller.traceLogger().Debug("writeHostVolumeDisk: volume not in the config", zap.Int("volume", j.VolumeID))
 			return "", fmt.Errorf("volume %d is not in the config", j.VolumeID)
 		}
 		return setHostVolumeDisk(conf, rm.controller.nodes.GetDRBDNameByRef(node), j.VolumeID, minor, disk)
@@ -257,7 +257,7 @@ func (rm *ResourceManager) writeHostVolumeDisk(ctx context.Context, j *database.
 
 // editResourceConfig rewrites a resource's .res on every member.
 func (rm *ResourceManager) editResourceConfig(ctx context.Context, resource string, edit func(string) (string, error)) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	r, err := rm.controller.db.GetResource(ctx, resource)
 	if err != nil || r == nil {
 		log.Debug("editResourceConfig: resource not found", zap.String("resource", resource), zap.Error(err))
@@ -293,7 +293,7 @@ func (rm *ResourceManager) editResourceConfig(ctx context.Context, resource stri
 // waitPeerUpToDate waits until a member other than node has the volume
 // UpToDate, the copy node's will be rebuilt from.
 func (rm *ResourceManager) waitPeerUpToDate(ctx context.Context, resource string, vol int, node string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	deadline := time.Now().Add(10 * time.Minute)
 	for {
 		if info, err := rm.GetResource(ctx, resource); err == nil {
@@ -323,7 +323,7 @@ func (rm *ResourceManager) waitPeerUpToDate(ctx context.Context, resource string
 // waitLocalUpToDate waits for host's copy of target (res/vol) to finish its
 // resync.
 func (rm *ResourceManager) waitLocalUpToDate(ctx context.Context, host, target string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	deadline := time.Now().Add(volumeMoveTimeout)
 	for {
 		res, err := rm.deployment.Exec(ctx, []string{host}, "sudo drbdadm dstate "+target)
@@ -352,7 +352,7 @@ func (rm *ResourceManager) waitLocalUpToDate(ctx context.Context, host, target s
 
 // commitVolumeMove makes the new pool the volume's pool for every node.
 func (rm *ResourceManager) commitVolumeMove(ctx context.Context, j *database.StorageJob) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("commitVolumeMove: committing", zap.String("job", j.ID), zap.String("resource", j.Resource), zap.String("pool", j.TargetPool))
 	vol, err := rm.dbVolume(ctx, j.Resource, j.VolumeID)
 	if err != nil {
@@ -392,7 +392,7 @@ func (rm *ResourceManager) finishVolumeMove(ctx context.Context, j *database.Sto
 			j.VolumeID, j.Resource, j.TargetPool, err, strings.Join(j.Done, ", "))
 	}
 	serr := c.db.SaveStorageJob(context.WithoutCancel(ctx), j)
-	ctrlLogOrGlobal(c).Debug("finishVolumeMove: job saved", zap.String("job", j.ID), zap.String("state", j.State), zap.Error(serr))
+	c.traceLogger().Debug("finishVolumeMove: job saved", zap.String("job", j.ID), zap.String("state", j.State), zap.Error(serr))
 	c.logger.Info("Volume move finished", zap.String("job", j.ID), zap.String("state", j.State), zap.String("message", j.Message))
 	if c.events != nil {
 		c.events.Publish(event.Event{Type: event.TypeVolumeMoved, Severity: sev, Status: event.StatusInfo,
@@ -402,7 +402,7 @@ func (rm *ResourceManager) finishVolumeMove(ctx context.Context, j *database.Sto
 
 // resumeVolumeMoves carries on with the moves a previous controller started.
 func (rm *ResourceManager) resumeVolumeMoves(ctx context.Context) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	jobs, err := rm.controller.db.ListStorageJobs(ctx)
 	if err != nil {
 		log.Debug("resumeVolumeMoves: job list failed", zap.Error(err))

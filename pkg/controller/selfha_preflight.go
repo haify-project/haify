@@ -19,7 +19,7 @@ import (
 // selfHaTargetNodes resolves the requested node list (or all registered
 // nodes) to parallel name/address slices.
 func (rm *ResourceManager) selfHaTargetNodes(ctx context.Context, requested []string) ([]string, []string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("selfHaTargetNodes: resolving", zap.Strings("requested", requested))
 	if len(requested) == 0 {
 		log.Debug("selfHaTargetNodes: none requested, using every registered node")
@@ -50,7 +50,7 @@ func (rm *ResourceManager) selfHaTargetNodes(ctx context.Context, requested []st
 // selfNodeAddress identifies which cluster node this controller process is
 // running on by matching the local hostname against the registered nodes.
 func (rm *ResourceManager) selfNodeAddress(nodeNames, nodeAddrs []string) (string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	hostname, err := os.Hostname()
 	if err != nil {
 		log.Debug("selfNodeAddress: hostname unknown", zap.Error(err))
@@ -74,7 +74,7 @@ func (rm *ResourceManager) selfNodeAddress(nodeNames, nodeAddrs []string) (strin
 // selfHaPreflight validates every runtime requirement that the handoff
 // script depends on, so failures happen while the controller is still alive.
 func (rm *ResourceManager) selfHaPreflight(ctx context.Context, selfAddr string, standbyAddrs []string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("selfHaPreflight: checking", zap.String("self", selfAddr), zap.Strings("standbys", standbyAddrs))
 	all := append([]string{selfAddr}, standbyAddrs...)
 

@@ -34,7 +34,7 @@ func (c *Controller) thinPoolPercentFree() uint64 {
 	if c.config != nil {
 		pct -= c.config.Storage.Thin.ReservePercent
 	}
-	loggerOfController(c).Debug("Controller.thinPoolPercentFree: computed", zap.Int("percent", pct),
+	c.traceLogger().Debug("Controller.thinPoolPercentFree: computed", zap.Int("percent", pct),
 		zap.Int("used_percent", max(pct, 45)))
 	return uint64(max(pct, 45))
 }
@@ -80,7 +80,7 @@ func planThinGrow(dataBytes, metaBytes, vgFreeBytes, pct uint64) thinGrowPlan {
 // the group's free extents. A group without a thin pool is left alone: thick
 // volumes allocate from the group directly and already see the new space.
 func (sm *StorageManager) growThinPoolAfterExtend(ctx context.Context, address, vgName string) error {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("growThinPoolAfterExtend: start", zap.String("host", address), zap.String("pool", vgName))
 	dep := sm.controller.deployment
 	start := time.Now()

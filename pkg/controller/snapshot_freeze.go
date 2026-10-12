@@ -40,7 +40,7 @@ func scheduleFrozenUntil(s *database.SnapshotSchedule, now time.Time) time.Time 
 // resourceFrozenUntil is when resource's schedule freeze ends, and why it
 // froze; zero when it is not frozen.
 func (c *Controller) resourceFrozenUntil(ctx context.Context, resource string) (time.Time, string) {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	if c.db == nil || resource == "" {
 		log.Debug("resourceFrozenUntil: no database or resource, not frozen", zap.String("resource", resource))
 		return time.Time{}, ""
@@ -59,7 +59,7 @@ func (c *Controller) resourceFrozenUntil(ctx context.Context, resource string) (
 // FreezeSchedule freezes resource's schedule for d (defaultFreeze when zero).
 // A freeze is only ever extended here, never shortened.
 func (sm *ScheduleManager) FreezeSchedule(ctx context.Context, resource string, d time.Duration, reason string) (time.Time, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("FreezeSchedule: freezing", zap.String("resource", resource), zap.Duration("duration", d), zap.String("reason", reason))
 	if sm.controller.db == nil {
 		log.Debug("FreezeSchedule: no database")
@@ -100,7 +100,7 @@ func (sm *ScheduleManager) FreezeSchedule(ctx context.Context, resource string, 
 
 // UnfreezeSchedule ends resource's freeze now.
 func (sm *ScheduleManager) UnfreezeSchedule(ctx context.Context, resource string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("UnfreezeSchedule: unfreezing", zap.String("resource", resource))
 	if sm.controller.db == nil {
 		log.Debug("UnfreezeSchedule: no database")
@@ -127,7 +127,7 @@ func (sm *ScheduleManager) UnfreezeSchedule(ctx context.Context, resource string
 // snapshotResource snapshots every volume of res on every diskful node at ts,
 // holding the ZFS ones when the schedule locks.
 func (sm *ScheduleManager) snapshotResource(ctx context.Context, res *ResourceInfo, s *database.SnapshotSchedule, ts time.Time) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	locked := s.LockDays > 0 || !scheduleFrozenUntil(s, lockNow()).IsZero()
 	log.Debug("snapshotResource: snapshotting", zap.String("resource", res.Name), zap.Strings("nodes", res.Nodes),
 		zap.Int("volumes", len(res.Volumes)), zap.Time("ts", ts), zap.Bool("locked", locked))
@@ -148,7 +148,7 @@ func (sm *ScheduleManager) snapshotResource(ctx context.Context, res *ResourceIn
 // SnapshotNow takes one scheduled snapshot of resource immediately, outside
 // its cron, and records nothing else: no pruning, no last-run update.
 func (sm *ScheduleManager) SnapshotNow(ctx context.Context, resource string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("SnapshotNow: snapshotting now", zap.String("resource", resource))
 	if sm.controller.db == nil {
 		log.Debug("SnapshotNow: no database")

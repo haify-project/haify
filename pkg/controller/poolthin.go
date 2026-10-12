@@ -188,7 +188,7 @@ func parseThinPercent(field string) float64 {
 // readThinUsage reads the thin pool utilisation of one volume group on one
 // host. Returns nil without error when the group holds no thin pool.
 func (sm *StorageManager) readThinUsage(ctx context.Context, address, vgName string) (*PoolThinInfo, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	start := time.Now()
 	res, err := sm.controller.deployment.LVSThinReport(ctx, []string{address}, vgName)
 	if err != nil {
@@ -227,7 +227,7 @@ func (sm *StorageManager) readThinUsage(ctx context.Context, address, vgName str
 // out rather than failing the listing — a pool card missing its utilisation is
 // a smaller problem than a pool list that errors.
 func (sm *StorageManager) thinUsageByPool(ctx context.Context, hosts []string) map[string]map[string]*PoolThinInfo {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	out := make(map[string]map[string]*PoolThinInfo)
 	if len(hosts) == 0 {
 		log.Debug("thinUsageByPool: no hosts")

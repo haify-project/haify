@@ -131,7 +131,7 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 		zap.Int("volumes", len(resolved)),
 		zap.String("storage_type", storageType),
 		zap.Bool("encrypted", metadata.Encrypt),
-		zap.Any("options", drbdOptions))
+		zap.Strings("options", optionKeys(drbdOptions)))
 
 	// Quorum tiebreaker: a 2-node resource under quorum=majority loses its
 	// majority the moment either node fails (the survivor is only 1/2), so

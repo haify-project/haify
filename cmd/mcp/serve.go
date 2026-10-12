@@ -117,8 +117,21 @@ func serveCmd() *cobra.Command {
 // next request.
 func tokenCmd() *cobra.Command {
 	var tokens string
-	cmd := &cobra.Command{Use: "token", Short: "Create, list and revoke access tokens for the remote server"}
+	var debug bool
+	cmd := &cobra.Command{
+		Use:   "token",
+		Short: "Create, list and revoke access tokens for the remote server",
+		// Traces go to stderr with --debug; stdout keeps only the token output.
+		PersistentPreRunE: func(*cobra.Command, []string) error {
+			if !debug {
+				return nil
+			}
+			_, err := newStderrLogger(true)
+			return err
+		},
+	}
 	cmd.PersistentFlags().StringVar(&tokens, "tokens", "", "token store (default: HAIFY_MCP_TOKENS env, else "+defaultTokenStore+")")
+	cmd.PersistentFlags().BoolVar(&debug, "debug", false, "enable debug logging on stderr")
 
 	var (
 		name    string

@@ -65,7 +65,7 @@ func withPreferredNodes(content string, hostnames []string, policy string) strin
 // SetHaPreferredNodes records and applies the preferred nodes of resource's
 // HA config. An empty list removes the preference.
 func (rm *ResourceManager) SetHaPreferredNodes(ctx context.Context, resource string, nodes []string, policy string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.SetHaPreferredNodes: start", zap.String("resource", resource),
 		zap.Strings("nodes", nodes), zap.String("policy", policy))
 	switch policy {
@@ -173,7 +173,7 @@ func (rm *ResourceManager) SetHaPreferredNodes(ctx context.Context, resource str
 
 // uname is the hostname drbd-reactor knows node by.
 func (rm *ResourceManager) uname(node string) string {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	if nodes, err := rm.controller.nodes.ListNodes(context.Background()); err == nil {
 		for _, n := range nodes {
 			if n.Name == node && n.Hostname != "" {

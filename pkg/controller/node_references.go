@@ -116,7 +116,7 @@ func gatewayRole(t database.GatewayType) string {
 // stays in every peer's config, and repair, failover and delete stop reaching
 // it.
 func (nm *NodeManager) checkNodeUnreferenced(ctx context.Context, node *NodeInfo, address string) error {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.checkNodeUnreferenced: start", zap.String("node", node.Name), zap.String("address", address))
 	db := nm.controller.db
 	if db == nil {

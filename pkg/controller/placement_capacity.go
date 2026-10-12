@@ -152,7 +152,7 @@ func thinPoolExhausted(u *PoolThinInfo) bool {
 // A missing or unreadable record answers "not thin", which is the pre-existing
 // behaviour and never widens what placement accepts.
 func (rm *ResourceManager) poolRecordedThin(ctx context.Context, pool string) bool {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	if rm.controller.db == nil {
 		log.Debug("ResourceManager.poolRecordedThin: no database, not thin", zap.String("pool", pool))
 		return false

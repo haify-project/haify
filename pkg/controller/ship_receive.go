@@ -62,7 +62,7 @@ func shipCleanupScript(kind, resource string, vol uint32) string {
 // shipReceiveNode is the node that takes the data: the resource's first
 // diskful node.
 func (rm *ResourceManager) shipReceiveNode(ctx context.Context, resource string) (string, string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	r, err := rm.controller.db.GetResource(ctx, resource)
 	if err != nil || r == nil {
 		log.Debug("shipReceiveNode: resource not found", zap.String("resource", resource), zap.Error(err))
@@ -80,7 +80,7 @@ func (rm *ResourceManager) shipReceiveNode(ctx context.Context, resource string)
 
 // PrepareShipReceive opens a receiver for volume vol of resource.
 func (rm *ResourceManager) PrepareShipReceive(ctx context.Context, resource string, vol uint32, token string) (*haifypb.PrepareShipReceiveResponse, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("PrepareShipReceive: opening receiver", zap.String("resource", resource), zap.Uint32("volume", vol),
 		zap.Bool("has_token", token != ""))
 	if !shipTokenRE.MatchString(token) {
@@ -139,7 +139,7 @@ type shipNodeResult struct {
 
 // readShipResult waits for kind's result on host, up to wait.
 func (rm *ResourceManager) readShipResult(ctx context.Context, host, kind, resource string, vol uint32, wait time.Duration) (*shipNodeResult, bool, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	path := shipStateDir(kind, resource, vol) + "/result.json"
 	deadline := time.Now().Add(wait)
 	log.Debug("readShipResult: waiting", zap.String("host", host), zap.String("path", path), zap.Duration("wait", wait))
@@ -180,7 +180,7 @@ func (rm *ResourceManager) readShipResult(ctx context.Context, host, kind, resou
 // FinishShipReceive closes the receiver for vol and reports what arrived;
 // last also releases the resource.
 func (rm *ResourceManager) FinishShipReceive(ctx context.Context, resource string, vol uint32, last bool) (*haifypb.FinishShipReceiveResponse, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("FinishShipReceive: closing receiver", zap.String("resource", resource), zap.Uint32("volume", vol), zap.Bool("last", last))
 	node, host, err := rm.shipReceiveNode(ctx, resource)
 	if err != nil {

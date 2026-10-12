@@ -89,7 +89,7 @@ func zfsDestroyCloneCmd(clone string) string {
 // volumeID are the volume being filled.
 func (sm *SnapshotManager) resolveSnapshotSource(ctx context.Context, address, node, target string, volumeID uint32,
 	src SnapshotSource) (string, func(), error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("resolveSnapshotSource: resolving", zap.String("host", address), zap.String("node", node),
 		zap.String("target", target), zap.Uint32("volume", volumeID), zap.String("source_resource", src.Resource),
 		zap.Uint32("source_volume", src.VolumeID), zap.String("snapshot", src.Name), zap.Bool("replicated", src.Replicated))
@@ -161,7 +161,7 @@ func (sm *SnapshotManager) resolveSnapshotSource(ctx context.Context, address, n
 // pools alike.
 func (sm *SnapshotManager) PopulateVolumeFromSnapshot(ctx context.Context, resource string, volumeID uint32,
 	src SnapshotSource, node string) (uint64, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("PopulateVolumeFromSnapshot: populating", zap.String("resource", resource), zap.Uint32("volume", volumeID),
 		zap.String("node", node), zap.String("source_resource", src.Resource), zap.String("snapshot", src.Name))
 	if strings.TrimSpace(resource) == "" {

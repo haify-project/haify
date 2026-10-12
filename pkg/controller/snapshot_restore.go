@@ -31,7 +31,7 @@ import (
 
 // RestoreSnapshot merges snapshotName back into volume ("<vg>/<lv>") on node.
 func (sm *SnapshotManager) RestoreSnapshot(ctx context.Context, volume, snapshotName, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("RestoreSnapshot: restoring", zap.String("volume", volume), zap.String("snapshot", snapshotName), zap.String("node", node))
 	address := sm.controller.ResolveHost(node)
 	vg, lv := parseVolumePath(volume)
@@ -93,7 +93,7 @@ func (sm *SnapshotManager) RestoreSnapshot(ctx context.Context, volume, snapshot
 // RestoreZFSSnapshot rolls dataset back to snapshotName on node, keeping the
 // resource's other replicas in step the same way RestoreSnapshot does.
 func (sm *SnapshotManager) RestoreZFSSnapshot(ctx context.Context, dataset, snapshotName, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("RestoreZFSSnapshot: rolling back", zap.String("dataset", dataset), zap.String("snapshot", snapshotName), zap.String("node", node))
 	address := sm.controller.ResolveHost(node)
 	backing := "/dev/zvol/" + dataset
@@ -131,7 +131,7 @@ func (sm *SnapshotManager) RestoreZFSSnapshot(ctx context.Context, dataset, snap
 // RestoreLVMSnapshotByName restores a snapshot known only by its name within
 // vg, asking the node which LV it is a snapshot of.
 func (sm *SnapshotManager) RestoreLVMSnapshotByName(ctx context.Context, vg, snapshotName, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("RestoreLVMSnapshotByName: looking up origin", zap.String("pool", vg), zap.String("snapshot", snapshotName), zap.String("node", node))
 	address := sm.controller.ResolveHost(node)
 	start := time.Now()
@@ -162,7 +162,7 @@ func (sm *SnapshotManager) RestoreLVMSnapshotByName(ctx context.Context, vg, sna
 // by its LUKS container rather than the LV, so that path is looked for too;
 // disk is whichever the config names.
 func (sm *SnapshotManager) resourceBackedBy(ctx context.Context, address, backing string) (resource, disk string, err error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	candidates := []string{backing}
 	if vg, lv := parseVolumePath(strings.TrimPrefix(backing, "/dev/")); vg != "" && !strings.HasPrefix(backing, "/dev/zvol/") {
 		candidates = append(candidates, luksMapperPath(vg, lv))
@@ -197,7 +197,7 @@ func (sm *SnapshotManager) resourceBackedBy(ctx context.Context, address, backin
 // resyncs the other replicas from address. disk is the device the resource's
 // config names for the restored volume — the LV, a zvol, or a LUKS container.
 func (sm *SnapshotManager) restoreReplicated(ctx context.Context, resource, address, node, disk string, rollback func() error) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("restoreReplicated: restoring", zap.String("resource", resource), zap.String("node", node), zap.String("disk", disk))
 	rm := sm.controller.resources
 	hosts, err := rm.resourceHosts(ctx, resource)
@@ -290,7 +290,7 @@ func (sm *SnapshotManager) restoreReplicated(ctx context.Context, resource, addr
 // so rather than failing, so the snapshot's disappearance is what is checked;
 // cycling the origin's activation starts a deferred merge.
 func (sm *SnapshotManager) mergeSnapshot(ctx context.Context, address, snapshotPath, backing string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	snapLV := strings.TrimPrefix(snapshotPath, "/dev/")
 	originLV := strings.TrimPrefix(backing, "/dev/")
 	log.Debug("mergeSnapshot: merging", zap.String("host", address), zap.String("snapshot", snapLV), zap.String("origin", originLV))

@@ -11,16 +11,6 @@ import (
 
 const managedNamePrefix = "haify_"
 
-// loggerOfController is c's logger, or zap's global one when c or its logger
-// is nil, as in structs that tests build by hand. Traces reach the logger
-// through it wherever the receiver may come from such a test.
-func loggerOfController(c *Controller) *zap.Logger {
-	if c == nil || c.logger == nil {
-		return zap.L()
-	}
-	return c.logger
-}
-
 func normalizeManagedName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" || strings.HasPrefix(name, managedNamePrefix) {

@@ -46,7 +46,7 @@ const quorumProbe = `drbdsetup status %[1]s --verbose 2>/dev/null`
 // any survivor) is what an operator actually wants to know — "will THIS node
 // keep serving?".
 func (rm *ResourceManager) Quorum(ctx context.Context, resource string) (*QuorumInfo, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("Quorum: reading", zap.String("resource", resource))
 	if rm.deployment == nil {
 		log.Debug("Quorum: no deployment client")

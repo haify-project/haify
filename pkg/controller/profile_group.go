@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,7 +30,7 @@ type ProfileMemberResult struct {
 
 // profileMembers lists the resources that belong to a profile, by name.
 func (rm *ResourceManager) profileMembers(ctx context.Context, profile string) ([]*database.Resource, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	start := time.Now()
 	all, err := rm.controller.db.ListResources(ctx)
 	log.Debug("profileMembers: listed resources", zap.String("profile", profile), zap.Int("count", len(all)),
@@ -49,7 +50,7 @@ func (rm *ResourceManager) profileMembers(ctx context.Context, profile string) (
 }
 
 func (rm *ResourceManager) requireProfile(ctx context.Context, name string) (*database.ResourceProfile, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	if rm.controller.db == nil {
 		log.Debug("requireProfile: no database", zap.String("profile", name))
 		return nil, fmt.Errorf("database not available")
@@ -68,7 +69,7 @@ func (rm *ResourceManager) requireProfile(ctx context.Context, name string) (*da
 // every member. The profile is saved first, so a member that fails keeps its
 // old value while every later AdjustProfile tries again.
 func (rm *ResourceManager) SetProfileOptions(ctx context.Context, name string, options map[string]string) (*database.ResourceProfile, []ProfileMemberResult, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("SetProfileOptions: setting", zap.String("profile", name), zap.Int("options", len(options)))
 	if len(options) == 0 {
 		log.Debug("SetProfileOptions: no options given")
@@ -108,7 +109,7 @@ func (rm *ResourceManager) SetProfileOptions(ctx context.Context, name string, o
 		results = append(results, res)
 	}
 	rm.controller.logger.Info("Profile options set",
-		zap.String("profile", name), zap.Any("options", options), zap.Int("members", len(members)))
+		zap.String("profile", name), zap.Strings("options", optionKeys(options)), zap.Int("members", len(members)))
 	return p, results, nil
 }
 
@@ -117,7 +118,7 @@ func (rm *ResourceManager) SetProfileOptions(ctx context.Context, name string, o
 // is in. Replica count and placement are left to AdjustProfile, which says
 // what it would change before it changes it.
 func (rm *ResourceManager) AssignProfile(ctx context.Context, resource, profile string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("AssignProfile: assigning", zap.String("resource", resource), zap.String("profile", profile))
 	if rm.controller.db == nil {
 		log.Debug("AssignProfile: no database")
@@ -164,7 +165,7 @@ func (rm *ResourceManager) AssignProfile(ctx context.Context, resource, profile 
 // removing a copy of someone's data is not something to do as a side effect.
 // With dryRun nothing is changed and each result says what would be.
 func (rm *ResourceManager) AdjustProfile(ctx context.Context, name string, dryRun bool) ([]ProfileMemberResult, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("AdjustProfile: adjusting", zap.String("profile", name), zap.Bool("dry_run", dryRun))
 	p, err := rm.requireProfile(ctx, name)
 	if err != nil {
@@ -186,7 +187,7 @@ func (rm *ResourceManager) AdjustProfile(ctx context.Context, name string, dryRu
 }
 
 func (rm *ResourceManager) adjustMember(ctx context.Context, p *database.ResourceProfile, m *database.Resource, dryRun bool) ProfileMemberResult {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("adjustMember: adjusting", zap.String("profile", p.Name), zap.String("resource", m.Name),
 		zap.Bool("dry_run", dryRun), zap.Int("replicas_wanted", p.Replicas))
 	res := ProfileMemberResult{Resource: m.Name, OK: true}
@@ -281,7 +282,7 @@ func (rm *ResourceManager) adjustMember(ctx context.Context, p *database.Resourc
 // no longer needs one. If the replica cannot be added, the tiebreaker is put
 // back, so a failed adjust does not leave two copies with no third vote.
 func (rm *ResourceManager) tiebreakerToReplica(ctx context.Context, resource, node string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("tiebreakerToReplica: removing tiebreaker", zap.String("resource", resource), zap.String("node", node))
 	if err := rm.SetTiebreaker(ctx, resource, ""); err != nil {
 		log.Debug("tiebreakerToReplica: removing tiebreaker failed", zap.String("resource", resource), zap.Error(err))
@@ -303,7 +304,7 @@ func (rm *ResourceManager) tiebreakerToReplica(ctx context.Context, resource, no
 // memberPoolAndSize is the pool a member's new replicas go into — its own
 // volumes', else the profile's — and the size one must hold.
 func (rm *ResourceManager) memberPoolAndSize(ctx context.Context, resource, profilePool string) (string, uint64) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	start := time.Now()
 	vols, err := rm.controller.db.ListVolumes(ctx, resource)
 	log.Debug("memberPoolAndSize: listed volumes", zap.String("resource", resource), zap.Int("count", len(vols)),
@@ -331,7 +332,7 @@ func (rm *ResourceManager) memberPoolAndSize(ctx context.Context, resource, prof
 // nodes to satisfy its replica count and label constraints. On a thin pool the
 // figure is what fits without overcommitting; thin reports that.
 func (rm *ResourceManager) ProfileMaxSize(ctx context.Context, name string) (sizeGB uint64, nodes []string, thin bool, err error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ProfileMaxSize: computing", zap.String("profile", name))
 	p, err := rm.requireProfile(ctx, name)
 	if err != nil {
@@ -395,4 +396,15 @@ func maxPlaceableSize(cands []placementNode, replicas int, c placementConstraint
 	}
 	log.Debug("maxPlaceableSize: no size places")
 	return 0, nil
+}
+
+// optionKeys lists option names without their values, for logs: one DRBD
+// option is shared-secret.
+func optionKeys(options map[string]string) []string {
+	keys := make([]string, 0, len(options))
+	for k := range options {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }

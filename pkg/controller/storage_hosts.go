@@ -13,7 +13,7 @@ import (
 // placement decision — and `haify pool list` failed outright with one node down.
 // What is known of its pools is still in the database.
 func (sm *StorageManager) poolHosts(ctx context.Context) []string {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	hosts := sm.controller.GetHosts()
 	if sm.controller.nodes == nil {
 		log.Debug("poolHosts: no node registry, asking every host", zap.Strings("hosts", hosts))

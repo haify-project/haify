@@ -175,14 +175,14 @@ func (w *Webhook) deliver(ctx context.Context, e Event) {
 		if err != nil {
 			lastErr = err
 			w.log.Warn("webhook: delivery failed",
-				zap.String("url", w.cfg.URL),
+				zap.String("url", RedactURL(w.cfg.URL)),
 				zap.Uint64("event_id", e.ID),
 				zap.Int("attempt", attempt+1),
 				zap.Error(err))
 			continue
 		}
 		w.log.Info("webhook: delivered",
-			zap.String("url", w.cfg.URL),
+			zap.String("url", RedactURL(w.cfg.URL)),
 			zap.String("type", string(e.Type)),
 			zap.String("severity", string(e.Severity)),
 			zap.String("resource", e.Resource))
@@ -190,7 +190,7 @@ func (w *Webhook) deliver(ctx context.Context, e Event) {
 		return
 	}
 	w.log.Error("webhook: giving up on event",
-		zap.String("url", w.cfg.URL),
+		zap.String("url", RedactURL(w.cfg.URL)),
 		zap.Uint64("event_id", e.ID),
 		zap.String("message", e.Message))
 	w.report(e, lastErr)
@@ -245,6 +245,7 @@ func (w *Webhook) post(ctx context.Context, body []byte) error {
 	start := time.Now()
 	resp, err := w.client.Do(req)
 	if err != nil {
+		err = redactRequestError(err)
 		w.log.Debug("Webhook.post: request failed",
 			zap.String("host", host), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return err

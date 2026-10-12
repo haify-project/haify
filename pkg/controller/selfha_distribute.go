@@ -21,7 +21,7 @@ import (
 // (drbd-reactor decides who runs the controller from now on). The binary lands
 // at the path the unit's ExecStart names; see controllerBinaryPlan.
 func (rm *ResourceManager) distributeControllerArtifacts(ctx context.Context, binPlan *controllerBinaryPlan, standbyAddrs, allAddrs []string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("distributeControllerArtifacts: distributing", zap.Strings("standbys", standbyAddrs), zap.Strings("hosts", allAddrs))
 	if err := rm.installControllerBinary(ctx, binPlan); err != nil {
 		log.Debug("distributeControllerArtifacts: binary install failed", zap.Error(err))
@@ -96,7 +96,7 @@ func (rm *ResourceManager) distributeControllerArtifacts(ctx context.Context, bi
 // distributeToAll writes content to remotePath on all hosts, optionally
 // running postCmd afterwards, and fails if any host fails.
 func (rm *ResourceManager) distributeToAll(ctx context.Context, hosts []string, content, remotePath, postCmd string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	if len(hosts) == 0 {
 		log.Debug("distributeToAll: no hosts, nothing to write", zap.String("path", remotePath))
 		return nil
@@ -131,7 +131,7 @@ func (rm *ResourceManager) distributeToAll(ctx context.Context, hosts []string, 
 // execAllSuccess runs cmd on hosts and converts any failure into a single
 // descriptive error.
 func (rm *ResourceManager) execAllSuccess(ctx context.Context, hosts []string, cmd, failMsg string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	start := time.Now()
 	result, err := rm.deployment.Exec(ctx, hosts, cmd)
 	if err != nil {
@@ -156,7 +156,7 @@ func (rm *ResourceManager) execAllSuccess(ctx context.Context, hosts []string, c
 // runDetachedScript writes a script to this node and launches it through
 // systemd-run, so it keeps running after the controller stops itself.
 func (rm *ResourceManager) runDetachedScript(ctx context.Context, selfAddr, scriptPath, content, unitName string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("runDetachedScript: installing", zap.String("host", selfAddr), zap.String("script", scriptPath),
 		zap.String("unit", unitName), zap.Int("bytes", len(content)))
 	if err := rm.distributeToAll(ctx, []string{selfAddr}, content, scriptPath,

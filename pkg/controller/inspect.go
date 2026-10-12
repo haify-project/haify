@@ -55,7 +55,7 @@ func (im *InspectionManager) cfg() config.InspectConfig {
 // areas narrows the checks; empty inspects everything.
 func (im *InspectionManager) Run(ctx context.Context, trigger inspect.Trigger, areas []inspect.Area) (*inspect.Report, error) {
 	c := im.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("InspectionManager.Run: starting", zap.String("trigger", string(trigger)), zap.Int("areas", len(areas)))
 	if c.db == nil {
 		log.Debug("InspectionManager.Run: no database, refusing")
@@ -115,7 +115,7 @@ func (im *InspectionManager) Run(ctx context.Context, trigger inspect.Trigger, a
 // publish puts one inspection.completed event on the bus when the run's
 // worst finding reaches notify_min, so it is delivered like any alert.
 func (im *InspectionManager) publish(r *inspect.Report) {
-	log := loggerOfController(im.controller)
+	log := im.controller.traceLogger()
 	bus := im.controller.events
 	if bus == nil {
 		log.Debug("InspectionManager.publish: no event bus", zap.String("id", r.ID))
@@ -155,7 +155,7 @@ func (im *InspectionManager) publish(r *inspect.Report) {
 
 // Get returns a stored report; id "" or "latest" is the newest.
 func (im *InspectionManager) Get(ctx context.Context, id string) (*inspect.Report, error) {
-	log := loggerOfController(im.controller)
+	log := im.controller.traceLogger()
 	log.Debug("InspectionManager.Get: reading report", zap.String("id", id))
 	db := im.controller.db
 	if db == nil {
@@ -201,7 +201,7 @@ func (im *InspectionManager) Get(ctx context.Context, id string) (*inspect.Repor
 
 // List returns up to limit stored reports, newest first.
 func (im *InspectionManager) List(ctx context.Context, limit int) ([]*inspect.Report, error) {
-	log := loggerOfController(im.controller)
+	log := im.controller.traceLogger()
 	log.Debug("InspectionManager.List: listing reports", zap.Int("limit", limit))
 	db := im.controller.db
 	if db == nil {
@@ -232,18 +232,18 @@ func (im *InspectionManager) List(ctx context.Context, limit int) ([]*inspect.Re
 func (sm *ScheduleManager) inspectSchedule() string {
 	c := sm.controller
 	if c.config == nil || !c.config.Inspect.Enabled || c.inspections == nil {
-		loggerOfController(c).Debug("ScheduleManager.inspectSchedule: scheduled inspection off",
+		c.traceLogger().Debug("ScheduleManager.inspectSchedule: scheduled inspection off",
 			zap.Bool("has_config", c.config != nil), zap.Bool("has_manager", c.inspections != nil))
 		return ""
 	}
 	spec := strings.TrimSpace(c.config.Inspect.Schedule)
-	loggerOfController(c).Debug("ScheduleManager.inspectSchedule: scheduled inspection on", zap.String("schedule", spec))
+	c.traceLogger().Debug("ScheduleManager.inspectSchedule: scheduled inspection on", zap.String("schedule", spec))
 	return spec
 }
 
 // runInspectionTick is the cron entry for the scheduled inspection.
 func (sm *ScheduleManager) runInspectionTick() {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ScheduleManager.runInspectionTick: tick")
 	start := time.Now()
 	_, err := sm.controller.inspections.Run(context.Background(), inspect.TriggerSchedule, nil)

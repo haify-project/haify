@@ -65,7 +65,7 @@ func (s dbRBACStore) Save(snap *rbac.Snapshot) error {
 // the UI reaches them via its existing /api proxy. engine is nil when RBAC is
 // disabled, in which case the endpoints report enabled=false.
 func (c *Controller) registerRBACRoutes(mux *runtime.ServeMux, engine *rbac.Engine) {
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("Controller.registerRBACRoutes: registering", zap.Bool("rbac_enabled", engine != nil))
 	routes := []struct {
 		method, path string

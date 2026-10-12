@@ -298,7 +298,7 @@ func (rm *ResourceManager) MakeHa(ctx context.Context, resource string, services
 	}
 
 	rm.controller.logger.Debug("Generated promoter config",
-		zap.String("config", configContent))
+		zap.Int("size_bytes", len(configContent)))
 
 	// Distribute config to all hosts using DistributeConfig
 	start = time.Now()

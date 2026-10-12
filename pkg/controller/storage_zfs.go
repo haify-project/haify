@@ -23,7 +23,7 @@ import (
 // on the floor, so a pool asked to compress did whatever the OpenZFS default
 // was. An empty compression still means that default (on, i.e. lz4, from 2.2).
 func (sm *StorageManager) CreateZFSPool(ctx context.Context, name, node string, vdevs []string, compression string, dedup, wipe bool) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("CreateZFSPool: creating", zap.String("pool", name), zap.String("node", node), zap.Strings("vdevs", vdevs),
 		zap.String("compression", compression), zap.Bool("dedup", dedup), zap.Bool("wipe", wipe))
 	name = normalizeManagedName(name)
@@ -90,7 +90,7 @@ func (sm *StorageManager) CreateZFSPool(ctx context.Context, name, node string, 
 
 // GetZFSPool gets ZFS pool information
 func (sm *StorageManager) GetZFSPool(ctx context.Context, poolName, node string) (*PoolInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("GetZFSPool: looking up", zap.String("pool", poolName), zap.String("node", node))
 	poolName = normalizeManagedName(poolName)
 	address := sm.controller.ResolveHost(node)
@@ -150,7 +150,7 @@ func (sm *StorageManager) GetZFSPool(ctx context.Context, poolName, node string)
 
 // ListZFSpools lists all ZFS pools across all nodes
 func (sm *StorageManager) ListZFSpools(ctx context.Context) ([]*PoolInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	var pools []*PoolInfo
 	seen := make(map[string]bool)
 
@@ -252,7 +252,7 @@ func (sm *StorageManager) ListZFSpools(ctx context.Context) ([]*PoolInfo, error)
 
 // DeleteZFSPool deletes a ZFS storage pool
 func (sm *StorageManager) DeleteZFSPool(ctx context.Context, name, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("DeleteZFSPool: deleting", zap.String("pool", name), zap.String("node", node))
 	name = normalizeManagedName(name)
 	address := sm.controller.ResolveHost(node)

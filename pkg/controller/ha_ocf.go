@@ -285,7 +285,7 @@ func renderOcfStartEntry(a OcfAgentSpec) string {
 // OCF discovery, preferring registered nodes and falling back to the resource
 // manager's configured hosts. The result is sorted for deterministic behavior.
 func (rm *ResourceManager) allNodeAddresses() []string {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	var addrs []string
 	if rm.controller != nil && rm.controller.nodes != nil {
 		start := time.Now()
@@ -316,7 +316,7 @@ func (rm *ResourceManager) allNodeAddresses() []string {
 // ListResourceAgents enumerates the OCF resource agents installed under
 // /usr/lib/ocf/resource.d/<provider>/<name> on a reachable node.
 func (rm *ResourceManager) ListResourceAgents(ctx context.Context) ([]ocfResourceAgent, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.ListResourceAgents: start")
 	if rm.deployment == nil {
 		log.Debug("ResourceManager.ListResourceAgents: no deployment client")
@@ -357,7 +357,7 @@ func (rm *ResourceManager) ListResourceAgents(ctx context.Context) ([]ocfResourc
 // GetResourceAgentMetadata runs the agent's `meta-data` action on a reachable
 // node and parses the OCF meta-data XML into a parameter schema.
 func (rm *ResourceManager) GetResourceAgentMetadata(ctx context.Context, provider, name string) (*ocfAgentMetadata, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.GetResourceAgentMetadata: start", zap.String("provider", provider), zap.String("agent", name))
 	if !ocfNameRe.MatchString(provider) {
 		log.Debug("ResourceManager.GetResourceAgentMetadata: invalid provider name", zap.String("provider", provider))
@@ -427,7 +427,7 @@ func (rm *ResourceManager) GetResourceAgentMetadata(ctx context.Context, provide
 // GetHaToml reads a resource's drbd-reactor promoter TOML from the first node
 // that has it. Returns an error naming the missing file if no HA config exists.
 func (rm *ResourceManager) GetHaToml(ctx context.Context, resource string) (path, content string, err error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.GetHaToml: start", zap.String("resource", resource))
 	if rm.deployment == nil {
 		log.Debug("ResourceManager.GetHaToml: no deployment client", zap.String("resource", resource))
@@ -478,7 +478,7 @@ func (rm *ResourceManager) GetHaToml(ctx context.Context, resource string) (path
 // DRBD data. A copy on the DR node, written before DR nodes were excluded, is
 // retired.
 func (rm *ResourceManager) SyncHaToml(ctx context.Context, resource, content string) (string, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	// The content is not logged: an OCF agent's params in it can hold a password.
 	log.Debug("ResourceManager.SyncHaToml: start", zap.String("resource", resource), zap.Int("bytes", len(content)))
 	if rm.deployment == nil {

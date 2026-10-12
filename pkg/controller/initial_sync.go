@@ -38,7 +38,7 @@ import (
 // that node's decryption of zeros — noise, and different noise on every node,
 // since each keeps its own key.
 func (rm *ResourceManager) backedByZeroReadingStorage(ctx context.Context, storageType string, nodeIPs []string, vols []resolvedVolume) bool {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("backedByZeroReadingStorage: checking", zap.String("storage_type", storageType),
 		zap.Strings("nodes", nodeIPs), zap.Int("volumes", len(vols)))
 	for _, v := range vols {
@@ -82,7 +82,7 @@ const peerConnectWait = 30 * time.Second
 // so a resource that does not connect in time returns an error and the caller
 // falls back to the ordinary initial sync.
 func (rm *ResourceManager) skipInitialSync(ctx context.Context, resource, address string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("skipInitialSync: waiting for peers to connect", zap.String("resource", resource),
 		zap.String("host", address), zap.Duration("wait", peerConnectWait))
 	deadline := time.Now().Add(peerConnectWait)

@@ -26,7 +26,7 @@ import (
 // zeroReadingReplicas reports whether every diskful replica of resource keeps
 // its data on storage that reads unwritten blocks as zeros.
 func (rm *ResourceManager) zeroReadingReplicas(ctx context.Context, resource string) bool {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("zeroReadingReplicas: checking", zap.String("resource", resource))
 	if rm.controller.db == nil {
 		log.Debug("zeroReadingReplicas: no database, full write")

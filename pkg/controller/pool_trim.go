@@ -80,7 +80,7 @@ func parseTrimOutput(node, out string) []TrimResult {
 // when node is empty.
 func (sm *StorageManager) Trim(ctx context.Context, node string) ([]TrimResult, error) {
 	c := sm.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("Trim: start", zap.String("node", node))
 	nodes, err := c.nodes.ListNodes(ctx)
 	if err != nil {
@@ -168,7 +168,7 @@ var trimming atomic.Bool
 
 // runTrimSweep is the scheduled trim.
 func (sm *ScheduleManager) runTrimSweep() {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	if !trimming.CompareAndSwap(false, true) {
 		log.Debug("ScheduleManager.runTrimSweep: a sweep is already running, skipped")
 		return
@@ -198,10 +198,10 @@ func (sm *ScheduleManager) runTrimSweep() {
 
 func (sm *ScheduleManager) trimSchedule() string {
 	if sm.controller.config == nil {
-		loggerOfController(sm.controller).Debug("ScheduleManager.trimSchedule: no config, no schedule")
+		sm.controller.traceLogger().Debug("ScheduleManager.trimSchedule: no config, no schedule")
 		return ""
 	}
 	sched := strings.TrimSpace(sm.controller.config.Storage.Thin.TrimSchedule)
-	loggerOfController(sm.controller).Debug("ScheduleManager.trimSchedule: schedule", zap.String("schedule", sched))
+	sm.controller.traceLogger().Debug("ScheduleManager.trimSchedule: schedule", zap.String("schedule", sched))
 	return sched
 }

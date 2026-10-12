@@ -40,7 +40,7 @@ const maxSnapshotLockDays = 365
 
 // snapshotLockWindow is how long resource's schedule locks its snapshots.
 func (c *Controller) snapshotLockWindow(ctx context.Context, resource string) time.Duration {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	if c.db == nil {
 		log.Debug("snapshotLockWindow: no database, no lock", zap.String("resource", resource))
 		return 0
@@ -72,7 +72,7 @@ func snapshotLockedUntil(name string, window time.Duration, now time.Time) time.
 
 // resourceOfBackingVolume names the resource a backing volume belongs to.
 func (c *Controller) resourceOfBackingVolume(ctx context.Context, backing string) string {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	if c.db == nil {
 		log.Debug("resourceOfBackingVolume: no database", zap.String("volume", backing))
 		return ""
@@ -102,7 +102,7 @@ func (c *Controller) resourceOfBackingVolume(ctx context.Context, backing string
 // assertSnapshotUnlocked refuses to delete or consume a locked scheduled
 // snapshot. Snapshots haify did not schedule carry no lock.
 func (c *Controller) assertSnapshotUnlocked(ctx context.Context, name string) error {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	backing, _, ok := parseSnapName(name)
 	if !ok {
 		log.Debug("assertSnapshotUnlocked: not a scheduled snapshot, no lock", zap.String("snapshot", name))
@@ -133,7 +133,7 @@ func (c *Controller) assertSnapshotUnlocked(ctx context.Context, name string) er
 // locked snapshots: its schedule's last run plus the lock. Zero when none can
 // be locked any more.
 func (c *Controller) resourceSnapshotsLockedUntil(ctx context.Context, resource string) time.Time {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	if c.db == nil {
 		log.Debug("resourceSnapshotsLockedUntil: no database", zap.String("resource", resource))
 		return time.Time{}
@@ -165,12 +165,12 @@ func scheduleLockedUntil(s *database.SnapshotSchedule, now time.Time) time.Time 
 // locked snapshots with it: deleting the resource or one of its volumes.
 func (c *Controller) assertResourceUnlocked(ctx context.Context, resource, what string) error {
 	if until := c.resourceSnapshotsLockedUntil(ctx, resource); !until.IsZero() {
-		ctrlLogOrGlobal(c).Debug("assertResourceUnlocked: refused, snapshots locked", zap.String("resource", resource),
+		c.traceLogger().Debug("assertResourceUnlocked: refused, snapshots locked", zap.String("resource", resource),
 			zap.String("what", what), zap.Time("until", until))
 		return fmt.Errorf("%s would delete snapshots of %s that its snapshot schedule locks until %s; that is refused until then",
 			what, resource, until.UTC().Format(time.RFC3339))
 	}
-	ctrlLogOrGlobal(c).Debug("assertResourceUnlocked: no locked snapshots", zap.String("resource", resource), zap.String("what", what))
+	c.traceLogger().Debug("assertResourceUnlocked: no locked snapshots", zap.String("resource", resource), zap.String("what", what))
 	return nil
 }
 
@@ -223,7 +223,7 @@ func unlockedSnaps(snaps []scheduledSnap, window time.Duration, now time.Time) [
 // refused: re-taking it would need a copy-on-write reservation sized for a
 // volume about to diverge, and failing that would lose it.
 func (sm *SnapshotManager) lockPreservingMerge(ctx context.Context, address, vg, lv, snapshotName, snapshotPath, backing string) (func() error, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	plain := func() error { return sm.mergeSnapshot(ctx, address, snapshotPath, backing) }
 	if err := sm.controller.assertSnapshotUnlocked(ctx, snapshotName); err == nil {
 		log.Debug("lockPreservingMerge: unlocked, plain merge", zap.String("snapshot", snapshotName))
@@ -261,7 +261,7 @@ func (sm *SnapshotManager) lockPreservingMerge(ctx context.Context, address, vg,
 // would destroy a locked snapshot: `zfs rollback -r` destroys every snapshot
 // taken after the one rolled back to.
 func (sm *SnapshotManager) assertRollbackKeepsLocks(ctx context.Context, address, dataset, snapshotName string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	backing := dataset[strings.LastIndex(dataset, "/")+1:]
 	resource := sm.controller.resourceOfBackingVolume(ctx, backing)
 	window := sm.controller.snapshotLockWindow(ctx, resource)

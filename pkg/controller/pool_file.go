@@ -156,7 +156,7 @@ true
 // attachFileDevices turns every file: device into its loop device, leaving
 // disks as they are.
 func (sm *StorageManager) attachFileDevices(ctx context.Context, address, node, vg string, devices []string, thin bool) ([]string, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("attachFileDevices: start", zap.String("node", node), zap.String("host", address),
 		zap.String("pool", vg), zap.Strings("devices", devices), zap.Bool("thin", thin))
 	out := make([]string, 0, len(devices))

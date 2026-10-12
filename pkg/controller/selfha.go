@@ -60,7 +60,7 @@ func (rm *ResourceManager) selfHaExtraServices() []string {
 		return nil
 	}
 	extra := rm.controller.config.SelfHA.ExtraServices
-	ctrlLogOrGlobal(rm.controller).Debug("selfHaExtraServices: configured extra services", zap.Strings("services", extra))
+	rm.controller.traceLogger().Debug("selfHaExtraServices: configured extra services", zap.Strings("services", extra))
 	return extra
 }
 
@@ -71,7 +71,7 @@ func (rm *ResourceManager) selfHaExtraServices() []string {
 // that migrates the database onto the DRBD volume and enables reactor
 // management everywhere. It returns the node-local handoff log path.
 func (rm *ResourceManager) EnableSelfHa(ctx context.Context, vip, pool string, sizeGB, port uint32, nodes []string) (string, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("EnableSelfHa: enabling", zap.String("vip", vip), zap.String("pool", pool), zap.Uint32("size_gb", sizeGB),
 		zap.Uint32("port", port), zap.Strings("nodes", nodes))
 	if rm.deployment == nil {
@@ -235,7 +235,7 @@ func (rm *ResourceManager) EnableSelfHa(ctx context.Context, vip, pool string, s
 // re-enabled as a normal systemd service. The metadata resource itself is
 // kept and can be removed afterwards with `resource delete haify-meta`.
 func (rm *ResourceManager) DisableSelfHa(ctx context.Context, node string) error {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("DisableSelfHa: disabling", zap.String("node", node))
 	if rm.deployment == nil {
 		log.Debug("DisableSelfHa: no deployment client")
@@ -327,7 +327,7 @@ type SelfHaStatus struct {
 // GetSelfHaStatus reports whether self-HA is configured and where the
 // controller is currently active (the DRBD primary of the metadata resource).
 func (rm *ResourceManager) GetSelfHaStatus(ctx context.Context) (*SelfHaStatus, error) {
-	log := ctrlLogOrGlobal(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("GetSelfHaStatus: reading")
 	if rm.controller.db == nil {
 		log.Debug("GetSelfHaStatus: no database")

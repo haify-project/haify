@@ -11,7 +11,7 @@ import (
 
 // GetNodeStatus gets detailed node status
 func (nm *NodeManager) GetNodeStatus(ctx context.Context, address string) (map[string]interface{}, error) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.GetNodeStatus: start", zap.String("address", address))
 	nm.mu.RLock()
 	node := nm.nodes[address]
@@ -89,7 +89,7 @@ func (nm *NodeManager) GetNodeStatus(ctx context.Context, address string) (map[s
 
 // CheckNodeHealth checks health of a specific node
 func (nm *NodeManager) CheckNodeHealth(ctx context.Context, address string) error {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.CheckNodeHealth: start", zap.String("address", address))
 	nm.mu.RLock()
 	node := nm.nodes[address]
@@ -135,7 +135,7 @@ func (nm *NodeManager) CheckNodeHealth(ctx context.Context, address string) erro
 // controller failover; a node that answers again gets the configs it missed
 // (self_heal_return.go).
 func (nm *NodeManager) markHealth(address string, state NodeState) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	nm.mu.Lock()
 	n := nm.nodes[address]
 	if n == nil {
@@ -184,7 +184,7 @@ type NodeHealthInfo struct {
 
 // HealthCheck performs a comprehensive health check on a node
 func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeHealthInfo, error) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.HealthCheck: start", zap.String("node", nodeName))
 	info := &NodeHealthInfo{
 		AvailableAgents: make([]string, 0),
@@ -316,7 +316,7 @@ func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeH
 }
 
 func (nm *NodeManager) detectNodeVersion(ctx context.Context, address string) string {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	start := time.Now()
 	result, err := nm.controller.deployment.Exec(ctx, []string{address}, "cat /etc/os-release 2>/dev/null || uname -r")
 	if err != nil || !result.AllSuccess() {

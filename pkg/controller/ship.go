@@ -83,7 +83,7 @@ type shipPlan struct {
 // StartShip checks everything a ship needs, then runs it as a storage job.
 func (bm *BackupManager) StartShip(ctx context.Context, req ShipRequest) (string, error) {
 	c := bm.controller
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	log.Debug("StartShip: checking", zap.String("resource", req.Resource), zap.String("target", req.Target),
 		zap.String("name", req.Name), zap.String("pool", req.Pool), zap.Uint32("replicas", req.Replicas),
 		zap.Bool("has_target_token", req.TargetToken != ""))
@@ -179,7 +179,7 @@ func (bm *BackupManager) StartShip(ctx context.Context, req ShipRequest) (string
 func (bm *BackupManager) shipProgress(ctx context.Context, j *database.StorageJob, msg string) {
 	j.Progress, j.UpdatedAt = msg, time.Now()
 	err := bm.controller.db.SaveStorageJob(ctx, j)
-	ctrlLogOrGlobal(bm.controller).Debug("shipProgress: progress", zap.String("job", j.ID), zap.String("progress", msg), zap.Error(err))
+	bm.controller.traceLogger().Debug("shipProgress: progress", zap.String("job", j.ID), zap.String("progress", msg), zap.Error(err))
 }
 
 // runShip carries a ship out and records how it ended.
@@ -203,7 +203,7 @@ func (bm *BackupManager) runShip(ctx context.Context, j *database.StorageJob, p 
 }
 
 func (bm *BackupManager) ship(ctx context.Context, j *database.StorageJob, p shipPlan) (err error) {
-	log := ctrlLogOrGlobal(bm.controller)
+	log := bm.controller.traceLogger()
 	log.Debug("ship: dialing target", zap.String("target", p.req.Target))
 	target, err := dialShipTarget(p.req.Target, p.req.TargetToken)
 	if err != nil {
@@ -266,7 +266,7 @@ func (bm *BackupManager) ship(ctx context.Context, j *database.StorageJob, p shi
 // shipVolume sends one volume and checks both ends saw the same bytes.
 func (bm *BackupManager) shipVolume(ctx context.Context, j *database.StorageJob, p shipPlan, target ShipTarget,
 	vol uint32, device string, last bool) error {
-	log := ctrlLogOrGlobal(bm.controller)
+	log := bm.controller.traceLogger()
 	rm := bm.controller.resources
 	token, err := ship.NewToken()
 	if err != nil {
@@ -343,7 +343,7 @@ func (bm *BackupManager) shipVolume(ctx context.Context, j *database.StorageJob,
 // failed: their sender died with it, and the partial copy on the other side
 // has to be shipped again.
 func (bm *BackupManager) failInterruptedShips(ctx context.Context) {
-	log := ctrlLogOrGlobal(bm.controller)
+	log := bm.controller.traceLogger()
 	jobs, err := bm.controller.db.ListStorageJobs(ctx)
 	if err != nil {
 		log.Debug("failInterruptedShips: job list failed", zap.Error(err))

@@ -106,7 +106,7 @@ func (c *haProbeCache) put(host string, r haProbeResult, at time.Time) {
 // probeHaNodes probes hosts, one SSH exec each and all at once, answering
 // from the cache for hosts probed within haProbeTTL.
 func (rm *ResourceManager) probeHaNodes(ctx context.Context, hosts []string) map[string]haProbeResult {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.probeHaNodes: start", zap.Strings("hosts", hosts))
 	out := make(map[string]haProbeResult, len(hosts))
 	var stale []string
@@ -148,7 +148,7 @@ func (rm *ResourceManager) probeHaNodes(ctx context.Context, hosts []string) map
 }
 
 func (rm *ResourceManager) probeHaNode(ctx context.Context, host, cmd string) haProbeResult {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.probeHaNode: running the HA probe", zap.String("host", host),
 		zap.Duration("timeout", haProbeTimeout))
 	start := time.Now()
@@ -184,7 +184,7 @@ func (rm *ResourceManager) probeHaNode(ctx context.Context, host, cmd string) ha
 // still reported when it carries a gateway or an app, whose promoters are the
 // same kind of chain.
 func (rm *ResourceManager) GetHaStatus(ctx context.Context, resource string) ([]*HaPromoterStatus, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.GetHaStatus: start", zap.String("resource", resource))
 	if rm.controller.db == nil {
 		log.Debug("ResourceManager.GetHaStatus: no database")
@@ -253,7 +253,7 @@ func (rm *ResourceManager) GetHaStatus(ctx context.Context, resource string) ([]
 
 // haStatusResources names the resources GetHaStatus reports on.
 func (rm *ResourceManager) haStatusResources(ctx context.Context, resource string) ([]string, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	db := rm.controller.db
 	if resource == "" {
 		start := time.Now()
@@ -295,7 +295,7 @@ func (rm *ResourceManager) haStatusResources(ctx context.Context, resource strin
 
 // hasApp reports whether an app runs on resource.
 func (rm *ResourceManager) hasApp(ctx context.Context, resource string) bool {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	start := time.Now()
 	apps, err := rm.controller.db.ListApps(ctx)
 	log.Debug("ResourceManager.hasApp: database list apps", zap.String("resource", resource), zap.Int("count", len(apps)),

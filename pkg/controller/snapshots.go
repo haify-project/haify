@@ -30,7 +30,7 @@ type SnapshotManager struct {
 
 // NewSnapshotManager creates a new snapshot manager
 func NewSnapshotManager(ctrl *Controller) *SnapshotManager {
-	ctrlLogOrGlobal(ctrl).Debug("NewSnapshotManager: building snapshot manager")
+	ctrl.traceLogger().Debug("NewSnapshotManager: building snapshot manager")
 	return &SnapshotManager{
 		controller: ctrl,
 	}
@@ -40,7 +40,7 @@ func NewSnapshotManager(ctrl *Controller) *SnapshotManager {
 // zvol. The one-node snapshot calls address a volume as "<pool>/<backing>",
 // which reads the same on both pool types, so the record decides.
 func (sm *SnapshotManager) zfsVolumeDataset(ctx context.Context, volume string) (string, bool) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	db := sm.controller.db
 	if db == nil {
 		log.Debug("zfsVolumeDataset: no database, treating as LVM", zap.String("volume", volume))
@@ -74,7 +74,7 @@ func (sm *SnapshotManager) zfsVolumeDataset(ctx context.Context, volume string) 
 // CreateSnapshot creates a snapshot of volume on node: an LVM snapshot, or a
 // ZFS one ("<dataset>@<name>") when the volume is a zvol.
 func (sm *SnapshotManager) CreateSnapshot(ctx context.Context, volume, snapshotName, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("CreateSnapshot: taking", zap.String("volume", volume), zap.String("snapshot", snapshotName), zap.String("node", node))
 	if dataset, ok := sm.zfsVolumeDataset(ctx, volume); ok {
 		log.Debug("CreateSnapshot: zvol, taking a ZFS snapshot", zap.String("dataset", dataset))
@@ -126,7 +126,7 @@ func (sm *SnapshotManager) CreateSnapshot(ctx context.Context, volume, snapshotN
 
 // DeleteSnapshot deletes a snapshot
 func (sm *SnapshotManager) DeleteSnapshot(ctx context.Context, volume, snapshotName, node string) error {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("DeleteSnapshot: deleting", zap.String("volume", volume), zap.String("snapshot", snapshotName), zap.String("node", node))
 	if err := sm.controller.assertSnapshotUnlocked(ctx, snapshotName); err != nil {
 		log.Debug("DeleteSnapshot: snapshot is locked", zap.String("snapshot", snapshotName), zap.Error(err))
@@ -171,7 +171,7 @@ func (sm *SnapshotManager) DeleteSnapshot(ctx context.Context, volume, snapshotN
 
 // ListSnapshots lists snapshots for a volume
 func (sm *SnapshotManager) ListSnapshots(ctx context.Context, volume, node string) ([]*SnapshotInfo, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("ListSnapshots: listing", zap.String("volume", volume), zap.String("node", node))
 	if dataset, ok := sm.zfsVolumeDataset(ctx, volume); ok {
 		log.Debug("ListSnapshots: zvol, listing ZFS snapshots", zap.String("dataset", dataset))
@@ -246,7 +246,7 @@ func (sm *SnapshotManager) ListSnapshots(ctx context.Context, volume, node strin
 // overwrites it from byte zero. node must hold a diskful replica of resource and
 // have sourceDevice locally.
 func (sm *SnapshotManager) PopulateVolume(ctx context.Context, resource string, volumeID uint32, sourceDevice, node string) (uint64, error) {
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("PopulateVolume: populating", zap.String("resource", resource), zap.Uint32("volume", volumeID),
 		zap.String("source", sourceDevice), zap.String("node", node))
 	if strings.TrimSpace(resource) == "" {

@@ -112,7 +112,7 @@ func newJobID() string {
 
 // poolPVs lists the disks of vg on host.
 func (sm *StorageManager) poolPVs(ctx context.Context, host, vg string) ([]pvInfo, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	cmd := fmt.Sprintf("sudo pvs --noheadings --nosuffix --units b --separator '|' -o pv_name,pv_size,pv_used -S vg_name=%s", vg)
 	start := time.Now()
 	res, err := sm.controller.deployment.Exec(ctx, []string{host}, cmd)
@@ -138,7 +138,7 @@ func (sm *StorageManager) poolPVs(ctx context.Context, host, vg string) ([]pvInf
 // erased. It returns once the work is running.
 func (sm *StorageManager) StartDiskJob(ctx context.Context, pool, node, disk, newDisk string, wipe bool) (string, error) {
 	c := sm.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	pool = normalizeManagedName(pool)
 	host := c.ResolveHost(node)
 	log.Debug("StartDiskJob: start", zap.String("pool", pool), zap.String("node", node), zap.String("host", host),
@@ -215,7 +215,7 @@ func containsPV(pvs []pvInfo, name string) bool {
 }
 
 func (sm *StorageManager) launchDiskJob(ctx context.Context, host string, j *database.StorageJob) error {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	script := base64Std(diskJobScript(j))
 	cmd := fmt.Sprintf("sudo systemd-run --unit=haify-disk-%s "+collectFlag+" /bin/bash -c 'echo %s | base64 -d | /bin/bash'", j.ID, script)
 	start := time.Now()
@@ -227,7 +227,7 @@ func (sm *StorageManager) launchDiskJob(ctx context.Context, host string, j *dat
 
 // diskJobState reads a job's status file and progress on its node.
 func (sm *StorageManager) diskJobState(ctx context.Context, host string, j *database.StorageJob) (status, progress string, err error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	cmd := fmt.Sprintf("cat %s/%s.status 2>/dev/null; echo '--'; systemctl is-active haify-disk-%s 2>/dev/null; echo '--'; "+
 		"sudo lvs -a --noheadings -o lv_name,copy_percent,sync_percent %s 2>/dev/null | awk '$1 ~ /pvmove/ {print \"moving \" $2 \"%%\"} $3 != \"\" && $3 != \"100.00\" {print $1 \" syncing \" $3 \"%%\"}' | head -3",
 		diskJobStatus, j.ID, j.ID, j.Pool)
@@ -263,7 +263,7 @@ func (sm *StorageManager) diskJobState(ctx context.Context, host string, j *data
 // followDiskJob polls a running job until it finishes.
 func (sm *StorageManager) followDiskJob(ctx context.Context, j *database.StorageJob) {
 	c := sm.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	host := c.ResolveHost(j.Node)
 	log.Debug("followDiskJob: start", zap.String("job", j.ID), zap.String("node", j.Node), zap.String("host", host))
 	for {
@@ -296,7 +296,7 @@ func (sm *StorageManager) followDiskJob(ctx context.Context, j *database.Storage
 
 func (sm *StorageManager) finishDiskJob(ctx context.Context, j *database.StorageJob, status string) {
 	c := sm.controller
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("finishDiskJob: start", zap.String("job", j.ID), zap.String("status", status))
 	sev := event.SeverityInfo
 	verb := "removed from"
@@ -326,7 +326,7 @@ func (sm *StorageManager) finishDiskJob(ctx context.Context, j *database.Storage
 
 // recordPoolDiskChange keeps the pool record's device list in step.
 func (sm *StorageManager) recordPoolDiskChange(ctx context.Context, j *database.StorageJob) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	db := sm.controller.db
 	p, err := db.GetPool(ctx, j.Pool)
 	if err != nil || p == nil {
@@ -351,7 +351,7 @@ func (sm *StorageManager) recordPoolDiskChange(ctx context.Context, j *database.
 
 // resumeDiskJobs follows the disk jobs a previous controller started.
 func (sm *StorageManager) resumeDiskJobs(ctx context.Context) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	jobs, err := sm.controller.db.ListStorageJobs(ctx)
 	if err != nil {
 		log.Debug("resumeDiskJobs: db list storage jobs failed", zap.Error(err))

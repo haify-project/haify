@@ -23,7 +23,7 @@ type Server struct {
 
 // NewServer creates a new gRPC server
 func NewServer(ctrl *Controller) *Server {
-	ctrlLogOrGlobal(ctrl).Debug("NewServer: building gRPC server", zap.Bool("has_controller", ctrl != nil))
+	ctrl.traceLogger().Debug("NewServer: building gRPC server", zap.Bool("has_controller", ctrl != nil))
 	return &Server{
 		ctrl:      ctrl,
 		logger:    ctrl.logger,
@@ -35,16 +35,6 @@ func NewServer(ctrl *Controller) *Server {
 	}
 }
 
-// ctrlLogOrGlobal is the logger traces use when they reach the controller
-// through a manager: the controller's own, or zap's global one when the
-// controller (or the manager holding it) was built bare, as tests do.
-func ctrlLogOrGlobal(c *Controller) *zap.Logger {
-	if c != nil && c.logger != nil {
-		return c.logger
-	}
-	return zap.L()
-}
-
 // serverLog is the logger the gRPC handlers trace with: the server's own,
 // else the controller's, else the global one.
 func (s *Server) serverLog() *zap.Logger {
@@ -52,7 +42,7 @@ func (s *Server) serverLog() *zap.Logger {
 		return s.logger
 	}
 	if s != nil {
-		return ctrlLogOrGlobal(s.ctrl)
+		return s.ctrl.traceLogger()
 	}
 	return zap.L()
 }

@@ -20,7 +20,7 @@ import (
 // and the duplicates the rewrite produces are dropped. Best effort: a stale
 // entry misleads a person, not the controller, which dials addresses.
 func (nm *NodeManager) updateHostsFiles(ctx context.Context, hostname, old, address string) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.updateHostsFiles: start", zap.String("hostname", hostname),
 		zap.String("from", old), zap.String("to", address))
 	if hostname == "" || old == address {
@@ -60,7 +60,7 @@ func (nm *NodeManager) updateHostsFiles(ctx context.Context, hostname, old, addr
 // any key is added, so a node moving onto another's old address does not have
 // its fresh entry removed along with the other's stale one.
 func (nm *NodeManager) updateKnownHosts(ctx context.Context, moves []NodeMove) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.updateKnownHosts: start", zap.Int("count", len(moves)))
 	var forget []string
 	var entries strings.Builder

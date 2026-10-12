@@ -36,7 +36,7 @@ var localNode = sync.OnceValue(func() string {
 // there is no database to write to (the controller runs without persistence
 // rather than refusing to start, so this is a real case).
 func (c *Controller) auditSink() auditSink {
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	if c.db == nil {
 		log.Debug("auditSink: no database, audit events are not persisted")
 		return nil
@@ -60,7 +60,7 @@ func (c *Controller) auditSink() auditSink {
 
 // ListAuditEvents returns the persisted audit trail, newest first.
 func (s *Server) ListAuditEvents(ctx context.Context, req *pb.ListAuditEventsRequest) (*pb.ListAuditEventsResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("ListAuditEvents: listing", zap.Int32("limit", req.GetLimit()), zap.String("method", req.GetMethod()),
 		zap.String("target", req.GetTarget()), zap.String("user", req.GetUser()),
 		zap.Bool("failures_only", req.GetFailuresOnly()), zap.Int64("since_unix_ms", req.GetSinceUnixMs()))
@@ -127,7 +127,7 @@ func (s *Server) ListAuditEvents(ctx context.Context, req *pb.ListAuditEventsReq
 func (s *Server) ListControllerLogs(ctx context.Context, req *pb.ListControllerLogsRequest) (*pb.ListControllerLogsResponse, error) {
 	// One trace per request, written before the ring is read: a trace per
 	// served line would grow the ring while it is being read.
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("ListControllerLogs: listing", zap.Int32("limit", req.GetLimit()),
 		zap.String("level", req.GetLevel()), zap.Bool("has_contains", req.GetContains() != ""),
 		zap.Bool("has_ring", s.ctrl.logRing != nil))

@@ -70,7 +70,7 @@ func externallyPromoted(name string, labels map[string]string) string {
 // assertPromoterAllowed refuses to put a drbd-reactor promoter on resource;
 // what names the operation for the error ("ha create", "an NFS gateway").
 func (c *Controller) assertPromoterAllowed(ctx context.Context, resource, what string) error {
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("Controller.assertPromoterAllowed: start", zap.String("resource", resource), zap.String("what", what))
 	if c.db == nil {
 		log.Debug("Controller.assertPromoterAllowed: no database, allowed", zap.String("resource", resource))

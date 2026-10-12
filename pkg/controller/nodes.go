@@ -68,7 +68,7 @@ func NewNodeManager(ctrl *Controller) *NodeManager {
 
 // RegisterNode registers a new node
 func (nm *NodeManager) RegisterNode(ctx context.Context, name, address string) (*NodeInfo, error) {
-	loggerOfController(nm.controller).Debug("NodeManager.RegisterNode: registering on the management network only",
+	nm.controller.traceLogger().Debug("NodeManager.RegisterNode: registering on the management network only",
 		zap.String("name", name), zap.String("address", address))
 	return nm.RegisterNodeWithReplicationAddress(ctx, name, address, "")
 }
@@ -226,7 +226,7 @@ func (nm *NodeManager) RegisterNodeWithReplicationAddress(ctx context.Context, n
 // persists them. With replace=true the label set is replaced wholesale;
 // otherwise labels are merged in and a key with an empty value is deleted.
 func (nm *NodeManager) SetNodeLabels(ctx context.Context, nodeRef string, labels map[string]string, replace bool) (*NodeInfo, error) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	resolved := nm.controller.ResolveHost(nodeRef)
 	log.Debug("NodeManager.SetNodeLabels: start", zap.String("node", nodeRef), zap.String("resolved", resolved),
 		zap.Any("labels", labels), zap.Bool("replace", replace))
@@ -313,7 +313,7 @@ func (nm *NodeManager) SetNodeLabels(ctx context.Context, nodeRef string, labels
 // UnregisterNode unregisters a node. It refuses while any resource or gateway
 // still places something on the node (see checkNodeUnreferenced).
 func (nm *NodeManager) UnregisterNode(ctx context.Context, address string) error {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
@@ -376,7 +376,7 @@ func (nm *NodeManager) UnregisterNode(ctx context.Context, address string) error
 
 // addHostsEntry adds the new node's hostname and IP to /etc/hosts on all existing nodes
 func (nm *NodeManager) addHostsEntry(ctx context.Context, ip, hostname string) {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NodeManager.addHostsEntry: start", zap.String("ip", ip), zap.String("hostname", hostname))
 	if hostname == "" || hostname == ip {
 		log.Debug("NodeManager.addHostsEntry: skipped, no hostname distinct from the address",
@@ -434,7 +434,7 @@ func (nm *NodeManager) addHostsEntry(ctx context.Context, ip, hostname string) {
 // the controller does not know is left to the steps that follow, which report
 // it in their own terms.
 func (rm *ResourceManager) assertNodesOnline(nodes []string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.assertNodesOnline: start", zap.Strings("nodes", nodes))
 	var offline []string
 	for _, n := range nodes {

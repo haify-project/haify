@@ -166,7 +166,7 @@ func checkCacheDevice(device string, p blockDeviceProbe, node string) error {
 // this on one node of a resource is a legitimate end state, not a half-finished
 // job.
 func (sm *StorageManager) AddPoolCache(ctx context.Context, node, poolName, device, mode string) (*PoolCacheInfo, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	poolName = normalizeManagedName(poolName)
 	device = strings.TrimSpace(device)
 	log.Debug("AddPoolCache: start", zap.String("node", node), zap.String("pool", poolName),
@@ -259,7 +259,7 @@ func (sm *StorageManager) AddPoolCache(ctx context.Context, node, poolName, devi
 // volume behind would make the obvious next move — try again — fail on a name
 // clash rather than on the original problem.
 func (sm *StorageManager) attachPoolCache(ctx context.Context, address, node, poolName, thinPool, device, mode string) (*PoolCacheInfo, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("attachPoolCache: start", zap.String("node", node), zap.String("host", address),
 		zap.String("pool", poolName), zap.String("thin_pool", thinPool), zap.String("device", device),
 		zap.String("mode", mode))
@@ -333,7 +333,7 @@ func (sm *StorageManager) attachPoolCache(ctx context.Context, address, node, po
 func (sm *StorageManager) releaseCacheDevice(ctx context.Context, hosts []string, poolName, device string) {
 	start := time.Now()
 	err := execFailure(sm.controller.deployment.VGReduceAndRemovePV(ctx, hosts, poolName, device))
-	loggerOfController(sm.controller).Debug("releaseCacheDevice: vgreduce and pvremove", zap.Strings("hosts", hosts),
+	sm.controller.traceLogger().Debug("releaseCacheDevice: vgreduce and pvremove", zap.Strings("hosts", hosts),
 		zap.String("pool", poolName), zap.String("device", device), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		sm.controller.logger.Warn("Could not take the cache device back out of the pool after a failed attach",
@@ -343,7 +343,7 @@ func (sm *StorageManager) releaseCacheDevice(ctx context.Context, hosts []string
 
 // RemovePoolCache flushes a cache and takes its device back out of the pool.
 func (sm *StorageManager) RemovePoolCache(ctx context.Context, node, poolName string) error {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	poolName = normalizeManagedName(poolName)
 	log.Debug("RemovePoolCache: start", zap.String("node", node), zap.String("pool", poolName))
 	if node == "" || poolName == "" {

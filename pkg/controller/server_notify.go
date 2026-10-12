@@ -220,7 +220,7 @@ func notifyChannelInfo(c *database.NotifyChannel) *haifypb.NotifyChannelInfo {
 // is nothing to reload — and saving a channel there is still allowed, so the
 // configuration is ready for whenever [alert] is turned on.
 func (c *Controller) reloadNotifyChannels(ctx context.Context) error {
-	log := ctrlLogOrGlobal(c)
+	log := c.traceLogger()
 	if c.notify == nil {
 		log.Debug("reloadNotifyChannels: notifications disabled, nothing to reload")
 		return nil

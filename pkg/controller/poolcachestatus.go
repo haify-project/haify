@@ -204,7 +204,7 @@ func percentOf(part, whole uint64) uint32 {
 
 // readPoolCache reads the cache state of one volume group on one host.
 func (sm *StorageManager) readPoolCache(ctx context.Context, address, vgName string) (*PoolCacheInfo, error) {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	start := time.Now()
 	res, err := sm.controller.deployment.LVSCacheReport(ctx, []string{address}, vgName)
 	if err != nil {
@@ -235,7 +235,7 @@ func (sm *StorageManager) readPoolCache(ctx context.Context, address, vgName str
 // A host that cannot answer is left out rather than failing the listing — a
 // missing cache badge is a much smaller problem than a pool list that errors.
 func (sm *StorageManager) cacheByPool(ctx context.Context, hosts []string) map[string]map[string]*PoolCacheInfo {
-	log := loggerOfController(sm.controller)
+	log := sm.controller.traceLogger()
 	out := make(map[string]map[string]*PoolCacheInfo)
 	if len(hosts) == 0 {
 		log.Debug("cacheByPool: no hosts")

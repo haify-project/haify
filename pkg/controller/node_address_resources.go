@@ -18,7 +18,7 @@ import (
 // adjusted. Resources are done one at a time and a failure does not stop the
 // rest; each one's outcome is in the change.
 func (rm *ResourceManager) RenumberInResources(ctx context.Context, change *NodeAddressChange) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.RenumberInResources: start", zap.Int("moves", len(change.Moves)))
 	if rm.controller.db == nil {
 		log.Debug("ResourceManager.RenumberInResources: no database, no resources to rewrite")
@@ -164,6 +164,6 @@ func (nm *NodeManager) drbdAddressesByHost() map[string]string {
 		}
 		out[name] = replicationOf(n)
 	}
-	loggerOfController(nm.controller).Debug("NodeManager.drbdAddressesByHost: built", zap.Any("addresses", out))
+	nm.controller.traceLogger().Debug("NodeManager.drbdAddressesByHost: built", zap.Any("addresses", out))
 	return out
 }

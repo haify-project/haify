@@ -28,11 +28,11 @@ const defaultFaultDomainLabel = "host"
 func (rm *ResourceManager) faultDomainKey() string {
 	if rm.controller != nil && rm.controller.config != nil {
 		if k := strings.TrimSpace(rm.controller.config.Resource.FaultDomainLabel); k != "" {
-			loggerOfController(rm.controller).Debug("ResourceManager.faultDomainKey: configured label", zap.String("key", k))
+			rm.controller.traceLogger().Debug("ResourceManager.faultDomainKey: configured label", zap.String("key", k))
 			return k
 		}
 	}
-	loggerOfController(rm.controller).Debug("ResourceManager.faultDomainKey: default label", zap.String("key", defaultFaultDomainLabel))
+	rm.controller.traceLogger().Debug("ResourceManager.faultDomainKey: default label", zap.String("key", defaultFaultDomainLabel))
 	return defaultFaultDomainLabel
 }
 
@@ -171,7 +171,7 @@ func (rm *ResourceManager) labelsByNode(ctx context.Context) map[string]map[stri
 	}
 	nodes, err := rm.controller.nodes.ListNodes(ctx)
 	if err != nil {
-		loggerOfController(rm.controller).Debug("ResourceManager.labelsByNode: listing nodes failed", zap.Error(err))
+		rm.controller.traceLogger().Debug("ResourceManager.labelsByNode: listing nodes failed", zap.Error(err))
 		return out
 	}
 	for _, n := range nodes {

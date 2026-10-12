@@ -36,7 +36,7 @@ func projectID(dir string) uint32 {
 // SetNFSExportQuota limits an NFS export directory of resource to limitBytes;
 // zero removes the limit.
 func (rm *ResourceManager) SetNFSExportQuota(ctx context.Context, resource, exportPath string, limitBytes uint64) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("SetNFSExportQuota: setting quota", zap.String("resource", resource),
 		zap.String("export_path", exportPath), zap.Uint64("limit_bytes", limitBytes))
 	dir, err := gateway.ResolveNFSExportPath(resource, exportPath)

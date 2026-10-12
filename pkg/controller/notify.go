@@ -59,7 +59,7 @@ func (nm *NotifyManager) Active() int {
 // than failing the reload: one bad entry must not take down delivery to the
 // others, which is the case where somebody is waiting for a page.
 func (nm *NotifyManager) Reload(ctx context.Context) error {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	if nm.controller.db == nil || nm.controller.events == nil {
 		log.Debug("NotifyManager.Reload: no database or event bus, nothing to reload",
 			zap.Bool("has_db", nm.controller.db != nil), zap.Bool("has_events", nm.controller.events != nil))
@@ -91,7 +91,7 @@ func (nm *NotifyManager) Reload(ctx context.Context) error {
 		cfg, err := webhookConfigFor(ch)
 		if err != nil {
 			nm.controller.logger.Warn("Skipping unusable notification channel",
-				zap.String("channel", ch.Name), zap.Error(err))
+				zap.String("channel", ch.Name), zap.String("error", event.RedactText(err.Error())))
 			continue
 		}
 		log.Debug("NotifyManager.Reload: subscribing channel", zap.String("channel", ch.Name),
@@ -123,7 +123,7 @@ func (nm *NotifyManager) Reload(ctx context.Context) error {
 // and it would return before delivery, so a wrong secret would show up as
 // success here and as a log line nobody reads.
 func (nm *NotifyManager) Test(ctx context.Context, name string) error {
-	log := loggerOfController(nm.controller)
+	log := nm.controller.traceLogger()
 	log.Debug("NotifyManager.Test: testing channel", zap.String("channel", name))
 	if nm.controller.db == nil {
 		log.Debug("NotifyManager.Test: no database")

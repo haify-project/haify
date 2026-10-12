@@ -15,7 +15,7 @@ import (
 // makes into the gateway package, with its outcome.
 
 func (s *Server) AddNFSExport(ctx context.Context, req *haifypb.AddNFSExportRequest) (*haifypb.AddNFSExportResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.AddNFSExport: adding export", zap.String("resource", req.Resource),
 		zap.String("export_path", req.ExportPath), zap.Int32("fsid", req.Fsid), zap.String("client_spec", req.ClientSpec))
 	nfsMgr := gateway.NewNFSManager(s.gateway)
@@ -30,7 +30,7 @@ func (s *Server) AddNFSExport(ctx context.Context, req *haifypb.AddNFSExportRequ
 }
 
 func (s *Server) RemoveNFSExport(ctx context.Context, req *haifypb.RemoveNFSExportRequest) (*haifypb.RemoveNFSExportResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.RemoveNFSExport: removing export", zap.String("resource", req.Resource),
 		zap.String("export_path", req.ExportPath))
 	nfsMgr := gateway.NewNFSManager(s.gateway)
@@ -45,7 +45,7 @@ func (s *Server) RemoveNFSExport(ctx context.Context, req *haifypb.RemoveNFSExpo
 }
 
 func (s *Server) ListNFSExports(ctx context.Context, req *haifypb.ListNFSExportsRequest) (*haifypb.ListNFSExportsResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.ListNFSExports: listing exports", zap.String("resource", req.Resource))
 	nfsMgr := gateway.NewNFSManager(s.gateway)
 	start := time.Now()
@@ -76,7 +76,7 @@ func (s *Server) ListNFSExports(ctx context.Context, req *haifypb.ListNFSExports
 }
 
 func (s *Server) AddISCSILUN(ctx context.Context, req *haifypb.AddISCSILUNRequest) (*haifypb.AddISCSILUNResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.AddISCSILUN: adding LUN", zap.String("resource", req.Resource),
 		zap.Int32("lun", req.Lun), zap.String("device", req.Device))
 	iscsiMgr := gateway.NewISCSIManager(s.gateway)
@@ -91,7 +91,7 @@ func (s *Server) AddISCSILUN(ctx context.Context, req *haifypb.AddISCSILUNReques
 }
 
 func (s *Server) RemoveISCSILUN(ctx context.Context, req *haifypb.RemoveISCSILUNRequest) (*haifypb.RemoveISCSILUNResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.RemoveISCSILUN: removing LUN", zap.String("resource", req.Resource), zap.Int32("lun", req.Lun))
 	iscsiMgr := gateway.NewISCSIManager(s.gateway)
 	start := time.Now()
@@ -105,7 +105,7 @@ func (s *Server) RemoveISCSILUN(ctx context.Context, req *haifypb.RemoveISCSILUN
 }
 
 func (s *Server) ListISCSILUNs(ctx context.Context, req *haifypb.ListISCSILUNsRequest) (*haifypb.ListISCSILUNsResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.ListISCSILUNs: listing LUNs", zap.String("resource", req.Resource))
 	iscsiMgr := gateway.NewISCSIManager(s.gateway)
 	start := time.Now()
@@ -136,7 +136,7 @@ func (s *Server) ListISCSILUNs(ctx context.Context, req *haifypb.ListISCSILUNsRe
 }
 
 func (s *Server) AddISCSIInitiator(ctx context.Context, req *haifypb.AddISCSIInitiatorRequest) (*haifypb.AddISCSIInitiatorResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.AddISCSIInitiator: adding initiator", zap.String("resource", req.Resource),
 		zap.String("initiator", req.Initiator))
 	iscsiMgr := gateway.NewISCSIManager(s.gateway)
@@ -151,7 +151,7 @@ func (s *Server) AddISCSIInitiator(ctx context.Context, req *haifypb.AddISCSIIni
 }
 
 func (s *Server) RemoveISCSIInitiator(ctx context.Context, req *haifypb.RemoveISCSIInitiatorRequest) (*haifypb.RemoveISCSIInitiatorResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.RemoveISCSIInitiator: removing initiator", zap.String("resource", req.Resource),
 		zap.String("initiator", req.Initiator))
 	iscsiMgr := gateway.NewISCSIManager(s.gateway)
@@ -166,7 +166,7 @@ func (s *Server) RemoveISCSIInitiator(ctx context.Context, req *haifypb.RemoveIS
 }
 
 func (s *Server) ListISCSIInitiators(ctx context.Context, req *haifypb.ListISCSIInitiatorsRequest) (*haifypb.ListISCSIInitiatorsResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.ListISCSIInitiators: listing initiators", zap.String("resource", req.Resource))
 	iscsiMgr := gateway.NewISCSIManager(s.gateway)
 	start := time.Now()
@@ -186,7 +186,7 @@ func (s *Server) ListISCSIInitiators(ctx context.Context, req *haifypb.ListISCSI
 // SetISCSIChap and GetISCSIChap carry the CHAP password: only whether one is
 // set is traced, never its value.
 func (s *Server) SetISCSIChap(ctx context.Context, req *haifypb.SetISCSIChapRequest) (*haifypb.SetISCSIChapResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.SetISCSIChap: setting CHAP", zap.String("resource", req.Resource),
 		zap.Bool("has_username", req.Username != ""), zap.Bool("has_password", req.Password != ""),
 		zap.Bool("mutual", req.Mutual))
@@ -202,7 +202,7 @@ func (s *Server) SetISCSIChap(ctx context.Context, req *haifypb.SetISCSIChapRequ
 }
 
 func (s *Server) GetISCSIChap(ctx context.Context, req *haifypb.GetISCSIChapRequest) (*haifypb.GetISCSIChapResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.GetISCSIChap: reading CHAP", zap.String("resource", req.Resource))
 	iscsiMgr := gateway.NewISCSIManager(s.gateway)
 	start := time.Now()
@@ -223,7 +223,7 @@ func (s *Server) GetISCSIChap(ctx context.Context, req *haifypb.GetISCSIChapRequ
 }
 
 func (s *Server) AddNVMeNamespace(ctx context.Context, req *haifypb.AddNVMeNamespaceRequest) (*haifypb.AddNVMeNamespaceResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.AddNVMeNamespace: adding namespace", zap.String("resource", req.Resource),
 		zap.String("device", req.Device))
 	nvmeMgr := gateway.NewNVMeManager(s.gateway)
@@ -238,7 +238,7 @@ func (s *Server) AddNVMeNamespace(ctx context.Context, req *haifypb.AddNVMeNames
 }
 
 func (s *Server) RemoveNVMeNamespace(ctx context.Context, req *haifypb.RemoveNVMeNamespaceRequest) (*haifypb.RemoveNVMeNamespaceResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.RemoveNVMeNamespace: removing namespace", zap.String("resource", req.Resource),
 		zap.Int32("namespace_id", req.NamespaceId))
 	nvmeMgr := gateway.NewNVMeManager(s.gateway)
@@ -253,7 +253,7 @@ func (s *Server) RemoveNVMeNamespace(ctx context.Context, req *haifypb.RemoveNVM
 }
 
 func (s *Server) ListNVMeNamespaces(ctx context.Context, req *haifypb.ListNVMeNamespacesRequest) (*haifypb.ListNVMeNamespacesResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.ListNVMeNamespaces: listing namespaces", zap.String("resource", req.Resource))
 	nvmeMgr := gateway.NewNVMeManager(s.gateway)
 	start := time.Now()
@@ -286,7 +286,7 @@ func (s *Server) ListNVMeNamespaces(ctx context.Context, req *haifypb.ListNVMeNa
 }
 
 func (s *Server) AddNVMeHost(ctx context.Context, req *haifypb.AddNVMeHostRequest) (*haifypb.AddNVMeHostResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.AddNVMeHost: adding host", zap.String("resource", req.Resource), zap.String("host_nqn", req.HostNqn))
 	nvmeMgr := gateway.NewNVMeManager(s.gateway)
 	start := time.Now()
@@ -300,7 +300,7 @@ func (s *Server) AddNVMeHost(ctx context.Context, req *haifypb.AddNVMeHostReques
 }
 
 func (s *Server) RemoveNVMeHost(ctx context.Context, req *haifypb.RemoveNVMeHostRequest) (*haifypb.RemoveNVMeHostResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.RemoveNVMeHost: removing host", zap.String("resource", req.Resource), zap.String("host_nqn", req.HostNqn))
 	nvmeMgr := gateway.NewNVMeManager(s.gateway)
 	start := time.Now()
@@ -314,7 +314,7 @@ func (s *Server) RemoveNVMeHost(ctx context.Context, req *haifypb.RemoveNVMeHost
 }
 
 func (s *Server) ListNVMeHosts(ctx context.Context, req *haifypb.ListNVMeHostsRequest) (*haifypb.ListNVMeHostsResponse, error) {
-	log := loggerOfController(s.ctrl)
+	log := s.ctrl.traceLogger()
 	log.Debug("Server.ListNVMeHosts: listing hosts", zap.String("resource", req.Resource))
 	nvmeMgr := gateway.NewNVMeManager(s.gateway)
 	start := time.Now()

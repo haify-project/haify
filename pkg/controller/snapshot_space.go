@@ -41,11 +41,11 @@ const snapshotsKeptUnderPressure = 2
 // left raises a critical event, because its replica is next.
 func (sm *ScheduleManager) relieveThinPool(ctx context.Context, host, node, resource string, vol *ResourceVolumeInfo, lock time.Duration) {
 	if isZFSDevice(vol.Device) || sm.controller.storage == nil {
-		ctrlLogOrGlobal(sm.controller).Debug("relieveThinPool: ZFS volume or no storage manager, nothing to relieve",
+		sm.controller.traceLogger().Debug("relieveThinPool: ZFS volume or no storage manager, nothing to relieve",
 			zap.String("resource", resource), zap.String("device", vol.Device))
 		return
 	}
-	log := ctrlLogOrGlobal(sm.controller)
+	log := sm.controller.traceLogger()
 	log.Debug("relieveThinPool: checking pool", zap.String("node", node), zap.String("pool", vol.Pool),
 		zap.String("resource", resource), zap.Duration("lock", lock))
 	usage, err := sm.controller.storage.readThinUsage(ctx, host, vol.Pool)
@@ -109,10 +109,10 @@ func (sm *ScheduleManager) relieveThinPool(ctx context.Context, host, node, reso
 
 func (sm *ScheduleManager) publishPoolEvent(t event.Type, status event.Status, sev event.Severity, node, pool, resource, msg string) {
 	if sm.controller.events == nil {
-		ctrlLogOrGlobal(sm.controller).Debug("publishPoolEvent: no event bus, dropped", zap.String("type", string(t)))
+		sm.controller.traceLogger().Debug("publishPoolEvent: no event bus, dropped", zap.String("type", string(t)))
 		return
 	}
-	ctrlLogOrGlobal(sm.controller).Debug("publishPoolEvent: publishing", zap.String("type", string(t)),
+	sm.controller.traceLogger().Debug("publishPoolEvent: publishing", zap.String("type", string(t)),
 		zap.String("severity", string(sev)), zap.String("node", node), zap.String("pool", pool), zap.String("resource", resource))
 	sm.controller.events.Publish(event.Event{
 		Type: t, Severity: sev, Status: status, Resource: pool, Node: node, Message: msg,

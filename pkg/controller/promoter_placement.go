@@ -32,7 +32,7 @@ import (
 // failoverHosts returns the resolved addresses of the nodes that may run
 // resource's promoters: its diskful replicas, without the DR node.
 func (rm *ResourceManager) failoverHosts(ctx context.Context, resource string) ([]string, error) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.failoverHosts: start", zap.String("resource", resource))
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
@@ -54,7 +54,7 @@ func (rm *ResourceManager) failoverHosts(ctx context.Context, resource string) (
 // drHost is the resolved address of resource's DR node, or "" for a LAN
 // resource.
 func (rm *ResourceManager) drHost(ctx context.Context, resource string) string {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	if rm.controller.db == nil {
 		log.Debug("ResourceManager.drHost: no database, no DR node", zap.String("resource", resource))
 		return ""
@@ -80,7 +80,7 @@ func (rm *ResourceManager) drHost(ctx context.Context, resource string) string {
 // The controller's own resource is left alone: Self-HA places its promoter
 // together with the controller binary and unit it starts (selfha.go).
 func (rm *ResourceManager) SyncPromoters(ctx context.Context, resource string, former ...string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.SyncPromoters: start", zap.String("resource", resource), zap.Strings("former", former))
 	if resource == SelfHaResource {
 		log.Debug("ResourceManager.SyncPromoters: the controller's own resource is left to Self-HA", zap.String("resource", resource))
@@ -122,7 +122,7 @@ func (rm *ResourceManager) SyncPromoters(ctx context.Context, resource string, f
 // Hosts that already hold it are not written to: on the node running the
 // service chain a rewrite plus reload is a restart of that chain.
 func (rm *ResourceManager) syncHaPlacement(ctx context.Context, resource string, run, former []string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.syncHaPlacement: start", zap.String("resource", resource), zap.Strings("hosts", run),
 		zap.Strings("former", former))
 	cfg := haTomlPath(resource)
@@ -212,7 +212,7 @@ func (rm *ResourceManager) syncHaPlacement(ctx context.Context, resource string,
 // installHaPromoter copies an HA config, and the mount units its chain
 // starts, from src to hosts — after checking the hosts can run the chain.
 func (rm *ResourceManager) installHaPromoter(ctx context.Context, resource, src, content string, disabled bool, hosts []string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.installHaPromoter: start", zap.String("resource", resource), zap.String("source", src),
 		zap.Bool("disabled", disabled), zap.Strings("hosts", hosts), zap.Int("bytes", len(content)))
 	chain, err := gateway.PromoterChain(content)
@@ -313,7 +313,7 @@ func (rm *ResourceManager) installHaPromoter(ctx context.Context, resource, src,
 // the OCF agents exist and every plain unit is installed. Mount units and
 // service-ip are not checked, because installHaPromoter provides them.
 func (rm *ResourceManager) checkHaChain(ctx context.Context, chain []gateway.ChainEntry, hosts []string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.checkHaChain: start", zap.Int("chain", len(chain)), zap.Strings("hosts", hosts))
 	var checks []string
 	for _, e := range chain {
@@ -369,7 +369,7 @@ func (rm *ResourceManager) checkHaChain(ctx context.Context, chain []gateway.Cha
 // UpToDate data, which is a DR node after a manual failover serving what is
 // left: it loses only the promoter, never the service.
 func (rm *ResourceManager) retireHaPromoter(ctx context.Context, resource string, hosts []string) {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	if len(hosts) == 0 {
 		log.Debug("ResourceManager.retireHaPromoter: no hosts to retire from", zap.String("resource", resource))
 		return
@@ -414,7 +414,7 @@ true`, haTomlPath(resource), resource, shellSingleQuote(fmt.Sprintf("drbd-servic
 // checkPromoterPrereqs refuses, before anything is provisioned, a new replica
 // on a node that could not run the resource's HA chain or gateway.
 func (rm *ResourceManager) checkPromoterPrereqs(ctx context.Context, resource string, hosts []string) error {
-	log := loggerOfController(rm.controller)
+	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.checkPromoterPrereqs: start", zap.String("resource", resource), zap.Strings("hosts", hosts))
 	if resource == SelfHaResource {
 		log.Debug("ResourceManager.checkPromoterPrereqs: the controller's own resource, not checked", zap.String("resource", resource))
@@ -461,7 +461,7 @@ func (rm *ResourceManager) resolveAll(nodes []string) []string {
 	for _, n := range nodes {
 		out = append(out, rm.controller.ResolveHost(n))
 	}
-	loggerOfController(rm.controller).Debug("ResourceManager.resolveAll: resolved", zap.Strings("nodes", nodes),
+	rm.controller.traceLogger().Debug("ResourceManager.resolveAll: resolved", zap.Strings("nodes", nodes),
 		zap.Strings("hosts", out))
 	return out
 }

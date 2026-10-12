@@ -45,7 +45,7 @@ func clockJump(wall, lock time.Time) time.Duration {
 // watchLockClock reports a jump of the wall clock once, and again only after
 // it has come back.
 func (c *Controller) watchLockClock(ctx context.Context) {
-	log := loggerOfController(c)
+	log := c.traceLogger()
 	log.Debug("watchLockClock: started", zap.Duration("threshold", clockJumpThreshold))
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
