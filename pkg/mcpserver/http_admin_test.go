@@ -44,18 +44,25 @@ func startPair(t *testing.T, maxRole mcpauth.Role) *listenerPair {
 		})
 	}()
 	t.Cleanup(func() { cancel(); <-done })
+	// Under the race detector with the whole suite running, startup can take
+	// seconds; a server that exits early says why instead of timing out.
+	deadline := time.Now().Add(20 * time.Second)
 	for _, a := range []string{capped, admin} {
-		up := false
-		for range 100 {
+		for {
 			if resp, err := http.Get("http://" + a + "/healthz"); err == nil {
 				_ = resp.Body.Close()
-				up = true
 				break
 			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		if !up {
-			t.Fatalf("%s did not start", a)
+			select {
+			case err := <-done:
+				done <- err
+				t.Fatalf("the server stopped before %s came up: %v", a, err)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s did not start", a)
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 	return &listenerPair{

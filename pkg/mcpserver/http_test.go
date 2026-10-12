@@ -57,12 +57,19 @@ func startRemote(t *testing.T, maxRole mcpauth.Role, public string) *remoteEnv {
 			HTTPOptions{Listen: addr, Tokens: store, MaxRole: maxRole, PublicURL: public})
 	}()
 	t.Cleanup(func() { cancel(); <-done })
-	for range 100 {
+	// Startup can take seconds under the race detector with the suite running.
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
 		if resp, err := http.Get("http://" + addr + "/healthz"); err == nil {
 			_ = resp.Body.Close()
 			return &remoteEnv{url: "http://" + addr, store: store}
 		}
-		time.Sleep(20 * time.Millisecond)
+		select {
+		case err := <-done:
+			done <- err
+			t.Fatalf("the server stopped before it came up: %v", err)
+		default:
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("server did not start")
 	return nil
