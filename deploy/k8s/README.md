@@ -76,8 +76,10 @@ keeps the Service name working on the host network.
 
 The controller Deployment runs one replica. Raise `replicas` in
 `20-controller.yaml` for a standby: only one replica works at a time, and when
-it stops another takes over within about 15 seconds. The replicas agree on
-which one works through Leases in `kube-system`.
+it stops another takes over within about half a minute. The replicas agree on
+which one works through Leases in `kube-system`. Each replica needs a node of
+its own, because they share the host network; a replica with no free node
+stays Pending.
 
 If the controller has `[auth]` or `[rbac]` on, the plugins need its API token.
 Before applying, create a Secret from the token file on a Haify node:

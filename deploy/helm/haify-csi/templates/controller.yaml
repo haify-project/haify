@@ -9,6 +9,11 @@ spec:
   # several replicas one does the work and the others stand by to take over.
   replicas: {{ .Values.controllerPlugin.replicas }}
   selector: { matchLabels: { app: haify-csi-controller } }
+  # A replica needs a node to itself (see affinity), so an update replaces
+  # them one at a time rather than starting a new one beside the old.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
   template:
     metadata:
       labels:
@@ -22,6 +27,13 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: haify-csi-controller
+      # On the host network two replicas on one node would both bind the
+      # liveness probe's port, so each replica gets a node of its own.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: haify-csi-controller } }
+              topologyKey: kubernetes.io/hostname
       {{- with .Values.controllerPlugin.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}

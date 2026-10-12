@@ -8,6 +8,11 @@ spec:
   # more replicas are safe: one does the work, the others stand by.
   replicas: 1
   selector: { matchLabels: { app: haify-csi-controller } }
+  # A replica needs a node to itself (see affinity), so an update replaces
+  # them one at a time rather than starting a new one beside the old.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 0, maxUnavailable: 1 }
   template:
     metadata: { labels: { app: haify-csi-controller } }
     spec:
@@ -19,6 +24,13 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       serviceAccountName: haify-csi-controller
+      # On the host network two replicas on one node would both bind the
+      # liveness probe's port, so each replica gets a node of its own.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: haify-csi-controller } }
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0
