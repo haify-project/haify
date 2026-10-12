@@ -151,6 +151,14 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 // back, and after two it has nowhere left to run. PartOf carries nfs-server's
 // stop to them; nfs-server's own Requires/Wants start them again with it.
 //
+// The distribution's own nfs-server is switched off at boot and, on a node
+// where no gateway is serving NFS, stopped along with fsidd and nfsdcld: the
+// gateway starts nfs-server where it runs. A stray nfsdcld left from the
+// package install keeps the root disk's /var/lib/nfs, cannot record clients
+// on the gateway's state volume, and the next node to take over then holds
+// every client in a full 90-second grace period instead of ending it as soon
+// as they reclaim.
+//
 // ip_nonlocal_bind lets nfsserver's sm-notify bind to the service IP, which
 // the chain now brings up after nfsserver (see the NFS template). Without it
 // NFSv3 clients are never told to reclaim their locks after a switchover.
@@ -176,6 +184,10 @@ PartOf=nfs-server.service'
   mkdir -p "$d" && printf '%s\n' "$want" > "$f" && changed=1
 done
 [ -z "$changed" ] || systemctl daemon-reload
+systemctl disable -q nfs-server 2>/dev/null
+if [ -z "$(systemctl list-units --no-legend --all --state=active,activating,deactivating,reloading 'ocf.rs@nfsserver_*' 2>/dev/null)" ]; then
+  systemctl stop nfs-server fsidd nfsdcld 2>/dev/null
+fi
 f=/etc/sysctl.d/90-haify-nfs-gateway.conf
 want='# Haify NFS gateway: sm-notify binds to the service IP before it is up.
 net.ipv4.ip_nonlocal_bind = 1'
@@ -211,8 +223,8 @@ func (n *NFSManager) generateNFSGatewayConfig(req *v1.CreateNFSGatewayRequest, s
       target-as = "BindsTo"
 
       start = [
-        "ocf:heartbeat:Filesystem fs_cluster_private device={{ .DRBDDevice }} directory={{ .ClusterPrivatePath }} fstype={{ .FSType }} run_fsck=no force_unmount=safe",
-        "ocf:heartbeat:Filesystem fs_export device={{ .ExportDevice }} directory={{ .ExportPath }} fstype={{ .FSType }}{{ if .ProjectQuota }} options=prjquota{{ end }} run_fsck=no force_unmount=safe",
+        "ocf:heartbeat:Filesystem fs_cluster_private device={{ .DRBDDevice }} directory={{ .ClusterPrivatePath }} fstype={{ .FSType }} run_fsck=no force_unmount=false",
+        "ocf:heartbeat:Filesystem fs_export device={{ .ExportDevice }} directory={{ .ExportPath }} fstype={{ .FSType }}{{ if .ProjectQuota }} options=prjquota{{ end }} run_fsck=no force_unmount=false",
         "ocf:heartbeat:nfsserver nfsserver nfs_ip={{ .IPAddress }} nfs_shared_infodir={{ .NFSInfoDir }} nfs_server_scope={{ .IPAddress }}",
 {{ range $idx, $client := .AllowedClients }}
         "ocf:heartbeat:exportfs export_{{ $idx }} directory={{ $.ExportPath }} fsid={{ $.FSID }} clientspec={{ $client }} options={{ $.Options }}",

@@ -147,6 +147,10 @@ func TestNFSGatewayTiesHelperDaemonsToServer(t *testing.T) {
 	onReplica := strings.Join(scriptsOn(t, d, "orange1"), "\n")
 	assert.Contains(t, onReplica, "for u in fsidd nfsdcld")
 	assert.Contains(t, onReplica, "PartOf=nfs-server.service")
+	assert.Contains(t, onReplica, "systemctl disable -q nfs-server")
+	assert.Contains(t, onReplica, "'ocf.rs@nfsserver_*'",
+		"strays are stopped only where no gateway is serving NFS")
+	assert.Contains(t, onReplica, "systemctl stop nfs-server fsidd nfsdcld")
 	assert.NotContains(t, strings.Join(scriptsOn(t, d, "orange3"), "\n"), "PartOf=")
 
 	d2 := &MockDeploymentClient{}
