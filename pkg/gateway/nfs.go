@@ -7,8 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
+	"time"
 
 	v1 "github.com/haify-project/haify/api/proto/v1"
 	"go.uber.org/zap"
@@ -31,6 +30,11 @@ func NewNFSManager(m *Manager) *NFSManager {
 
 // CreateNFSGateway creates an NFS gateway with drbd-reactor configuration
 func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGatewayRequest) (*v1.CreateNFSGatewayResponse, error) {
+	log := n.log()
+	begin := time.Now()
+	log.Debug("NFSManager.CreateNFSGateway: start",
+		zap.String("resource", req.Resource), zap.String("service_ip", req.ServiceIp),
+		zap.String("export_path", req.ExportPath), zap.String("fs_type", req.FsType), zap.Strings("allowed_ips", req.AllowedIps))
 	n.logger.Info("Creating NFS gateway",
 		zap.String("resource", req.Resource),
 		zap.String("service_ip", req.ServiceIp),
@@ -39,6 +43,7 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 	// Parse service IP
 	serviceIP, err := parseServiceIP(req.ServiceIp)
 	if err != nil {
+		log.Debug("NFSManager.CreateNFSGateway: invalid service IP", zap.String("service_ip", req.ServiceIp), zap.Error(err))
 		return &v1.CreateNFSGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("invalid service IP: %v", err),
@@ -50,24 +55,34 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 	// instead of writing a promoter config that silently fails to start.
 	if res, rerr := n.resources.GetResource(ctx, req.Resource); rerr == nil && res != nil {
 		if err := n.checkGatewayPrereqs(ctx, gatewayNodes(res), nfsPrereqs()); err != nil {
+			log.Debug("NFSManager.CreateNFSGateway: prerequisites missing", zap.String("resource", req.Resource), zap.Error(err))
 			return &v1.CreateNFSGatewayResponse{Success: false, Message: err.Error()}, err
 		}
+	} else {
+		log.Debug("NFSManager.CreateNFSGateway: resource lookup failed, prerequisite check skipped",
+			zap.String("resource", req.Resource), zap.Error(rerr))
 	}
 
 	// Auto-provision the cluster-private state volume when the resource is one
 	// short, so a single-volume resource can be exported without a manual
 	// add-volume step first.
+	start := time.Now()
 	if err := n.resources.EnsureGatewayVolumes(ctx, req.Resource, 2); err != nil {
+		log.Debug("NFSManager.CreateNFSGateway: state volume provisioning failed",
+			zap.String("resource", req.Resource), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return &v1.CreateNFSGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to provision gateway state volume: %v", err),
 		}, err
 	}
+	log.Debug("NFSManager.CreateNFSGateway: gateway volumes ensured",
+		zap.String("resource", req.Resource), zap.Duration("took", time.Since(start)))
 
 	// Get volume info from resource - NFS requires at least 2 volumes
 	// Volume 0: cluster-private (NFS state), Volume 1+: exported data
 	resInfo, err := n.resources.GetResource(ctx, req.Resource)
 	if err != nil {
+		log.Debug("NFSManager.CreateNFSGateway: resource lookup failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateNFSGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to get resource info: %v", err),
@@ -75,6 +90,7 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 	}
 
 	if len(resInfo.Volumes) < 2 {
+		log.Debug("NFSManager.CreateNFSGateway: too few volumes", zap.String("resource", req.Resource), zap.Int("count", len(resInfo.Volumes)))
 		return &v1.CreateNFSGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("NFS gateway requires at least 2 volumes (got %d): volume 0 for cluster-private, volume 1+ for exports", len(resInfo.Volumes)),
@@ -104,6 +120,7 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 	clusterPrivateDev, payload := clusterPrivateAndPayload(resInfo.Volumes, drbdDevice)
 	if err := n.ensureGatewayPrerequisites(ctx, req.Resource, resInfo.Nodes,
 		clusterPrivateDev, payloadDevice(payload, drbdDevice)); err != nil {
+		log.Debug("NFSManager.CreateNFSGateway: preparing the resource failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateNFSGatewayResponse{
 			Success: false,
 			Message: err.Error(),
@@ -111,11 +128,18 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 	}
 
 	if len(resInfo.Nodes) > 0 {
+		start = time.Now()
 		n.projectQuota = n.deployment.Exec(ctx, resInfo.Nodes[:1],
 			"sudo tune2fs -l "+payloadDevice(payload, drbdDevice)+" 2>/dev/null | grep -qw project") == nil
+		log.Debug("NFSManager.CreateNFSGateway: project quota feature probed",
+			zap.String("node", resInfo.Nodes[0]), zap.String("device", payloadDevice(payload, drbdDevice)),
+			zap.Bool("project_quota", n.projectQuota), zap.Duration("took", time.Since(start)))
+	} else {
+		log.Debug("NFSManager.CreateNFSGateway: resource has no nodes, project quota not probed", zap.String("resource", req.Resource))
 	}
 	config, err := n.generateNFSGatewayConfig(req, serviceIP, drbdDevice, resInfo.Volumes)
 	if err != nil {
+		log.Debug("NFSManager.CreateNFSGateway: config generation failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateNFSGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to generate config: %v", err),
@@ -125,6 +149,7 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 	// Write configuration to all nodes
 	pluginID := fmt.Sprintf("haify-nfs-%s", req.Resource)
 	if err := n.writeReactorConfig(ctx, req.Resource, pluginID, config); err != nil {
+		log.Debug("NFSManager.CreateNFSGateway: writing config failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateNFSGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to write config: %v", err),
@@ -132,6 +157,8 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 	}
 
 	configPath := filepath.Join(DrbdReactorConfigDir, fmt.Sprintf("%s.toml", pluginID))
+	log.Debug("NFSManager.CreateNFSGateway: done",
+		zap.String("resource", req.Resource), zap.String("path", configPath), zap.Duration("took", time.Since(begin)))
 
 	return &v1.CreateNFSGatewayResponse{
 		Success:    true,
@@ -167,9 +194,12 @@ func (n *NFSManager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGate
 // onlyIfNFS skips hosts that hold no NFS promoter for that gateway, so starting
 // an iSCSI or NVMe-oF gateway leaves the NFS settings alone.
 func (m *Manager) prepareNFSNode(ctx context.Context, hosts []string, onlyIfNFS string) {
+	log := m.log()
 	if len(hosts) == 0 {
+		log.Debug("prepareNFSNode: no hosts")
 		return
 	}
+	log.Debug("prepareNFSNode: start", zap.Strings("hosts", hosts), zap.String("only_if_nfs", onlyIfNFS))
 	guard := ""
 	if onlyIfNFS != "" {
 		guard = fmt.Sprintf("ls /etc/drbd-reactor.d/haify-nfs-%s.toml* >/dev/null 2>&1 || exit 0\n", onlyIfNFS)
@@ -201,6 +231,7 @@ true`
 
 // generateNFSGatewayConfig generates drbd-reactor TOML configuration for NFS gateway
 func (n *NFSManager) generateNFSGatewayConfig(req *v1.CreateNFSGatewayRequest, serviceIP *ServiceIP, drbdDevice string, volumes []*ResourceVolumeInfo) (string, error) {
+	log := n.log()
 	clusterPrivateDev, payload := clusterPrivateAndPayload(volumes, drbdDevice)
 	// Template for NFS gateway - matches linstor-gateway pattern
 	tmpl := `# Haify NFS Gateway Configuration
@@ -249,12 +280,14 @@ func (n *NFSManager) generateNFSGatewayConfig(req *v1.CreateNFSGatewayRequest, s
 	prefix := serviceIP.Prefix
 	fsType := req.FsType
 	if fsType == "" {
+		log.Debug("NFSManager.generateNFSGatewayConfig: no filesystem type given, using the default", zap.String("fs_type", DefaultFSType))
 		fsType = DefaultFSType
 	}
 
 	// Prepare export path (the directory clients mount)
 	exportsPath, err := ResolveNFSExportPath(req.Resource, req.ExportPath)
 	if err != nil {
+		log.Debug("NFSManager.generateNFSGatewayConfig: invalid export path", zap.String("export_path", req.ExportPath), zap.Error(err))
 		return "", err
 	}
 
@@ -272,6 +305,7 @@ func (n *NFSManager) generateNFSGatewayConfig(req *v1.CreateNFSGatewayRequest, s
 		}
 	} else {
 		// Default: allow all
+		log.Debug("NFSManager.generateNFSGatewayConfig: no allowed IPs, exporting to every client")
 		clientSpecs = append(clientSpecs, "0.0.0.0/0.0.0.0")
 	}
 
@@ -280,6 +314,11 @@ func (n *NFSManager) generateNFSGatewayConfig(req *v1.CreateNFSGatewayRequest, s
 	// NFS info directory uses cluster private mount path
 	nfsInfoDir := filepath.Join(DefaultClusterPrivateMountPath, req.Resource, "nfs")
 	clusterPrivatePath := filepath.Join(DefaultClusterPrivateMountPath, req.Resource)
+	log.Debug("NFSManager.generateNFSGatewayConfig: rendering",
+		zap.String("resource", req.Resource), zap.String("ip", ipAddr), zap.Int("prefix", prefix),
+		zap.String("cluster_private", clusterPrivateDev), zap.String("export_device", payloadDevice(payload, drbdDevice)),
+		zap.String("export_path", exportsPath), zap.String("fsid", fsid), zap.Strings("clientspecs", clientSpecs),
+		zap.Bool("project_quota", n.projectQuota))
 
 	data := struct {
 		Resource           string
@@ -327,6 +366,7 @@ func (n *NFSManager) generateNFSGatewayConfig(req *v1.CreateNFSGatewayRequest, s
 func nfsFormatCIDR(cidr string) string {
 	ip, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
+		zap.L().Debug("nfsFormatCIDR: not CIDR, used as given", zap.String("cidr", cidr))
 		return cidr
 	}
 
@@ -334,11 +374,13 @@ func nfsFormatCIDR(cidr string) string {
 
 	// For IPv4 with /0, use 0.0.0.0 mask
 	if ip.To4() != nil && prefix == 0 {
+		zap.L().Debug("nfsFormatCIDR: IPv4 /0 written with a dotted mask", zap.String("cidr", cidr))
 		return fmt.Sprintf("%s/0.0.0.0", ip.String())
 	}
 
 	// For IPv6, wrap in brackets
 	if ip.To4() == nil {
+		zap.L().Debug("nfsFormatCIDR: IPv6 wrapped in brackets", zap.String("cidr", cidr))
 		return fmt.Sprintf("[%s]/%d", ip.String(), prefix)
 	}
 
@@ -347,6 +389,8 @@ func nfsFormatCIDR(cidr string) string {
 
 // GetNFSGatewayStatus gets the status of an NFS gateway
 func (n *NFSManager) GetNFSGatewayStatus(ctx context.Context, resource string) (map[string]interface{}, error) {
+	log := n.log()
+	log.Debug("NFSManager.GetNFSGatewayStatus: start", zap.String("resource", resource))
 	status := map[string]interface{}{
 		"type":     "nfs",
 		"resource": resource,
@@ -356,6 +400,7 @@ func (n *NFSManager) GetNFSGatewayStatus(ctx context.Context, resource string) (
 	// Check if the gateway config exists
 	configPath := filepath.Join(DrbdReactorConfigDir, fmt.Sprintf("haify-nfs-%s.toml", resource))
 	if _, err := os.Stat(configPath); err != nil {
+		log.Debug("NFSManager.GetNFSGatewayStatus: no local config", zap.String("path", configPath), zap.Error(err))
 		status["status"] = "not_configured"
 		return status, nil
 	}
@@ -367,6 +412,10 @@ func (n *NFSManager) GetNFSGatewayStatus(ctx context.Context, resource string) (
 	if resInfo, err := n.resources.GetResource(ctx, resource); err == nil {
 		status["role"] = resInfo.Role
 		status["nodes"] = resInfo.Nodes
+		log.Debug("NFSManager.GetNFSGatewayStatus: configured",
+			zap.String("resource", resource), zap.String("role", resInfo.Role), zap.Strings("nodes", resInfo.Nodes))
+	} else {
+		log.Debug("NFSManager.GetNFSGatewayStatus: resource lookup failed", zap.String("resource", resource), zap.Error(err))
 	}
 
 	return status, nil
@@ -374,6 +423,8 @@ func (n *NFSManager) GetNFSGatewayStatus(ctx context.Context, resource string) (
 
 // DeleteNFSGateway deletes an NFS gateway
 func (n *NFSManager) DeleteNFSGateway(ctx context.Context, resource string) error {
+	log := n.log()
+	log.Debug("NFSManager.DeleteNFSGateway: start", zap.String("resource", resource), zap.Strings("hosts", n.hosts))
 	n.logger.Info("Deleting NFS gateway", zap.String("resource", resource))
 
 	configFile := fmt.Sprintf("haify-nfs-%s.toml", resource)
@@ -382,7 +433,11 @@ func (n *NFSManager) DeleteNFSGateway(ctx context.Context, resource string) erro
 	// Remove config from all nodes
 	for _, host := range n.hosts {
 		rmCmd := fmt.Sprintf("sudo rm -f %s", configPath)
-		if err := n.deployment.Exec(ctx, []string{host}, rmCmd); err != nil {
+		start := time.Now()
+		err := n.deployment.Exec(ctx, []string{host}, rmCmd)
+		log.Debug("NFSManager.DeleteNFSGateway: removed config",
+			zap.String("host", host), zap.String("path", configPath), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			n.logger.Warn("Failed to delete config",
 				zap.String("node", host),
 				zap.Error(err))
@@ -391,118 +446,12 @@ func (n *NFSManager) DeleteNFSGateway(ctx context.Context, resource string) erro
 
 	// Reload drbd-reactor
 	if err := n.reloadDrbdReactor(ctx); err != nil {
+		log.Debug("NFSManager.DeleteNFSGateway: reload failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
 	n.logger.Info("NFS gateway deleted", zap.String("resource", resource))
 	return nil
-}
-
-// ==================== Multi-Export Support ====================
-
-// AddNFSExport adds an additional export to an existing NFS gateway
-func (n *NFSManager) AddNFSExport(ctx context.Context, resource, exportPath string, fsid int, clientSpec, options string) error {
-	n.logger.Info("Adding NFS export",
-		zap.String("resource", resource),
-		zap.String("export_path", exportPath))
-
-	pluginID := fmt.Sprintf("haify-nfs-%s", resource)
-	cfg, err := n.readGatewayConfig(ctx, resource, pluginID)
-	if err != nil {
-		return err
-	}
-	content := cfg.content
-
-	lines, trailingNewline := splitConfigLines(content)
-	exportID := nextExportID(lines)
-	if fsid <= 0 {
-		fsid = exportID
-	}
-	if clientSpec == "" {
-		clientSpec = "0.0.0.0/0.0.0.0"
-	}
-	if options == "" {
-		options = "rw,all_squash,anonuid=0,anongid=0"
-	}
-
-	resolvedPath, err := ResolveNFSExportPath(resource, exportPath)
-	if err != nil {
-		return err
-	}
-	newLine := buildNFSExportLine(exportID, resolvedPath, strconv.Itoa(fsid), clientSpec, options)
-	// After the last export (or nfsserver): the service IP that follows must
-	// stay last in the chain — see the NFS template.
-	anchor := findLineIndex(lines, func(line string) bool {
-		return strings.Contains(line, "ocf:heartbeat:nfsserver ")
-	})
-	for i, line := range lines {
-		if _, ok := parseNFSExportLine(line); ok {
-			anchor = i
-		}
-	}
-	if anchor < 0 {
-		return fmt.Errorf("failed to locate the nfsserver entry in %s", gatewayConfigPath(pluginID))
-	}
-	lines = append(lines[:anchor+1], append([]string{newLine}, lines[anchor+1:]...)...)
-
-	return n.persistGatewayConfig(ctx, resource, pluginID, cfg, joinConfigLines(lines, trailingNewline))
-}
-
-// RemoveNFSExport removes an export from an existing NFS gateway.
-func (n *NFSManager) RemoveNFSExport(ctx context.Context, resource, exportPath string) error {
-	n.logger.Info("Removing NFS export",
-		zap.String("resource", resource),
-		zap.String("export_path", exportPath))
-
-	pluginID := fmt.Sprintf("haify-nfs-%s", resource)
-	cfg, err := n.readGatewayConfig(ctx, resource, pluginID)
-	if err != nil {
-		return err
-	}
-	content := cfg.content
-
-	normalizedPath, err := ResolveNFSExportPath(resource, exportPath)
-	if err != nil {
-		return err
-	}
-	lines, trailingNewline := splitConfigLines(content)
-	lines, removed := removeLine(lines, func(line string) bool {
-		params, ok := parseNFSExportLine(line)
-		return ok && params["directory"] == normalizedPath
-	})
-	if !removed {
-		return fmt.Errorf("export not found: %s", normalizedPath)
-	}
-
-	return n.persistGatewayConfig(ctx, resource, pluginID, cfg, joinConfigLines(lines, trailingNewline))
-}
-
-// ListNFSExports lists all exports for an NFS gateway
-func (n *NFSManager) ListNFSExports(ctx context.Context, resource string) ([]map[string]string, error) {
-	pluginID := fmt.Sprintf("haify-nfs-%s", resource)
-	cfg, err := n.readGatewayConfig(ctx, resource, pluginID)
-	if err != nil {
-		return nil, err
-	}
-	content := cfg.content
-
-	var exports []map[string]string
-	lines := strings.Split(content, "\n")
-
-	for _, line := range lines {
-		params, ok := parseNFSExportLine(line)
-		if !ok {
-			continue
-		}
-		exports = append(exports, map[string]string{
-			"directory":  params["directory"],
-			"fsid":       params["fsid"],
-			"clientspec": params["clientspec"],
-			"options":    params["options"],
-		})
-	}
-
-	return exports, nil
 }
 
 // ==================== Helper Functions ====================
@@ -511,6 +460,7 @@ func (n *NFSManager) ListNFSExports(ctx context.Context, resource string) ([]map
 func parseCIDR(cidr string) (string, int, error) {
 	ip, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
+		zap.L().Debug("parseCIDR: not CIDR notation", zap.String("cidr", cidr), zap.Error(err))
 		return "", 0, err
 	}
 	prefix, _ := ipNet.Mask.Size()

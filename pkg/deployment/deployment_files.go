@@ -7,11 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/liliang-cn/dispatch/pkg/dispatch"
 	"go.uber.org/zap"
 )
 
@@ -23,6 +20,15 @@ func (c *Client) DistributeConfig(ctx context.Context, hosts []string, content, 
 	for _, opt := range opts {
 		opt(options)
 	}
+	log := c.log()
+	start := time.Now()
+	// The content is never traced: a promoter config can carry CHAP
+	// credentials. Its size says whether the right thing was sent.
+	log.Debug("DistributeConfig: distributing file",
+		zap.Strings("hosts", hosts),
+		zap.String("path", remotePath),
+		zap.Int("size_bytes", len(content)),
+		zap.Bool("has_post_command", options.postCommand != ""))
 
 	c.logger.Info("Distributing config",
 		zap.Strings("hosts", hosts),
@@ -47,9 +53,13 @@ func (c *Client) DistributeConfig(ctx context.Context, hosts []string, content, 
 			remoteHosts = append(remoteHosts, host)
 		}
 	}
+	log.Debug("DistributeConfig: hosts classified",
+		zap.Strings("local", localHosts), zap.Strings("remote", remoteHosts))
 
 	// Handle local hosts - write directly
 	for _, host := range localHosts {
+		log.Debug("DistributeConfig: writing on local host",
+			zap.String("host", host), zap.String("staging", localTempFile))
 		// Write to temp path
 		if err := os.WriteFile(localTempFile, []byte(content), 0644); err != nil {
 			c.logger.Error("Failed to write local config", zap.String("host", host), zap.Error(err))
@@ -105,6 +115,9 @@ func (c *Client) DistributeConfig(ctx context.Context, hosts []string, content, 
 		c.logger.Debug("Copying to remote hosts", zap.Strings("remote_hosts", remoteHosts))
 		// For remote hosts, use cat + ssh + sudo tee to handle privileged paths
 		for _, host := range remoteHosts {
+			hostStart := time.Now()
+			log.Debug("DistributeConfig: copying to remote host",
+				zap.String("host", host), zap.String("path", remotePath))
 			// First create directory
 			mkdirCmd := fmt.Sprintf("sudo mkdir -p %s", filepath.Dir(remotePath))
 			mkdirResult, err := c.Exec(ctx, []string{host}, mkdirCmd)
@@ -119,6 +132,8 @@ func (c *Client) DistributeConfig(ctx context.Context, hosts []string, content, 
 				continue
 			}
 			if !mkdirResult.AllSuccess() {
+				log.Debug("DistributeConfig: mkdir failed on remote host",
+					zap.String("host", host), zap.String("dir", filepath.Dir(remotePath)))
 				configResult.Hosts[host] = &HostResult{
 					Host:    host,
 					Success: false,
@@ -164,6 +179,8 @@ func (c *Client) DistributeConfig(ctx context.Context, hosts []string, content, 
 			encoded := base64.StdEncoding.EncodeToString(fileContent)
 			var copyErr error
 			if len(encoded) <= maxInlineB64Len {
+				log.Debug("DistributeConfig: sending inline",
+					zap.String("host", host), zap.Int("encoded_bytes", len(encoded)))
 				cmd := fmt.Sprintf("echo %s | base64 -d | sudo tee %s > /dev/null",
 					fmt.Sprintf("%q", encoded), remotePath)
 				r, err := c.Exec(ctx, []string{host}, cmd)
@@ -174,6 +191,9 @@ func (c *Client) DistributeConfig(ctx context.Context, hosts []string, content, 
 					copyErr = fmt.Errorf("copy failed")
 				}
 			} else {
+				log.Debug("DistributeConfig: sending in chunks",
+					zap.String("host", host), zap.Int("encoded_bytes", len(encoded)),
+					zap.Int("chunk_bytes", maxInlineB64Len))
 				copyErr = c.writeRemoteFileChunked(ctx, host, remotePath, encoded)
 			}
 			if copyErr != nil {
@@ -191,7 +211,8 @@ func (c *Client) DistributeConfig(ctx context.Context, hosts []string, content, 
 				Host:    host,
 				Success: true,
 			}
-			c.logger.Debug("Remote config distributed", zap.String("host", host))
+			c.logger.Debug("Remote config distributed", zap.String("host", host),
+				zap.Duration("took", time.Since(hostStart)))
 		}
 		// The remote copies are done with the staging file; same best-effort
 		// reasoning as the local branch above.
@@ -200,217 +221,17 @@ func (c *Client) DistributeConfig(ctx context.Context, hosts []string, content, 
 
 	// Run post-command if specified
 	if options.postCommand != "" {
-		_, _ = c.Exec(ctx, hosts, options.postCommand)
+		log.Debug("DistributeConfig: running post-command", zap.Strings("hosts", hosts))
+		_, postErr := c.Exec(ctx, hosts, options.postCommand)
+		log.Debug("DistributeConfig: post-command done", zap.Error(postErr))
 	}
 
+	log.Debug("DistributeConfig: done",
+		zap.String("path", remotePath),
+		zap.Bool("success", configResult.Success),
+		zap.Strings("failed_hosts", configResult.FailedHosts()),
+		zap.Duration("took", time.Since(start)))
 	return configResult, nil
-}
-
-// DistributeSecret writes content to relPath — resolved against the SSH login
-// user's home directory — at mode 0600, WITHOUT the content ever appearing in a
-// command line.
-//
-// DistributeConfig cannot be used for secrets. It base64-encodes the payload
-// into the remote command string, so the bytes are visible in `ps` on the node
-// for the duration of the copy and in anything that logs commands along the
-// way. That is harmless for a DRBD config and disqualifying for an object-store
-// secret key. This path hands the content to the scp protocol over the existing
-// SSH session instead, where it travels in the encrypted stream and the mode is
-// set by the receiving end before the file has any content.
-//
-// relPath is relative on purpose: the copy runs as the login user, who cannot
-// necessarily write /etc or /run, and a 0600 file in that user's own home needs
-// no privilege at all. Callers are expected to have created the parent
-// directory 0700 first, so the file is private even for the instant between
-// create and chmod.
-func (c *Client) DistributeSecret(ctx context.Context, hosts []string, content, relPath string) (*ConfigResult, error) {
-	if filepath.IsAbs(relPath) {
-		return nil, fmt.Errorf("DistributeSecret: %q must be relative to the login user's home", relPath)
-	}
-
-	result := &ConfigResult{Path: relPath, Success: true, Hosts: make(map[string]*HostResult)}
-
-	// Stage the payload in a private directory on the controller. A 0600 file
-	// inside a 0700 directory is never readable by another local user, not even
-	// between os.MkdirTemp and os.WriteFile.
-	dir, err := os.MkdirTemp("", "haify-secret-")
-	if err != nil {
-		return nil, fmt.Errorf("DistributeSecret: stage secret: %w", err)
-	}
-	// This is the one cleanup in this file that is worth a word if it fails: the
-	// staged file is the secret itself, and leaving it on the controller's disk
-	// defeats the point of taking the scp path in the first place. Nothing can
-	// be done about it from here — the caller's operation may well have
-	// succeeded — so it is logged rather than returned, loudly enough that an
-	// operator can go and shred it.
-	defer func() {
-		if err := os.RemoveAll(dir); err != nil {
-			c.logger.Warn("failed to remove staged secret from the controller; remove it by hand",
-				zap.String("dir", dir), zap.Error(err))
-		}
-	}()
-	local := filepath.Join(dir, filepath.Base(relPath))
-	if err := os.WriteFile(local, []byte(content), 0600); err != nil {
-		return nil, fmt.Errorf("DistributeSecret: stage secret: %w", err)
-	}
-
-	var localHosts, remoteHosts []string
-	localAddrs := getLocalIPs()
-	for _, host := range hosts {
-		if isLocalIP(host, localAddrs) {
-			localHosts = append(localHosts, host)
-		} else {
-			remoteHosts = append(remoteHosts, host)
-		}
-	}
-
-	// A node that is this machine skips SSH entirely; $HOME is the controller
-	// process's own, which is the same account the local Exec branch runs as.
-	for _, host := range localHosts {
-		hr := &HostResult{Host: host, Success: true}
-		home, err := os.UserHomeDir()
-		if err == nil {
-			dest := filepath.Join(home, relPath)
-			if err = os.MkdirAll(filepath.Dir(dest), 0700); err == nil {
-				err = os.WriteFile(dest, []byte(content), 0600)
-			}
-		}
-		if err != nil {
-			hr.Success, hr.Error = false, err
-			result.Success = false
-		}
-		result.Hosts[host] = hr
-	}
-
-	if len(remoteHosts) > 0 {
-		copyResult, err := copyWithin(ctx, secretCopyTimeout, func() (*dispatch.CopyResult, error) {
-			return c.dispatch.Copy(ctx, remoteHosts, local, relPath, dispatch.WithCopyMode(0600))
-		})
-		if err != nil {
-			return nil, fmt.Errorf("DistributeSecret: copy to %v: %w", remoteHosts, err)
-		}
-		for _, host := range remoteHosts {
-			hr := &HostResult{Host: host, Success: false, Error: fmt.Errorf("no result for host")}
-			if r := copyResult.Hosts[host]; r != nil {
-				hr.Success, hr.Error = r.Success, r.Error
-			}
-			if !hr.Success {
-				result.Success = false
-			}
-			result.Hosts[host] = hr
-		}
-	}
-
-	c.logger.Debug("Secret distributed",
-		zap.Strings("hosts", hosts), zap.String("path", relPath), zap.Bool("success", result.Success))
-	return result, nil
-}
-
-// secretCopyTimeout bounds copying a secret file: a few hundred bytes, so
-// anything longer is a transfer that is not coming back.
-const secretCopyTimeout = 2 * time.Minute
-
-// copyWithin runs a dispatch copy but gives up after d or when ctx ends.
-//
-// dispatch's Copy stops watching its context once the per-host transfers have
-// started and then waits for all of them, so one SFTP session on a stalled
-// connection blocks its caller forever. Seen on a scheduled backup to a node
-// whose network had paused: the run never returned, and the schedule's
-// one-run-at-a-time guard then skipped every later tick. The abandoned copy
-// finishes or dies with its connection; its result is discarded.
-func copyWithin(ctx context.Context, d time.Duration, copyFn func() (*dispatch.CopyResult, error)) (*dispatch.CopyResult, error) {
-	type outcome struct {
-		res *dispatch.CopyResult
-		err error
-	}
-	done := make(chan outcome, 1)
-	go func() {
-		res, err := copyFn()
-		done <- outcome{res, err}
-	}()
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case o := <-done:
-		return o.res, o.err
-	case <-timer.C:
-		return nil, fmt.Errorf("copy did not finish within %s", d)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// InstallFile installs a local file — typically a binary — at an absolute
-// path on every host, owned by root at the given mode. DistributeConfig cannot
-// carry it: that path puts the content on a command line, which an executable
-// of several megabytes does not fit on. The file travels by SFTP into the login
-// user's home instead and is moved into place with sudo install.
-func (c *Client) InstallFile(ctx context.Context, hosts []string, localPath, remotePath string, mode os.FileMode) (*ConfigResult, error) {
-	if !filepath.IsAbs(remotePath) {
-		return nil, fmt.Errorf("InstallFile: %q must be absolute", remotePath)
-	}
-	result := &ConfigResult{Path: remotePath, Success: true, Hosts: make(map[string]*HostResult)}
-	modeArg := strconv.FormatUint(uint64(mode.Perm()), 8)
-
-	var localHosts, remoteHosts []string
-	localAddrs := getLocalIPs()
-	for _, host := range hosts {
-		if isLocalIP(host, localAddrs) {
-			localHosts = append(localHosts, host)
-		} else {
-			remoteHosts = append(remoteHosts, host)
-		}
-	}
-
-	for _, host := range localHosts {
-		hr := &HostResult{Host: host, Success: true}
-		if out, err := localCommand(ctx, fmt.Sprintf("sudo install -D -m %s %s %s", modeArg, shellQuote(localPath), shellQuote(remotePath))).CombinedOutput(); err != nil {
-			hr.Success, hr.Error = false, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
-			result.Success = false
-		}
-		result.Hosts[host] = hr
-	}
-
-	if len(remoteHosts) > 0 {
-		staged := ".haify-install-" + filepath.Base(remotePath)
-		copyResult, err := c.dispatch.Copy(ctx, remoteHosts, localPath, staged, dispatch.WithCopyMode(0700))
-		if err != nil {
-			return nil, fmt.Errorf("InstallFile: copy to %v: %w", remoteHosts, err)
-		}
-		var copied []string
-		for _, host := range remoteHosts {
-			r := copyResult.Hosts[host]
-			if r == nil || !r.Success {
-				hr := &HostResult{Host: host, Error: fmt.Errorf("copy failed")}
-				if r != nil && r.Error != nil {
-					hr.Error = r.Error
-				}
-				result.Hosts[host] = hr
-				result.Success = false
-				continue
-			}
-			copied = append(copied, host)
-		}
-		if len(copied) > 0 {
-			cmd := fmt.Sprintf(`sudo install -D -m %s "$HOME/%s" %s; rc=$?; rm -f "$HOME/%s"; exit $rc`,
-				modeArg, staged, remotePath, staged)
-			execResult, err := c.Exec(ctx, copied, cmd)
-			if err != nil {
-				return nil, fmt.Errorf("InstallFile: install on %v: %w", copied, err)
-			}
-			for _, host := range copied {
-				hr := &HostResult{Host: host, Error: fmt.Errorf("no result for host")}
-				if r := execResult.Hosts[host]; r != nil {
-					hr = r
-				}
-				if !hr.Success {
-					result.Success = false
-				}
-				result.Hosts[host] = hr
-			}
-		}
-	}
-	return result, nil
 }
 
 // maxInlineB64Len bounds the base64 payload sent as a single `echo` argument.
@@ -424,11 +245,17 @@ const maxInlineB64Len = 100 * 1024
 // (e.g. haify-proxy) that overflow a single-argument echo. base64's alphabet
 // (A-Za-z0-9+/=) contains no single-quote, so each chunk is quote-safe.
 func (c *Client) writeRemoteFileChunked(ctx context.Context, host, remotePath, encoded string) error {
+	log := c.log()
+	start := time.Now()
+	log.Debug("writeRemoteFileChunked: start",
+		zap.String("host", host), zap.String("path", remotePath), zap.Int("encoded_bytes", len(encoded)))
 	tmp := remotePath + ".b64.part"
 	// Start from an empty temp file.
 	if r, err := c.Exec(ctx, []string{host}, fmt.Sprintf("sudo sh -c ': > %s'", tmp)); err != nil {
+		log.Debug("writeRemoteFileChunked: init temp file errored", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("init temp file: %w", err)
 	} else if !r.AllSuccess() {
+		log.Debug("writeRemoteFileChunked: init temp file failed", zap.String("host", host), zap.String("tmp", tmp))
 		return fmt.Errorf("init temp file on %s failed", host)
 	}
 	const chunk = maxInlineB64Len
@@ -437,10 +264,14 @@ func (c *Client) writeRemoteFileChunked(ctx context.Context, host, remotePath, e
 		if end > len(encoded) {
 			end = len(encoded)
 		}
+		log.Debug("writeRemoteFileChunked: appending chunk",
+			zap.String("host", host), zap.Int("offset", i), zap.Int("chunk_bytes", end-i))
 		cmd := fmt.Sprintf("printf '%%s' '%s' | sudo tee -a %s > /dev/null", encoded[i:end], tmp)
 		if r, err := c.Exec(ctx, []string{host}, cmd); err != nil {
+			log.Debug("writeRemoteFileChunked: append errored", zap.String("host", host), zap.Int("offset", i), zap.Error(err))
 			return fmt.Errorf("append chunk: %w", err)
 		} else if !r.AllSuccess() {
+			log.Debug("writeRemoteFileChunked: append failed", zap.String("host", host), zap.Int("offset", i))
 			return fmt.Errorf("append chunk on %s failed", host)
 		}
 	}
@@ -454,18 +285,26 @@ func (c *Client) writeRemoteFileChunked(ctx context.Context, host, remotePath, e
 	cmd := fmt.Sprintf("sudo sh -c 'base64 -d %[1]s > %[2]s && { [ ! -e %[3]s ] || { chmod --reference=%[3]s %[2]s && chown --reference=%[3]s %[2]s; }; } && mv -f %[2]s %[3]s && rm -f %[1]s'",
 		tmp, next, remotePath)
 	if r, err := c.Exec(ctx, []string{host}, cmd); err != nil {
+		log.Debug("writeRemoteFileChunked: decode errored", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("decode remote file: %w", err)
 	} else if !r.AllSuccess() {
+		log.Debug("writeRemoteFileChunked: decode failed", zap.String("host", host), zap.String("path", remotePath))
 		return fmt.Errorf("decode remote file on %s failed", host)
 	}
+	log.Debug("writeRemoteFileChunked: done",
+		zap.String("host", host), zap.String("path", remotePath), zap.Duration("took", time.Since(start)))
 	return nil
 }
 
 // DeleteConfig removes a config file from all nodes
 func (c *Client) DeleteConfig(ctx context.Context, hosts []string, remotePath string) error {
+	c.log().Debug("DeleteConfig: removing file", zap.Strings("hosts", hosts), zap.String("path", remotePath))
 	c.logger.Info("Deleting config", zap.String("path", remotePath))
 
 	_, err := c.Exec(ctx, hosts, fmt.Sprintf("sudo rm -f %s", remotePath))
+	if err != nil {
+		c.log().Debug("DeleteConfig: removal errored", zap.String("path", remotePath), zap.Error(err))
+	}
 	return err
 }
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Resolving a DRBD resource down to the device paths a promoter config names,
@@ -21,11 +23,15 @@ import (
 
 // getDRBDDevice gets the DRBD device path for a resource
 func (m *Manager) getDRBDDevice(ctx context.Context, resource string) (string, error) {
+	log := m.log()
 	// Try to get device from resource info
 	resInfo, err := m.resources.GetResource(ctx, resource)
 	if err == nil && len(resInfo.Volumes) > 0 && resInfo.Volumes[0].Device != "" {
+		log.Debug("getDRBDDevice: device from resource info",
+			zap.String("resource", resource), zap.String("device", resInfo.Volumes[0].Device))
 		return resInfo.Volumes[0].Device, nil
 	}
+	log.Debug("getDRBDDevice: resource info has no device, reading the local .res", zap.String("resource", resource), zap.Error(err))
 
 	// Fallback: read from DRBD config file
 	configPath := fmt.Sprintf("/etc/drbd.d/%s.res", resource)
@@ -33,11 +39,13 @@ func (m *Manager) getDRBDDevice(ctx context.Context, resource string) (string, e
 	if err == nil {
 		deviceMinor := parseDeviceMinorFromConfig(string(content))
 		if deviceMinor >= 0 {
+			log.Debug("getDRBDDevice: device from local .res", zap.String("path", configPath), zap.Int("minor", deviceMinor))
 			return fmt.Sprintf("/dev/drbd%d", deviceMinor), nil
 		}
 	}
 
 	// Final fallback
+	log.Debug("getDRBDDevice: no device found, using /dev/drbd0", zap.String("path", configPath), zap.Error(err))
 	return "/dev/drbd0", nil
 }
 
@@ -60,8 +68,10 @@ func parseDeviceMinorFromConfig(configContent string) int {
 				// Found it
 				var minor int
 				if _, err := fmt.Sscanf(deviceMinor, "%d", &minor); err != nil {
+					zap.L().Debug("parseDeviceMinorFromConfig: minor not a number", zap.String("minor", deviceMinor))
 					return -1
 				}
+				zap.L().Debug("parseDeviceMinorFromConfig: minor found", zap.Int("minor", minor))
 				return minor
 			}
 			inVolumeBlock = false
@@ -79,6 +89,7 @@ func parseDeviceMinorFromConfig(configContent string) int {
 		}
 	}
 
+	zap.L().Debug("parseDeviceMinorFromConfig: no volume with a device minor", zap.Int("count", len(lines)))
 	return -1
 }
 
@@ -92,6 +103,8 @@ func volumeDevice(volumes []*ResourceVolumeInfo, baseDevice string, volumeNumber
 			return v.Device
 		}
 	}
+	zap.L().Debug("volumeDevice: volume not reported, deriving the device from the base minor",
+		zap.Int("volume", volumeNumber), zap.String("base_device", baseDevice))
 	return getDRBDDeviceForVolume(baseDevice, volumeNumber)
 }
 
@@ -105,6 +118,7 @@ func getDRBDDeviceForVolume(baseDevice string, volumeNumber int) string {
 	minor := 0
 	if strings.HasPrefix(baseDevice, "/dev/drbd") {
 		if _, err := fmt.Sscanf(baseDevice, "/dev/drbd%d", &minor); err != nil {
+			zap.L().Debug("getDRBDDeviceForVolume: base device has no minor, using it as is", zap.String("base_device", baseDevice))
 			// If parsing fails, return the base device
 			return baseDevice
 		}
@@ -150,7 +164,10 @@ func clusterPrivateAndPayload(volumes []*ResourceVolumeInfo, fallbackDevice stri
 		}
 		payload = append(payload, v)
 	}
+	log := zap.L()
 	if state != nil && len(payload) > 0 {
+		log.Debug("clusterPrivateAndPayload: state volume found by name",
+			zap.String("state_device", state.Device), zap.String("backing_volume", state.BackingVolume), zap.Int("payload", len(payload)))
 		return state.Device, payload
 	}
 
@@ -167,6 +184,8 @@ func clusterPrivateAndPayload(volumes []*ResourceVolumeInfo, fallbackDevice stri
 			payload = []*ResourceVolumeInfo{{VolumeID: 1, Device: dev}}
 		}
 	}
+	log.Debug("clusterPrivateAndPayload: no state volume, using the linstor layout",
+		zap.String("state_device", fallbackDevice), zap.Int("payload", len(payload)))
 	return fallbackDevice, payload
 }
 
@@ -176,5 +195,6 @@ func payloadDevice(payload []*ResourceVolumeInfo, fallback string) string {
 	if len(payload) > 0 && payload[0].Device != "" {
 		return payload[0].Device
 	}
+	zap.L().Debug("payloadDevice: no exported volume, using the fallback", zap.String("device", fallback))
 	return fallback
 }

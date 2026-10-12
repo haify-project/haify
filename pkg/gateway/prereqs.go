@@ -36,7 +36,12 @@ import (
 // only when blkid finds no existing filesystem, so the call is idempotent
 // and never destroys data.
 func (m *Manager) ensureGatewayPrerequisites(ctx context.Context, resource string, nodes []string, devices ...string) error {
+	log := m.log()
+	begin := time.Now()
+	log.Debug("ensureGatewayPrerequisites: start",
+		zap.String("resource", resource), zap.Strings("nodes", nodes), zap.Strings("devices", devices))
 	if len(nodes) == 0 {
+		log.Debug("ensureGatewayPrerequisites: resource has no nodes", zap.String("resource", resource))
 		return fmt.Errorf("resource %s has no nodes", resource)
 	}
 	// A recreated gateway may inherit stale portblock DROP rules from a
@@ -44,9 +49,14 @@ func (m *Manager) ensureGatewayPrerequisites(ctx context.Context, resource strin
 	// started gateway is actually reachable.
 	m.flushPortblockRules(ctx, m.hosts, resource)
 	node := nodes[0]
+	start := time.Now()
 	if err := m.resources.SetPrimary(ctx, resource, node, false); err != nil {
+		log.Debug("ensureGatewayPrerequisites: promote failed",
+			zap.String("resource", resource), zap.String("node", node), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to promote %s on %s: %w", resource, node, err)
 	}
+	log.Debug("ensureGatewayPrerequisites: promoted",
+		zap.String("resource", resource), zap.String("node", node), zap.Duration("took", time.Since(start)))
 	// Project quotas let an NFS export directory have a quota of its own
 	// (pkg/controller/nfs_quota.go); the feature can only be added to an
 	// unmounted filesystem, so it is there from the start. But a filesystem
@@ -55,7 +65,11 @@ func (m *Manager) ensureGatewayPrerequisites(ctx context.Context, resource strin
 	// Ubuntu's cloud kernels ship only in linux-modules-extra. Every node the
 	// filesystem may fail over to has to mount it, so ask them all.
 	mkfsOpts := "-O quota,project "
-	if err := m.deployment.Exec(ctx, nodes, "sudo modprobe -q quota_v2"); err != nil {
+	start = time.Now()
+	quotaErr := m.deployment.Exec(ctx, nodes, "sudo modprobe -q quota_v2")
+	log.Debug("ensureGatewayPrerequisites: quota_v2 probed",
+		zap.Strings("nodes", nodes), zap.Bool("project_quota", quotaErr == nil), zap.Duration("took", time.Since(start)))
+	if err := quotaErr; err != nil {
 		mkfsOpts = ""
 		m.logger.Warn("Formatting the gateway volumes without ext4 project quotas: the quota_v2 module does not "+
 			"load on every node (Ubuntu cloud kernels: install linux-modules-extra-$(uname -r)); NFS directory "+
@@ -70,21 +84,30 @@ func (m *Manager) ensureGatewayPrerequisites(ctx context.Context, resource strin
 		formatted := false
 		for attempt := 0; attempt < 3; attempt++ {
 			if attempt > 0 {
+				log.Debug("ensureGatewayPrerequisites: retrying mkfs after re-promote",
+					zap.String("device", device), zap.Int("attempt", attempt+1))
 				time.Sleep(2 * time.Second)
 				if err := m.resources.SetPrimary(ctx, resource, node, false); err != nil {
 					m.logger.Warn("Re-promote before mkfs retry failed",
 						zap.String("resource", resource), zap.Error(err))
 				}
 			}
-			if lastErr = m.deployment.Exec(ctx, []string{node}, cmd); lastErr == nil {
+			start = time.Now()
+			lastErr = m.deployment.Exec(ctx, []string{node}, cmd)
+			log.Debug("ensureGatewayPrerequisites: format-if-blank ran",
+				zap.String("node", node), zap.String("device", device), zap.Int("attempt", attempt+1),
+				zap.Duration("took", time.Since(start)), zap.Error(lastErr))
+			if lastErr == nil {
 				formatted = true
 				break
 			}
 		}
 		if !formatted {
+			log.Debug("ensureGatewayPrerequisites: device could not be prepared", zap.String("device", device), zap.Error(lastErr))
 			return fmt.Errorf("failed to prepare filesystem on %s: %w", device, lastErr)
 		}
 	}
+	log.Debug("ensureGatewayPrerequisites: done", zap.String("resource", resource), zap.Duration("took", time.Since(begin)))
 	return nil
 }
 
@@ -147,6 +170,7 @@ func gatewayNodes(res *ResourceInfo) []string {
 	if len(res.Hosts) > 0 {
 		return res.Hosts
 	}
+	zap.L().Debug("gatewayNodes: no diskful hosts recorded, using every node", zap.String("resource", res.Name), zap.Strings("nodes", res.Nodes))
 	return res.Nodes
 }
 
@@ -159,16 +183,22 @@ func gatewayNodes(res *ResourceInfo) []string {
 // runScript: sent as a plain command, dispatch's quoting expands $missing to
 // nothing before the script runs and the check passes whatever is installed.
 func (m *Manager) checkGatewayPrereqs(ctx context.Context, nodes []string, p gatewayPrereqs) error {
+	log := m.log()
 	if len(nodes) == 0 {
+		log.Debug("checkGatewayPrereqs: no nodes to check")
 		return nil
 	}
+	log.Debug("checkGatewayPrereqs: probing",
+		zap.Strings("nodes", nodes), zap.Strings("agents", p.agents), zap.Strings("tools", p.tools), zap.Int("checks", len(p.checks)))
 	if err := m.runScript(ctx, nodes, prereqScript(p)); err != nil {
+		log.Debug("checkGatewayPrereqs: something is missing", zap.Strings("nodes", nodes), zap.Error(err))
 		hint := ocfAgentsInstall
 		if p.install != "" {
 			hint += "; " + p.install
 		}
 		return fmt.Errorf("gateway prerequisites missing (install %s): %w", hint, err)
 	}
+	log.Debug("checkGatewayPrereqs: all present", zap.Strings("nodes", nodes))
 	return nil
 }
 
@@ -197,8 +227,14 @@ func prereqScript(p gatewayPrereqs) string {
 // services failed to start (e.g. a missing OCF agent).
 func (m *Manager) GatewayServiceActive(ctx context.Context, node, resource string) bool {
 	if node == "" {
+		m.log().Debug("GatewayServiceActive: no node given", zap.String("resource", resource))
 		return false
 	}
 	cmd := fmt.Sprintf("systemctl is-active drbd-services@%s.target 2>/dev/null | grep -qx active", resource)
-	return m.deployment.Exec(ctx, []string{node}, cmd) == nil
+	start := time.Now()
+	err := m.deployment.Exec(ctx, []string{node}, cmd)
+	m.log().Debug("GatewayServiceActive: probed",
+		zap.String("node", node), zap.String("resource", resource), zap.Bool("active", err == nil),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err == nil
 }

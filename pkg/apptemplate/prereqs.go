@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Before anything is written, every diskful node must be able to run the
@@ -38,6 +40,8 @@ type NodeProbe struct {
 // what is missing is reported, not signalled, so one call collects every
 // problem. Run it as root.
 func ProbeScript(s Spec) string {
+	zap.L().Debug("ProbeScript: rendering prerequisite probe",
+		zap.String("app", s.Name), zap.String("engine", string(s.Engine)), zap.Int("port", s.Port), zap.Bool("vector", s.Vector))
 	var engine string
 	switch s.Engine {
 	case Postgres:
@@ -196,6 +200,9 @@ func ParseProbe(out string) NodeProbe {
 			p.PortBusy = val
 		}
 	}
+	zap.L().Debug("ParseProbe: probe parsed",
+		zap.String("server", p.Server), zap.String("version", p.Version), zap.String("flavor", p.Flavor),
+		zap.Int("uid", p.UID), zap.Int("gid", p.GID), zap.Strings("missing", p.Missing), zap.String("port_busy", p.PortBusy))
 	return p
 }
 
@@ -221,6 +228,7 @@ var versionRe = regexp.MustCompile(`(\d+)\.(\d+)`)
 func compatKey(e Engine, flavor, version string) string {
 	m := versionRe.FindStringSubmatch(version)
 	if m == nil {
+		zap.L().Debug("compatKey: no x.y in version, comparing it whole", zap.String("version", version))
 		return strings.TrimSpace(version)
 	}
 	switch e {
@@ -236,7 +244,11 @@ func compatKey(e Engine, flavor, version string) string {
 // problems are reported together, each naming its nodes, so one round of
 // fixes is enough.
 func CheckNodes(s Spec, nodes []NodeResult) (Agreed, error) {
+	log := zap.L()
+	log.Debug("CheckNodes: comparing node probes",
+		zap.String("app", s.Name), zap.String("engine", string(s.Engine)), zap.Int("count", len(nodes)))
 	if len(nodes) == 0 {
+		log.Debug("CheckNodes: no node to check", zap.String("app", s.Name))
 		return Agreed{}, fmt.Errorf("no node to check")
 	}
 	user := OSUser(s.Engine)
@@ -244,11 +256,16 @@ func CheckNodes(s Spec, nodes []NodeResult) (Agreed, error) {
 
 	var missing []string
 	for _, n := range nodes {
+		log.Debug("CheckNodes: node probe",
+			zap.String("node", n.Node), zap.String("server", n.Probe.Server), zap.String("version", n.Probe.Version),
+			zap.Int("uid", n.Probe.UID), zap.Int("gid", n.Probe.GID), zap.Strings("missing", n.Probe.Missing),
+			zap.String("port_busy", n.Probe.PortBusy))
 		if len(n.Probe.Missing) > 0 {
 			missing = append(missing, fmt.Sprintf("%s lacks %s", n.Node, strings.Join(n.Probe.Missing, " ")))
 		}
 	}
 	if len(missing) > 0 {
+		log.Debug("CheckNodes: nodes lack prerequisites, skipping the comparisons", zap.Int("count", len(missing)))
 		problems = append(problems, fmt.Sprintf("%s (install %s; the OCF agents come from "+
 			"resource-agents-extra on Ubuntu, resource-agents on Debian and EL)", strings.Join(missing, "; "), Packages(s.Engine)))
 	}
@@ -273,9 +290,13 @@ func CheckNodes(s Spec, nodes []NodeResult) (Agreed, error) {
 			})...)
 	}
 	if len(problems) > 0 {
+		log.Debug("CheckNodes: nodes cannot run the app", zap.String("app", s.Name), zap.Strings("problems", problems))
 		return Agreed{}, fmt.Errorf("the nodes cannot run %s app %s: %s", s.Engine, s.Name, strings.Join(problems, "; "))
 	}
 	first := nodes[0].Probe
+	log.Debug("CheckNodes: nodes agree",
+		zap.String("app", s.Name), zap.String("server", first.Server), zap.String("version", first.Version),
+		zap.Int("uid", first.UID), zap.Int("gid", first.GID))
 	return Agreed{Binaries: first.Binaries, Version: first.Version, UID: first.UID, GID: first.GID}, nil
 }
 
@@ -288,8 +309,10 @@ func differs(nodes []NodeResult, what, why string, key func(NodeProbe) string) [
 		byValue[k] = append(byValue[k], n.Node)
 	}
 	if len(byValue) < 2 {
+		zap.L().Debug("differs: every node agrees", zap.String("what", what))
 		return nil
 	}
+	zap.L().Debug("differs: nodes disagree", zap.String("what", what), zap.Int("count", len(byValue)))
 	values := make([]string, 0, len(byValue))
 	for v := range byValue {
 		values = append(values, v)

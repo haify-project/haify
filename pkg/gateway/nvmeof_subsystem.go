@@ -32,6 +32,8 @@ import (
 
 // AddNamespace adds a namespace to an existing NVMe-oF gateway
 func (n *NVMeManager) AddNamespace(ctx context.Context, resource, device string) error {
+	log := n.log()
+	log.Debug("NVMeManager.AddNamespace: start", zap.String("resource", resource), zap.String("device", device))
 	n.logger.Info("Adding namespace to NVMe-oF gateway",
 		zap.String("resource", resource),
 		zap.String("device", device))
@@ -39,6 +41,7 @@ func (n *NVMeManager) AddNamespace(ctx context.Context, resource, device string)
 	pluginID := fmt.Sprintf("haify-nvmeof-%s", resource)
 	cfg, err := n.readGatewayConfig(ctx, resource, pluginID)
 	if err != nil {
+		log.Debug("NVMeManager.AddNamespace: reading config failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	content := cfg.content
@@ -55,6 +58,7 @@ func (n *NVMeManager) AddNamespace(ctx context.Context, resource, device string)
 			maxNamespaceID = nsid
 		}
 		if params["backing_path"] == device {
+			log.Debug("NVMeManager.AddNamespace: device already exported", zap.String("device", device), zap.Int("nsid", nsid))
 			return fmt.Errorf("namespace for device already exists: %s", device)
 		}
 	}
@@ -64,20 +68,25 @@ func (n *NVMeManager) AddNamespace(ctx context.Context, resource, device string)
 		return ok
 	})
 	if subsystemIdx < 0 {
+		log.Debug("NVMeManager.AddNamespace: no subsystem line in config", zap.String("resource", resource))
 		return fmt.Errorf("failed to locate NVMe subsystem definition")
 	}
 
 	subsystemParams, _ := parseNVMeSubsystemLine(lines[subsystemIdx])
 	nqn := subsystemParams["nqn"]
 	if nqn == "" {
+		log.Debug("NVMeManager.AddNamespace: subsystem line has no NQN", zap.String("resource", resource))
 		return fmt.Errorf("failed to parse NVMe subsystem NQN from config")
 	}
 
+	log.Debug("NVMeManager.AddNamespace: namespace id chosen",
+		zap.String("resource", resource), zap.String("nqn", nqn), zap.Int("nsid", maxNamespaceID+1))
 	newLine := buildNVMeNamespaceLine(maxNamespaceID+1, nqn, device)
 	lines, err = insertLineBefore(lines, newLine, func(line string) bool {
 		return strings.Contains(line, "ocf:heartbeat:nvmet-port ")
 	})
 	if err != nil {
+		log.Debug("NVMeManager.AddNamespace: no port line to insert before", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
@@ -86,6 +95,8 @@ func (n *NVMeManager) AddNamespace(ctx context.Context, resource, device string)
 
 // RemoveNamespace removes a namespace from an NVMe-oF gateway
 func (n *NVMeManager) RemoveNamespace(ctx context.Context, resource string, nsid int) error {
+	log := n.log()
+	log.Debug("NVMeManager.RemoveNamespace: start", zap.String("resource", resource), zap.Int("nsid", nsid))
 	n.logger.Info("Removing namespace from NVMe-oF gateway",
 		zap.String("resource", resource),
 		zap.Int("nsid", nsid))
@@ -93,6 +104,7 @@ func (n *NVMeManager) RemoveNamespace(ctx context.Context, resource string, nsid
 	pluginID := fmt.Sprintf("haify-nvmeof-%s", resource)
 	cfg, err := n.readGatewayConfig(ctx, resource, pluginID)
 	if err != nil {
+		log.Debug("NVMeManager.RemoveNamespace: reading config failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	content := cfg.content
@@ -103,6 +115,7 @@ func (n *NVMeManager) RemoveNamespace(ctx context.Context, resource string, nsid
 		return ok && params["namespace_id"] == fmt.Sprintf("%d", nsid)
 	})
 	if !removed {
+		log.Debug("NVMeManager.RemoveNamespace: namespace not in config", zap.String("resource", resource), zap.Int("nsid", nsid))
 		return fmt.Errorf("namespace %d not found", nsid)
 	}
 
@@ -111,9 +124,12 @@ func (n *NVMeManager) RemoveNamespace(ctx context.Context, resource string, nsid
 
 // ListNamespaces lists all namespaces for an NVMe-oF gateway
 func (n *NVMeManager) ListNamespaces(ctx context.Context, resource string) ([]map[string]string, error) {
+	log := n.log()
+	log.Debug("NVMeManager.ListNamespaces: start", zap.String("resource", resource))
 	pluginID := fmt.Sprintf("haify-nvmeof-%s", resource)
 	cfg, err := n.readGatewayConfig(ctx, resource, pluginID)
 	if err != nil {
+		log.Debug("NVMeManager.ListNamespaces: reading config failed", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 	content := cfg.content
@@ -124,6 +140,8 @@ func (n *NVMeManager) ListNamespaces(ctx context.Context, resource string) ([]ma
 		if !ok {
 			continue
 		}
+		log.Debug("NVMeManager.ListNamespaces: namespace",
+			zap.String("resource", resource), zap.String("nsid", params["namespace_id"]), zap.String("device", params["backing_path"]))
 		namespaces = append(namespaces, map[string]string{
 			"namespace_id": params["namespace_id"],
 			"backing_path": params["backing_path"],
@@ -133,6 +151,7 @@ func (n *NVMeManager) ListNamespaces(ctx context.Context, resource string) ([]ma
 		})
 	}
 
+	log.Debug("NVMeManager.ListNamespaces: done", zap.String("resource", resource), zap.Int("count", len(namespaces)))
 	return namespaces, nil
 }
 
@@ -140,6 +159,8 @@ func (n *NVMeManager) ListNamespaces(ctx context.Context, resource string) ([]ma
 
 // CreateSubsystem creates an NVMe subsystem
 func (n *NVMeManager) CreateSubsystem(ctx context.Context, resource, nqn string) error {
+	n.log().Debug("NVMeManager.CreateSubsystem: refused, the OCF agent owns subsystems",
+		zap.String("resource", resource), zap.String("nqn", nqn))
 	n.logger.Info("Creating NVMe subsystem",
 		zap.String("resource", resource),
 		zap.String("nqn", nqn))
@@ -150,6 +171,7 @@ func (n *NVMeManager) CreateSubsystem(ctx context.Context, resource, nqn string)
 
 // DeleteSubsystem deletes an NVMe subsystem
 func (n *NVMeManager) DeleteSubsystem(ctx context.Context, nqn string) error {
+	n.log().Debug("NVMeManager.DeleteSubsystem: refused, gateway deletion removes subsystems", zap.String("nqn", nqn))
 	n.logger.Info("Deleting NVMe subsystem", zap.String("nqn", nqn))
 
 	return fmt.Errorf("DeleteSubsystem: use gateway deletion instead")
@@ -158,8 +180,11 @@ func (n *NVMeManager) DeleteSubsystem(ctx context.Context, nqn string) error {
 // ListSubsystems lists the NQNs of the running NVMe-oF gateways' subsystems,
 // read from the managed nodes like ListTargets.
 func (n *NVMeManager) ListSubsystems(ctx context.Context, host string) ([]string, error) {
+	log := n.log()
+	log.Debug("NVMeManager.ListSubsystems: start", zap.String("host", host))
 	contents, err := n.readAllNodeConfigs(ctx, "haify-nvmeof-*.toml")
 	if err != nil {
+		log.Debug("NVMeManager.ListSubsystems: reading configs failed", zap.Error(err))
 		return nil, err
 	}
 
@@ -172,13 +197,17 @@ func (n *NVMeManager) ListSubsystems(ctx context.Context, host string) ([]string
 		}
 	}
 
-	return uniqueSortedValues(subsystems), nil
+	subsystems = uniqueSortedValues(subsystems)
+	log.Debug("NVMeManager.ListSubsystems: done", zap.Strings("subsystems", subsystems))
+	return subsystems, nil
 }
 
 // ==================== Port Management ====================
 
 // CreatePort creates an NVMe port (transport endpoint)
 func (n *NVMeManager) CreatePort(ctx context.Context, resource, addr string, port int) error {
+	n.log().Debug("NVMeManager.CreatePort: refused, the OCF agent owns ports",
+		zap.String("resource", resource), zap.String("addr", addr), zap.Int("port", port))
 	n.logger.Info("Creating NVMe port",
 		zap.String("resource", resource),
 		zap.String("addr", addr),
@@ -189,6 +218,8 @@ func (n *NVMeManager) CreatePort(ctx context.Context, resource, addr string, por
 
 // DeletePort deletes an NVMe port
 func (n *NVMeManager) DeletePort(ctx context.Context, resource, addr string, port int) error {
+	log := n.log()
+	log.Debug("NVMeManager.DeletePort: start", zap.String("resource", resource), zap.String("addr", addr), zap.Int("port", port))
 	n.logger.Info("Deleting NVMe port",
 		zap.String("resource", resource),
 		zap.String("addr", addr),
@@ -198,12 +229,14 @@ func (n *NVMeManager) DeletePort(ctx context.Context, resource, addr string, por
 		port = DefaultNVMePort
 	}
 	if port != DefaultNVMePort {
+		log.Debug("NVMeManager.DeletePort: custom port refused", zap.Int("port", port))
 		return fmt.Errorf("custom NVMe port removal is not supported by the current config writer")
 	}
 
 	pluginID := fmt.Sprintf("haify-nvmeof-%s", resource)
 	cfg, err := n.readGatewayConfig(ctx, resource, pluginID)
 	if err != nil {
+		log.Debug("NVMeManager.DeletePort: reading config failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	content := cfg.content
@@ -214,6 +247,7 @@ func (n *NVMeManager) DeletePort(ctx context.Context, resource, addr string, por
 		return ok && params["addr"] == addr
 	})
 	if !removed {
+		log.Debug("NVMeManager.DeletePort: port not in config", zap.String("resource", resource), zap.String("addr", addr))
 		return fmt.Errorf("port not found for addr %s", addr)
 	}
 
@@ -222,9 +256,12 @@ func (n *NVMeManager) DeletePort(ctx context.Context, resource, addr string, por
 
 // ListPorts lists all ports for an NVMe subsystem
 func (n *NVMeManager) ListPorts(ctx context.Context, resource string) ([]map[string]string, error) {
+	log := n.log()
+	log.Debug("NVMeManager.ListPorts: start", zap.String("resource", resource))
 	pluginID := fmt.Sprintf("haify-nvmeof-%s", resource)
 	cfg, err := n.readGatewayConfig(ctx, resource, pluginID)
 	if err != nil {
+		log.Debug("NVMeManager.ListPorts: reading config failed", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 	content := cfg.content
@@ -235,6 +272,7 @@ func (n *NVMeManager) ListPorts(ctx context.Context, resource string) ([]map[str
 		if !ok {
 			continue
 		}
+		log.Debug("NVMeManager.ListPorts: port", zap.String("resource", resource), zap.String("addr", params["addr"]), zap.String("type", params["type"]))
 		ports = append(ports, map[string]string{
 			"addr": params["addr"],
 			"type": params["type"],
@@ -243,5 +281,6 @@ func (n *NVMeManager) ListPorts(ctx context.Context, resource string) ([]map[str
 		})
 	}
 
+	log.Debug("NVMeManager.ListPorts: done", zap.String("resource", resource), zap.Int("count", len(ports)))
 	return ports, nil
 }

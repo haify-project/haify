@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"go.uber.org/zap"
 )
 
 // The systemd units drbd-reactor makes out of a promoter's start list, worked
@@ -66,11 +67,21 @@ type promoterFile struct {
 
 // parsePromoterUnits reads a gateway's promoter config into its units.
 func parsePromoterUnits(content string) (*promoterUnits, error) {
+	log := zap.L()
+	log.Debug("parsePromoterUnits: start", zap.Int("size_bytes", len(content)))
 	var f promoterFile
 	if _, err := toml.Decode(content, &f); err != nil {
+		// Not the error: a TOML error can quote the text around it.
+		log.Debug("parsePromoterUnits: not valid TOML")
 		return nil, fmt.Errorf("parse promoter config: %w", err)
 	}
 	if len(f.Promoter) != 1 || len(f.Promoter[0].Resources) != 1 {
+		resources := 0
+		if len(f.Promoter) > 0 {
+			resources = len(f.Promoter[0].Resources)
+		}
+		log.Debug("parsePromoterUnits: not a single-resource promoter",
+			zap.Int("promoters", len(f.Promoter)), zap.Int("resources", resources))
 		return nil, fmt.Errorf("promoter config must hold exactly one promoter with one resource")
 	}
 	p := &promoterUnits{TargetAs: "Requires", DependenciesAs: "Requires"}
@@ -86,16 +97,24 @@ func parsePromoterUnits(content string) (*promoterUnits, error) {
 		if root == "" {
 			root = defaultOCFRoot
 		}
+		log.Debug("parsePromoterUnits: resource",
+			zap.String("resource", name), zap.String("target_as", p.TargetAs),
+			zap.String("dependencies_as", p.DependenciesAs), zap.String("ocf_root", root), zap.Int("count", len(res.Start)))
 		seen := map[string]bool{}
-		for _, action := range res.Start {
+		for idx, action := range res.Start {
 			u, err := parseStartAction(name, strings.TrimSpace(action), root)
 			if err != nil {
+				// Neither the entry nor the error, which quotes it: an iSCSI
+				// target entry holds the CHAP password.
+				log.Debug("parsePromoterUnits: start entry unparsable", zap.String("resource", name), zap.Int("index", idx))
 				return nil, err
 			}
 			if seen[u.Name] {
+				log.Debug("parsePromoterUnits: unit used twice", zap.String("unit", u.Name))
 				return nil, fmt.Errorf("unit %s is used twice", u.Name)
 			}
 			seen[u.Name] = true
+			log.Debug("parsePromoterUnits: unit", zap.Int("index", idx), zap.String("unit", u.Name), zap.String("agent", u.Agent))
 			p.Units = append(p.Units, u)
 		}
 	}
@@ -105,14 +124,17 @@ func parsePromoterUnits(content string) (*promoterUnits, error) {
 func parseStartAction(resource, action, ocfRoot string) (reactorUnit, error) {
 	m := ocfStartRE.FindStringSubmatch(action)
 	if m == nil {
+		zap.L().Debug("parseStartAction: plain systemd unit", zap.String("resource", resource), zap.String("unit", action))
 		return reactorUnit{Name: action}, nil
 	}
 	vendor, agent := m[1], m[2]
 	args, err := shellWords(m[3])
 	if err != nil {
+		zap.L().Debug("parseStartAction: arguments unparsable", zap.String("agent", vendor+":"+agent), zap.Error(err))
 		return reactorUnit{}, fmt.Errorf("parse %q: %w", action, err)
 	}
 	if len(args) == 0 {
+		zap.L().Debug("parseStartAction: OCF entry without instance name", zap.String("agent", vendor+":"+agent))
 		return reactorUnit{}, fmt.Errorf("parse %q: an OCF agent needs an instance name", action)
 	}
 	u := reactorUnit{
@@ -295,6 +317,9 @@ func diffUnits(oldP, newP *promoterUnits) unitDiff {
 			d.Removed = append(d.Removed, u)
 		}
 	}
+	zap.L().Debug("diffUnits: diffed",
+		zap.String("resource", newP.Resource), zap.Int("units_added", len(d.Added)),
+		zap.Int("units_removed", len(d.Removed)), zap.Int("units_changed", len(d.Changed)))
 	return d
 }
 
@@ -310,8 +335,11 @@ type ChainEntry struct {
 func PromoterChain(content string) ([]ChainEntry, error) {
 	p, err := parsePromoterUnits(content)
 	if err != nil {
+		// Not the error: it can quote a start entry, CHAP password included.
+		zap.L().Debug("PromoterChain: config unparsable")
 		return nil, err
 	}
+	zap.L().Debug("PromoterChain: chain read", zap.String("resource", p.Resource), zap.Int("count", len(p.Units)))
 	out := make([]ChainEntry, 0, len(p.Units))
 	for _, u := range p.Units {
 		e := ChainEntry{Unit: u.Name}

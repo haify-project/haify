@@ -13,6 +13,7 @@ import (
 
 	"github.com/liliang-cn/dispatch/pkg/inventory"
 	dispatchssh "github.com/liliang-cn/dispatch/pkg/ssh"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -31,15 +32,26 @@ var streamKeepalive = 15 * time.Second
 // it runs on until it next writes. Callers bound such a command themselves,
 // with timeout(1).
 func (c *Client) StreamLines(ctx context.Context, host, cmd string, onLine func(string)) error {
+	log := c.log()
+	start := time.Now()
+	if ce := log.Check(zap.DebugLevel, "StreamLines: starting stream"); ce != nil {
+		ce.Write(zap.String("host", host), zap.String("cmd", CommandSummary(cmd)))
+	}
 	if isLocalAddress(host) {
-		return streamLocal(ctx, cmd, onLine)
+		log.Debug("StreamLines: host is this machine, streaming locally", zap.String("host", host))
+		err := streamLocal(ctx, cmd, onLine)
+		log.Debug("StreamLines: local stream ended",
+			zap.String("host", host), zap.Duration("took", time.Since(start)), zap.Error(err))
+		return err
 	}
 	inv, err := inventory.New(c.configPath)
 	if err != nil {
+		log.Debug("StreamLines: cannot load dispatch config", zap.String("config_path", c.configPath), zap.Error(err))
 		return fmt.Errorf("load dispatch config: %w", err)
 	}
 	hosts, err := inv.GetHosts([]string{host})
 	if err != nil || len(hosts) == 0 {
+		log.Debug("StreamLines: cannot resolve host", zap.String("host", host), zap.Int("count", len(hosts)), zap.Error(err))
 		return fmt.Errorf("resolve %s: %v", host, err)
 	}
 	h := hosts[0]
@@ -51,30 +63,41 @@ func (c *Client) StreamLines(ctx context.Context, host, cmd string, onLine func(
 	if sshCfg.StrictHostKey {
 		opts = append(opts, dispatchssh.WithStrictHostKey(true))
 	}
+	log.Debug("StreamLines: host resolved",
+		zap.String("host", host), zap.String("address", h.Address), zap.String("user", h.User), zap.Int("port", h.Port),
+		zap.Bool("known_hosts", sshCfg.KnownHostsPath != ""), zap.Bool("strict_host_key", sshCfg.StrictHostKey))
 	client, err := dispatchssh.NewClient(sshCfg.KeyPath, opts...)
 	if err != nil {
+		log.Debug("StreamLines: cannot build ssh client", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("ssh client: %w", err)
 	}
+	connectStart := time.Now()
 	conn, err := client.Connect(dispatchssh.HostSpec{
 		Address: h.Address, User: h.User, Port: h.Port, KeyPath: h.KeyPath,
 		UserSet: h.UserSet, PortSet: h.PortSet, KeyPathSet: h.KeyPathSet,
 	})
 	if err != nil {
+		log.Debug("StreamLines: connect failed",
+			zap.String("host", host), zap.Duration("took", time.Since(connectStart)), zap.Error(err))
 		return fmt.Errorf("connect %s: %w", host, err)
 	}
+	log.Debug("StreamLines: connected", zap.String("host", host), zap.Duration("took", time.Since(connectStart)))
 	var closeOnce sync.Once
 	closeConn := func() { closeOnce.Do(func() { _ = conn.Close() }) }
 	defer closeConn()
 
 	session, err := conn.NewSession()
 	if err != nil {
+		log.Debug("StreamLines: cannot open session", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("session on %s: %w", host, err)
 	}
 	stdout, err := session.StdoutPipe()
 	if err != nil {
+		log.Debug("StreamLines: cannot get stdout pipe", zap.String("host", host), zap.Error(err))
 		return err
 	}
 	if err := session.Start(cmd); err != nil {
+		log.Debug("StreamLines: cannot start command", zap.String("host", host), zap.Error(err))
 		return fmt.Errorf("start on %s: %w", host, err)
 	}
 
@@ -88,10 +111,13 @@ func (c *Client) StreamLines(ctx context.Context, host, cmd string, onLine func(
 			case <-done:
 				return
 			case <-ctx.Done():
+				log.Debug("StreamLines: context ended, closing connection", zap.String("host", host))
 				closeConn()
 				return
 			case <-t.C:
 				if !keepalive(conn) {
+					log.Debug("StreamLines: keepalive unanswered, closing connection",
+						zap.String("host", host), zap.Duration("interval", streamKeepalive))
 					closeConn()
 					return
 				}
@@ -101,11 +127,16 @@ func (c *Client) StreamLines(ctx context.Context, host, cmd string, onLine func(
 
 	err = scanLines(stdout, onLine)
 	if ctx.Err() != nil {
+		log.Debug("StreamLines: stream stopped by context",
+			zap.String("host", host), zap.Duration("took", time.Since(start)), zap.Error(ctx.Err()))
 		return ctx.Err()
 	}
 	if err != nil {
+		log.Debug("StreamLines: stream read failed",
+			zap.String("host", host), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("stream from %s: %w", host, err)
 	}
+	log.Debug("StreamLines: stream ended", zap.String("host", host), zap.Duration("took", time.Since(start)))
 	return fmt.Errorf("stream from %s ended", host)
 }
 
@@ -119,23 +150,33 @@ func keepalive(conn *ssh.Client) bool {
 	}()
 	select {
 	case ok := <-answered:
+		if !ok {
+			zap.L().Debug("keepalive: request failed")
+		}
 		return ok
 	case <-time.After(streamKeepalive):
+		zap.L().Debug("keepalive: no answer in time", zap.Duration("interval", streamKeepalive))
 		return false
 	}
 }
 
 func streamLocal(ctx context.Context, cmd string, onLine func(string)) error {
+	if ce := zap.L().Check(zap.DebugLevel, "streamLocal: starting local stream"); ce != nil {
+		ce.Write(zap.String("cmd", CommandSummary(cmd)))
+	}
 	c := exec.CommandContext(ctx, "/bin/sh", "-c", cmd)
 	stdout, err := c.StdoutPipe()
 	if err != nil {
+		zap.L().Debug("streamLocal: cannot get stdout pipe", zap.Error(err))
 		return err
 	}
 	if err := c.Start(); err != nil {
+		zap.L().Debug("streamLocal: cannot start command", zap.Error(err))
 		return err
 	}
 	err = scanLines(stdout, onLine)
-	_ = c.Wait()
+	waitErr := c.Wait()
+	zap.L().Debug("streamLocal: command exited", zap.NamedError("read_error", err), zap.NamedError("wait_error", waitErr))
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -148,9 +189,12 @@ func streamLocal(ctx context.Context, cmd string, onLine func(string)) error {
 func scanLines(r io.Reader, onLine func(string)) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	lines := 0
 	for sc.Scan() {
+		lines++
 		onLine(strings.TrimRight(sc.Text(), "\r"))
 	}
+	zap.L().Debug("scanLines: reader done", zap.Int("count", lines), zap.Error(sc.Err()))
 	return sc.Err()
 }
 
@@ -166,6 +210,7 @@ func isLocalAddress(host string) bool {
 	}
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
+		zap.L().Debug("isLocalAddress: cannot list interface addresses", zap.String("host", host), zap.Error(err))
 		return false
 	}
 	for _, a := range addrs {

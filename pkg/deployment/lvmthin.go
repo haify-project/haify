@@ -3,6 +3,8 @@ package deployment
 import (
 	"context"
 	"fmt"
+
+	"go.uber.org/zap"
 )
 
 // lvmthin — how full a thin pool actually is.
@@ -36,6 +38,8 @@ const LVMThinFields = "vg_name,lv_name,segtype,lv_size,data_percent,metadata_per
 // pool, and also for a thin pool that is not currently active — absence of
 // information rather than zero, which the parser distinguishes.
 func (c *Client) LVSThinReport(ctx context.Context, hosts []string, vgName string) (*ExecResult, error) {
+	c.log().Debug("LVSThinReport: reading thin pool usage",
+		zap.Strings("hosts", hosts), zap.String("vg", vgName), zap.Bool("all_groups", vgName == ""))
 	cmd := fmt.Sprintf("sudo lvs --noheadings --nosuffix --units b --separator '|' -o %s", LVMThinFields)
 	if vgName != "" {
 		cmd += " " + vgName

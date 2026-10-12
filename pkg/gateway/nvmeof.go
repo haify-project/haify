@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	v1 "github.com/haify-project/haify/api/proto/v1"
 	"go.uber.org/zap"
@@ -26,6 +27,11 @@ func NewNVMeManager(m *Manager) *NVMeManager {
 
 // CreateNVMeGateway creates an NVMe-oF gateway with drbd-reactor configuration
 func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeGatewayRequest) (*v1.CreateNVMeGatewayResponse, error) {
+	log := n.log()
+	begin := time.Now()
+	log.Debug("NVMeManager.CreateNVMeGateway: start",
+		zap.String("resource", req.Resource), zap.String("nqn", req.Nqn),
+		zap.String("service_ip", req.ServiceIp), zap.String("transport", req.TransportType))
 	n.logger.Info("Creating NVMe-oF gateway",
 		zap.String("resource", req.Resource),
 		zap.String("nqn", req.Nqn),
@@ -35,6 +41,7 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 	// effect runs — see validate.go for why this cannot wait until the OCF
 	// agents parse them.
 	if err := validateNQN(req.Nqn); err != nil {
+		log.Debug("NVMeManager.CreateNVMeGateway: invalid NQN", zap.String("nqn", req.Nqn), zap.Error(err))
 		return &v1.CreateNVMeGatewayResponse{
 			Success: false,
 			Message: err.Error(),
@@ -44,6 +51,7 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 	// defaults it to tcp. Only a value the caller actually chose is checked.
 	if req.TransportType != "" {
 		if err := parseTransportType(req.TransportType); err != nil {
+			log.Debug("NVMeManager.CreateNVMeGateway: invalid transport", zap.String("transport", req.TransportType), zap.Error(err))
 			return &v1.CreateNVMeGatewayResponse{
 				Success: false,
 				Message: err.Error(),
@@ -54,6 +62,7 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 	// Parse service IP
 	serviceIP, err := parseServiceIP(req.ServiceIp)
 	if err != nil {
+		log.Debug("NVMeManager.CreateNVMeGateway: invalid service IP", zap.String("service_ip", req.ServiceIp), zap.Error(err))
 		return &v1.CreateNVMeGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("invalid service IP: %v", err),
@@ -67,27 +76,38 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 	// ensureNVMeModules loads (and persists) below.
 	if res, rerr := n.resources.GetResource(ctx, req.Resource); rerr == nil && res != nil {
 		if err := n.checkGatewayPrereqs(ctx, gatewayNodes(res), nvmePrereqs()); err != nil {
+			log.Debug("NVMeManager.CreateNVMeGateway: prerequisites missing", zap.String("resource", req.Resource), zap.Error(err))
 			return &v1.CreateNVMeGatewayResponse{Success: false, Message: err.Error()}, err
 		}
 		if err := n.ensureNVMeModules(ctx, gatewayNodes(res), req.TransportType); err != nil {
+			log.Debug("NVMeManager.CreateNVMeGateway: kernel modules unavailable", zap.String("resource", req.Resource), zap.Error(err))
 			return &v1.CreateNVMeGatewayResponse{Success: false, Message: err.Error()}, err
 		}
+	} else {
+		log.Debug("NVMeManager.CreateNVMeGateway: resource lookup failed, prerequisite and module checks skipped",
+			zap.String("resource", req.Resource), zap.Error(rerr))
 	}
 
 	// Auto-provision the cluster-private state volume when the resource is one
 	// short, so a single-volume resource can be exported without a manual
 	// add-volume step first.
+	start := time.Now()
 	if err := n.resources.EnsureGatewayVolumes(ctx, req.Resource, 2); err != nil {
+		log.Debug("NVMeManager.CreateNVMeGateway: state volume provisioning failed",
+			zap.String("resource", req.Resource), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return &v1.CreateNVMeGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to provision gateway state volume: %v", err),
 		}, err
 	}
+	log.Debug("NVMeManager.CreateNVMeGateway: gateway volumes ensured",
+		zap.String("resource", req.Resource), zap.Duration("took", time.Since(start)))
 
 	// Get volume info from resource - NVMe-oF requires at least 2 volumes
 	// Volume 0: cluster-private, Volume 1+: namespaces exposed to initiators
 	resInfo, err := n.resources.GetResource(ctx, req.Resource)
 	if err != nil {
+		log.Debug("NVMeManager.CreateNVMeGateway: resource lookup failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateNVMeGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to get resource info: %v", err),
@@ -95,6 +115,7 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 	}
 
 	if len(resInfo.Volumes) < 2 {
+		log.Debug("NVMeManager.CreateNVMeGateway: too few volumes", zap.String("resource", req.Resource), zap.Int("count", len(resInfo.Volumes)))
 		return &v1.CreateNVMeGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("NVMe-oF gateway requires at least 2 volumes (got %d): volume 0 for cluster-private, volume 1+ for namespaces", len(resInfo.Volumes)),
@@ -126,6 +147,7 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 	// data volume as gateway scratch; see clusterPrivateAndPayload.
 	clusterPrivateDev, _ := clusterPrivateAndPayload(resInfo.Volumes, drbdDevice)
 	if err := n.ensureGatewayPrerequisites(ctx, req.Resource, resInfo.Nodes, clusterPrivateDev); err != nil {
+		log.Debug("NVMeManager.CreateNVMeGateway: preparing the resource failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateNVMeGatewayResponse{
 			Success: false,
 			Message: err.Error(),
@@ -134,6 +156,7 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 
 	config, err := n.generateNVMeGatewayConfig(req, serviceIP, drbdDevice, resInfo.Volumes)
 	if err != nil {
+		log.Debug("NVMeManager.CreateNVMeGateway: config generation failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateNVMeGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to generate config: %v", err),
@@ -143,6 +166,7 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 	// Write configuration to all nodes
 	pluginID := fmt.Sprintf("haify-nvmeof-%s", req.Resource)
 	if err := n.writeReactorConfig(ctx, req.Resource, pluginID, config); err != nil {
+		log.Debug("NVMeManager.CreateNVMeGateway: writing config failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateNVMeGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to write config: %v", err),
@@ -150,6 +174,8 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 	}
 
 	configPath := filepath.Join(DrbdReactorConfigDir, fmt.Sprintf("%s.toml", pluginID))
+	log.Debug("NVMeManager.CreateNVMeGateway: done",
+		zap.String("resource", req.Resource), zap.String("path", configPath), zap.Duration("took", time.Since(begin)))
 
 	return &v1.CreateNVMeGatewayResponse{
 		Success:    true,
@@ -160,6 +186,7 @@ func (n *NVMeManager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeG
 
 // generateNVMeGatewayConfig generates drbd-reactor TOML configuration for NVMe-oF gateway
 func (n *NVMeManager) generateNVMeGatewayConfig(req *v1.CreateNVMeGatewayRequest, serviceIP *ServiceIP, drbdDevice string, volumes []*ResourceVolumeInfo) (string, error) {
+	log := n.log()
 	// Template for NVMe-oF gateway - matches linstor-gateway pattern
 	tmpl := `# Haify NVMe-oF Gateway Configuration
 # Generated by Haify Controller
@@ -199,6 +226,7 @@ func (n *NVMeManager) generateNVMeGatewayConfig(req *v1.CreateNVMeGatewayRequest
 
 	transportType := req.TransportType
 	if transportType == "" {
+		log.Debug("NVMeManager.generateNVMeGatewayConfig: no transport given, using tcp")
 		transportType = "tcp"
 	}
 
@@ -232,6 +260,7 @@ func (n *NVMeManager) generateNVMeGatewayConfig(req *v1.CreateNVMeGatewayRequest
 	// usually volume 0.
 	namespaces := make([]Namespace, 0, len(payload))
 	for i, vol := range payload {
+		log.Debug("NVMeManager.generateNVMeGatewayConfig: namespace", zap.Int("nsid", i+1), zap.String("device", vol.Device))
 		namespaces = append(namespaces, Namespace{
 			Number: i + 1,
 			Device: vol.Device,
@@ -241,6 +270,10 @@ func (n *NVMeManager) generateNVMeGatewayConfig(req *v1.CreateNVMeGatewayRequest
 	}
 
 	clusterPrivatePath := filepath.Join(DefaultClusterPrivateMountPath, req.Resource)
+	log.Debug("NVMeManager.generateNVMeGatewayConfig: rendering",
+		zap.String("resource", req.Resource), zap.String("nqn", req.Nqn), zap.String("ip", ipAddr),
+		zap.Int("prefix", prefix), zap.String("transport", transportType), zap.String("serial", serial),
+		zap.String("cluster_private", clusterPrivateDev), zap.Int("namespaces", len(namespaces)))
 
 	data := struct {
 		Resource           string
@@ -277,6 +310,8 @@ func (n *NVMeManager) generateNVMeGatewayConfig(req *v1.CreateNVMeGatewayRequest
 
 // GetNVMeGatewayStatus gets the status of an NVMe-oF gateway
 func (n *NVMeManager) GetNVMeGatewayStatus(ctx context.Context, resource string) (map[string]interface{}, error) {
+	log := n.log()
+	log.Debug("NVMeManager.GetNVMeGatewayStatus: start", zap.String("resource", resource))
 	status := map[string]interface{}{
 		"type":     "nvmeof",
 		"resource": resource,
@@ -286,6 +321,7 @@ func (n *NVMeManager) GetNVMeGatewayStatus(ctx context.Context, resource string)
 	// Check if the gateway config exists
 	configPath := filepath.Join(DrbdReactorConfigDir, fmt.Sprintf("haify-nvmeof-%s.toml", resource))
 	if _, err := os.Stat(configPath); err != nil {
+		log.Debug("NVMeManager.GetNVMeGatewayStatus: no local config", zap.String("path", configPath), zap.Error(err))
 		status["status"] = "not_configured"
 		return status, nil
 	}
@@ -298,6 +334,10 @@ func (n *NVMeManager) GetNVMeGatewayStatus(ctx context.Context, resource string)
 		status["role"] = resInfo.Role
 		status["nodes"] = resInfo.Nodes
 		status["volumes"] = len(resInfo.Volumes)
+		log.Debug("NVMeManager.GetNVMeGatewayStatus: configured",
+			zap.String("resource", resource), zap.String("role", resInfo.Role), zap.Strings("nodes", resInfo.Nodes))
+	} else {
+		log.Debug("NVMeManager.GetNVMeGatewayStatus: resource lookup failed", zap.String("resource", resource), zap.Error(err))
 	}
 
 	return status, nil
@@ -305,6 +345,8 @@ func (n *NVMeManager) GetNVMeGatewayStatus(ctx context.Context, resource string)
 
 // DeleteNVMeGateway deletes an NVMe-oF gateway
 func (n *NVMeManager) DeleteNVMeGateway(ctx context.Context, resource string) error {
+	log := n.log()
+	log.Debug("NVMeManager.DeleteNVMeGateway: start", zap.String("resource", resource), zap.Strings("hosts", n.hosts))
 	n.logger.Info("Deleting NVMe-oF gateway", zap.String("resource", resource))
 
 	configFile := fmt.Sprintf("haify-nvmeof-%s.toml", resource)
@@ -313,7 +355,11 @@ func (n *NVMeManager) DeleteNVMeGateway(ctx context.Context, resource string) er
 	// Remove config from all nodes
 	for _, host := range n.hosts {
 		rmCmd := fmt.Sprintf("sudo rm -f %s", configPath)
-		if err := n.deployment.Exec(ctx, []string{host}, rmCmd); err != nil {
+		start := time.Now()
+		err := n.deployment.Exec(ctx, []string{host}, rmCmd)
+		log.Debug("NVMeManager.DeleteNVMeGateway: removed config",
+			zap.String("host", host), zap.String("path", configPath), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			n.logger.Warn("Failed to delete config",
 				zap.String("node", host),
 				zap.Error(err))
@@ -322,6 +368,7 @@ func (n *NVMeManager) DeleteNVMeGateway(ctx context.Context, resource string) er
 
 	// Reload drbd-reactor
 	if err := n.reloadDrbdReactor(ctx); err != nil {
+		log.Debug("NVMeManager.DeleteNVMeGateway: reload failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
@@ -341,6 +388,7 @@ func nvmeTransportModule(transport string) (string, error) {
 	case "rdma":
 		return "nvmet-rdma", nil
 	}
+	zap.L().Debug("nvmeTransportModule: unknown transport", zap.String("transport", transport))
 	return "", parseTransportType(transport)
 }
 
@@ -353,17 +401,22 @@ func nvmeTransportModule(transport string) (string, error) {
 // gateway keeps both. RDMA additionally needs an RDMA-capable device (or
 // soft-RoCE), without which the port cannot be enabled.
 func (n *NVMeManager) ensureNVMeModules(ctx context.Context, nodes []string, transport string) error {
+	log := n.log()
 	if len(nodes) == 0 {
+		log.Debug("NVMeManager.ensureNVMeModules: no nodes")
 		return nil
 	}
 	module, err := nvmeTransportModule(transport)
 	if err != nil {
+		log.Debug("NVMeManager.ensureNVMeModules: no module for transport", zap.String("transport", transport), zap.Error(err))
 		return err
 	}
 	rdmaCheck := ""
 	if module == "nvmet-rdma" {
+		log.Debug("NVMeManager.ensureNVMeModules: RDMA transport, checking for an RDMA device")
 		rdmaCheck = `[ -n "$(ls /sys/class/infiniband 2>/dev/null)" ] || { echo "no RDMA device under /sys/class/infiniband"; exit 1; }` + "\n"
 	}
+	log.Debug("NVMeManager.ensureNVMeModules: loading modules", zap.Strings("nodes", nodes), zap.String("module", module))
 	script := fmt.Sprintf(`set -e
 %[2]smodprobe nvmet
 modprobe %[1]s
@@ -372,6 +425,7 @@ touch "$conf"
 for m in nvmet %[1]s; do grep -qx "$m" "$conf" || echo "$m" >> "$conf"; done
 test -d /sys/kernel/config/nvmet`, module, rdmaCheck)
 	if err := n.runScript(ctx, nodes, script); err != nil {
+		log.Debug("NVMeManager.ensureNVMeModules: loading failed", zap.Strings("nodes", nodes), zap.Error(err))
 		return fmt.Errorf("failed to load nvmet kernel modules (nvmet, %s) on gateway nodes; "+
 			"ensure the nvme-target kernel modules are available: %w", module, err)
 	}
