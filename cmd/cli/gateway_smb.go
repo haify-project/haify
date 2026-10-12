@@ -10,6 +10,7 @@ import (
 	v1 "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/client"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func gatewaySMB() *cobra.Command {
@@ -33,11 +34,15 @@ over with the resource. Its users and shares live on the gateway's state
 volume. The first share covers the whole data volume; add users with
 'haify gateway smb user set' before connecting.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("smbCreate: running command", zap.Strings("args", args), zap.String("resource", resource), zap.String("service_ip", serviceIP), zap.String("workgroup", workgroup), zap.String("share", share), zap.Bool("read_only", readOnly), zap.Strings("valid_users", validUsers))
 			if resource == "" || serviceIP == "" {
+				log.Debug("smbCreate: returning early", zap.String("condition", "resource == \"\" || serviceIP == \"\""))
 				return fmt.Errorf("--resource and --service-ip are required")
 			}
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("smbCreate: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
@@ -46,12 +51,15 @@ volume. The first share covers the whole data volume; add users with
 				ShareName: share, ReadOnly: readOnly, ValidUsers: validUsers,
 			})
 			if err != nil {
+				log.Debug("smbCreate: CreateSMBGateway failed", zap.Error(err))
 				return fmt.Errorf("failed to create SMB gateway: %w", err)
 			}
 			if !resp.Success {
+				log.Debug("smbCreate: controller reported failure", zap.String("message", resp.Message))
 				return fmt.Errorf("failed to create SMB gateway: %s", resp.Message)
 			}
 			fmt.Printf("✓ %s\n  Config Path: %s\n", resp.Message, resp.ConfigPath)
+			log.Debug("smbCreate: done", zap.String("resource", resource), zap.String("config_path", resp.ConfigPath))
 			return nil
 		},
 	}
@@ -77,6 +85,8 @@ func smbShareCommand() *cobra.Command {
 		Short: "Add a share (a directory under the gateway's volume)",
 		Args:  cobra.ExactArgs(1),
 		RunE: smbRun(&resource, func(cmd *cobra.Command, c smbClient, args []string) error {
+			zap.L().Debug("smbShareCommand: adding share", zap.String("resource", resource), zap.String("share", args[0]),
+				zap.String("path", path), zap.Bool("read_only", readOnly), zap.Strings("valid_users", validUsers))
 			return c.AddSMBShare(cmd.Context(), resource, &v1.SMBShareInfo{
 				Name: args[0], Path: path, ReadOnly: readOnly, ValidUsers: validUsers,
 			})
@@ -91,6 +101,7 @@ func smbShareCommand() *cobra.Command {
 		Short: "Remove a share (its data stays)",
 		Args:  cobra.ExactArgs(1),
 		RunE: smbRun(&resource, func(cmd *cobra.Command, c smbClient, args []string) error {
+			zap.L().Debug("smbShareCommand: removing share", zap.String("resource", resource), zap.String("share", args[0]))
 			return c.RemoveSMBShare(cmd.Context(), resource, args[0])
 		}, "share removed; its data was left in place"),
 	}
@@ -98,10 +109,14 @@ func smbShareCommand() *cobra.Command {
 		Use:   "list --resource <name>",
 		Short: "List shares",
 		RunE: smbRun(&resource, func(cmd *cobra.Command, c smbClient, _ []string) error {
+			log := zap.L()
+			log.Debug("smbShareCommand: listing shares", zap.String("resource", resource))
 			shares, err := c.ListSMBShares(cmd.Context(), resource)
 			if err != nil {
+				log.Debug("smbShareCommand: ListSMBShares failed", zap.Error(err))
 				return err
 			}
+			log.Debug("smbShareCommand: printing shares", zap.Int("count", len(shares)))
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "NAME\tPATH\tREAD-ONLY\tUSERS")
 			for _, s := range shares {
@@ -131,14 +146,19 @@ func smbUserCommand() *cobra.Command {
 standard input: typed at the prompt, or piped with --password-stdin.`,
 		Args: cobra.ExactArgs(1),
 		RunE: smbRun(&resource, func(cmd *cobra.Command, c smbClient, args []string) error {
+			log := zap.L()
+			log.Debug("smbUserCommand: setting user", zap.String("resource", resource), zap.String("user", args[0]), zap.Bool("password_stdin", passwordStdin))
 			if !passwordStdin {
+				log.Debug("smbUserCommand: prompting for the password")
 				fmt.Fprintf(os.Stderr, "Password for %s (echoed; use --password-stdin to pipe it): ", args[0])
 			}
 			pw, err := bufio.NewReader(os.Stdin).ReadString('\n')
 			if err != nil && pw == "" {
+				log.Debug("smbUserCommand: password not readable", zap.Error(err))
 				return fmt.Errorf("read password: %w", err)
 			}
 			pw = strings.TrimRight(pw, "\r\n")
+			log.Debug("smbUserCommand: password read", zap.Bool("has_password", pw != ""))
 			return c.SetSMBUser(cmd.Context(), resource, args[0], pw)
 		}, "user set"),
 	}
@@ -148,6 +168,7 @@ standard input: typed at the prompt, or piped with --password-stdin.`,
 		Short: "Remove a user",
 		Args:  cobra.ExactArgs(1),
 		RunE: smbRun(&resource, func(cmd *cobra.Command, c smbClient, args []string) error {
+			zap.L().Debug("smbUserCommand: removing user", zap.String("resource", resource), zap.String("user", args[0]))
 			return c.RemoveSMBUser(cmd.Context(), resource, args[0])
 		}, "user removed"),
 	}
@@ -155,10 +176,14 @@ standard input: typed at the prompt, or piped with --password-stdin.`,
 		Use:   "list --resource <name>",
 		Short: "List users",
 		RunE: smbRun(&resource, func(cmd *cobra.Command, c smbClient, _ []string) error {
+			log := zap.L()
+			log.Debug("smbUserCommand: listing users", zap.String("resource", resource))
 			users, err := c.ListSMBUsers(cmd.Context(), resource)
 			if err != nil {
+				log.Debug("smbUserCommand: ListSMBUsers failed", zap.Error(err))
 				return err
 			}
+			log.Debug("smbUserCommand: printing users", zap.Int("count", len(users)))
 			for _, u := range users {
 				fmt.Println(u)
 			}
@@ -175,20 +200,26 @@ type smbClient = *client.HaifyClient
 // prints done on success.
 func smbRun(resource *string, fn func(*cobra.Command, smbClient, []string) error, done string) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
+		log := zap.L()
+		log.Debug("smbRun: running command", zap.String("command", cmd.CommandPath()), zap.Strings("args", args), zap.String("resource", *resource))
 		if *resource == "" {
+			log.Debug("smbRun: --resource missing")
 			return fmt.Errorf("--resource is required")
 		}
 		c, err := newHaifyClient()
 		if err != nil {
+			log.Debug("smbRun: newHaifyClient failed", zap.Error(err))
 			return fmt.Errorf("failed to connect to controller: %w", err)
 		}
 		defer closeClient(c)
 		if err := fn(cmd, c, args); err != nil {
+			log.Debug("smbRun: command failed", zap.String("command", cmd.CommandPath()), zap.Error(err))
 			return err
 		}
 		if done != "" {
 			fmt.Printf("✓ %s\n", done)
 		}
+		log.Debug("smbRun: done", zap.String("command", cmd.CommandPath()))
 		return nil
 	}
 }

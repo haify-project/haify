@@ -3,6 +3,8 @@ package main
 import (
 	"io"
 
+	"go.uber.org/zap"
+
 	"github.com/haify-project/haify/pkg/client"
 )
 
@@ -16,14 +18,26 @@ import (
 // --token flag > HAIFY_TOKEN env > ~/.haify/token > /etc/haify/token.
 // TLS follows the same flag-beats-environment rule, see client.ResolveTLS.
 func newHaifyClient() (*client.HaifyClient, error) {
+	log := zap.L()
+	log.Debug("newHaifyClient: building controller client", zap.String("controller", controllerAddr), zap.Bool("has_token_flag", tokenFlag != ""))
 	opts := []client.Option{}
 	if token := client.ResolveToken(tokenFlag); token != "" {
+		log.Debug("newHaifyClient: sending a bearer token")
 		opts = append(opts, client.WithToken(token))
+	} else {
+		log.Debug("newHaifyClient: no token resolved")
 	}
 	if tlsOpts := client.ResolveTLS(tlsFlags); tlsOpts.Active() {
+		log.Debug("newHaifyClient: TLS active", zap.String("ca_cert", tlsOpts.CACert), zap.String("server_name", tlsOpts.ServerName), zap.Bool("insecure", tlsOpts.Insecure))
 		opts = append(opts, client.WithTLS(tlsOpts))
+	} else {
+		log.Debug("newHaifyClient: TLS not active, plaintext")
 	}
-	return client.NewHaifyClient(controllerAddr, opts...)
+	c, err := client.NewHaifyClient(controllerAddr, opts...)
+	if err != nil {
+		log.Debug("newHaifyClient: client creation failed", zap.String("controller", controllerAddr), zap.Error(err))
+	}
+	return c, err
 }
 
 // closeClient releases a controller connection at the end of a CLI command.
@@ -34,5 +48,7 @@ func newHaifyClient() (*client.HaifyClient, error) {
 // an operator could do about it anyway. Errors that mean the operation itself
 // failed all come back from the RPC call, not from Close.
 func closeClient(c io.Closer) {
-	_ = c.Close()
+	if err := c.Close(); err != nil {
+		zap.L().Debug("closeClient: close error dropped", zap.Error(err))
+	}
 }

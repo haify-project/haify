@@ -7,6 +7,7 @@ import (
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 // printWANMetrics renders the proxy counters under a WAN resource's status.
@@ -17,11 +18,16 @@ import (
 // the proxy published these. When the snapshot is absent we say so rather than
 // print zeros, because a confident "0 lost" would be the worst possible lie here.
 func printWANMetrics(m *haifypb.WANMetrics) {
+	log := zap.L()
 	if m == nil {
+		log.Debug("printWANMetrics: proxy published no metrics")
 		fmt.Printf("    Replication lag: unknown (proxy published no metrics)\n")
 		return
 	}
 
+	log.Debug("printWANMetrics: metrics", zap.Uint64("buffer_used_bytes", m.GetBufferUsedBytes()), zap.Uint64("buffer_cap_bytes", m.GetBufferCapBytes()),
+		zap.Uint64("drbd_to_wan_bytes", m.GetDrbdToWanBytes()), zap.Uint64("wan_wire_bytes", m.GetWanWireBytes()),
+		zap.Uint64("reconnects", m.GetReconnects()), zap.Uint64("ring_full_events", m.GetRingFullEvents()))
 	fmt.Printf("    Un-replicated:   %s", humanBytes(m.GetBufferUsedBytes()))
 	if cap := m.GetBufferCapBytes(); cap > 0 {
 		fmt.Printf(" of %s buffer (%.1f%%)", humanBytes(cap), m.GetBufferFillPercent())
@@ -70,6 +76,8 @@ func resourceStatus() *cobra.Command {
 		Short: "Show detailed resource status",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceStatus: running command", zap.Strings("args", args))
 			resource := args[0]
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -77,15 +85,20 @@ func resourceStatus() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceStatus: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			status, err := haifyClient.ResourceStatus(ctx, resource)
 			if err != nil {
+				log.Debug("resourceStatus: ResourceStatus failed", zap.Error(err))
 				return fmt.Errorf("failed to get resource status: %w", err)
 			}
 
+			log.Debug("resourceStatus: status", zap.String("resource", status.GetName()), zap.String("role", status.GetRole()),
+				zap.Strings("nodes", status.GetNodes()), zap.Int("volumes", len(status.GetVolumes())), zap.Bool("wan", status.GetWan()),
+				zap.Bool("encrypted", status.GetEncrypted()))
 			fmt.Printf("Resource Status: %s\n", status.GetName())
 			fmt.Printf("  Role:  %s\n", status.GetRole())
 			fmt.Printf("  Nodes: %v\n", status.GetNodes())
@@ -113,6 +126,8 @@ func resourceStatus() *cobra.Command {
 			if ns := status.GetNodeStates(); len(ns) > 0 {
 				fmt.Printf("\n  Node states:\n")
 				for node, st := range ns {
+					log.Debug("resourceStatus: node state", zap.String("node", node), zap.String("role", st.GetRole()),
+						zap.String("disk_state", st.GetDiskState()), zap.String("replication_state", st.GetReplicationState()), zap.Bool("tls", st.GetTls()))
 					tls := ""
 					if st.GetTls() {
 						tls = " tls"
@@ -123,6 +138,8 @@ func resourceStatus() *cobra.Command {
 			}
 
 			if status.GetWan() {
+				log.Debug("resourceStatus: WAN resource", zap.String("dr_node", status.GetDrNode()), zap.String("dr_endpoint", status.GetDrEndpoint()),
+					zap.Bool("wan_reachable", status.GetWanReachable()), zap.Int("proxies", len(status.GetWanProxy())))
 				fmt.Printf("\n  WAN replication (protocol A / async):\n")
 				fmt.Printf("    DR node:     %s\n", status.GetDrNode())
 				fmt.Printf("    DR endpoint: %s\n", status.GetDrEndpoint())
@@ -142,6 +159,7 @@ func resourceStatus() *cobra.Command {
 				fmt.Printf("          haify resource dr-failover %s\n", status.GetName())
 			}
 
+			log.Debug("resourceStatus: done")
 			return nil
 		},
 	}
@@ -161,10 +179,13 @@ func resourceVerify() *cobra.Command {
 			"--resync copies --node's data over them on the other replicas.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceVerify: running command", zap.Strings("args", args), zap.String("node", node), zap.Duration("wait", wait), zap.Bool("resync", resync))
 			ctx, cancel := context.WithTimeout(context.Background(), wait+3*time.Minute)
 			defer cancel()
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceVerify: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -172,12 +193,17 @@ func resourceVerify() *cobra.Command {
 				Name: args[0], Node: node, WaitSeconds: uint32(wait.Seconds()), Resync: resync,
 			})
 			if err != nil {
+				log.Debug("resourceVerify: VerifyResource failed", zap.Error(err))
 				return err
 			}
+			log.Debug("resourceVerify: verify result", zap.Bool("success", resp.Success), zap.String("source", resp.Source),
+				zap.Int("steps", len(resp.Steps)), zap.Int("peers", len(resp.Peers)))
 			for _, s := range resp.Steps {
 				fmt.Printf("  %s\n", s)
 			}
 			for _, p := range resp.Peers {
+				log.Debug("resourceVerify: peer", zap.String("node", p.Node), zap.String("state", p.State),
+					zap.Float64("percent_done", p.PercentDone), zap.Uint64("out_of_sync_kib", p.OutOfSyncKib), zap.Uint64("found_kib", p.FoundKib))
 				line := fmt.Sprintf("  %s ↔ %s: %s", resp.Source, p.Node, p.State)
 				if p.State == "verifying" {
 					line += fmt.Sprintf(" %.1f%%", p.PercentDone)
@@ -192,8 +218,10 @@ func resourceVerify() *cobra.Command {
 			}
 			fmt.Println(resp.Message)
 			if !resp.Success {
+				log.Debug("resourceVerify: controller reported failure", zap.String("message", resp.Message))
 				return fmt.Errorf("verify failed")
 			}
+			log.Debug("resourceVerify: done")
 			return nil
 		},
 	}

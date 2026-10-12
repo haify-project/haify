@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
@@ -54,11 +55,15 @@ func eventListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List retained notifications, oldest first",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			log := zap.L()
+			log.Debug("eventListCommand: running command", zap.String("min_severity", f.minSeverity), zap.Strings("types", f.types),
+				zap.String("resource", f.resource), zap.Bool("json", f.jsonOut), zap.Int32("limit", limit), zap.Uint64("since_id", sinceID))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("eventListCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
@@ -71,13 +76,16 @@ func eventListCommand() *cobra.Command {
 				SinceId:     sinceID,
 			})
 			if err != nil {
+				log.Debug("eventListCommand: ListEvents failed", zap.Error(err))
 				return err
 			}
 
 			if len(resp.Events) == 0 {
+				log.Debug("eventListCommand: no events")
 				fmt.Println("No events.")
 				return nil
 			}
+			log.Debug("eventListCommand: printing events", zap.Int("count", len(resp.Events)), zap.Uint64("dropped", resp.Dropped))
 			for _, e := range resp.Events {
 				printEvent(cmd.OutOrStdout(), e, f.jsonOut)
 			}
@@ -89,6 +97,7 @@ func eventListCommand() *cobra.Command {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"\nwarning: %d event(s) were dropped because a subscriber could not keep up\n", resp.Dropped)
 			}
+			log.Debug("eventListCommand: done")
 			return nil
 		},
 	}
@@ -111,12 +120,16 @@ func eventWatchCommand() *cobra.Command {
 			"controller's retained history first, or --since-id to resume from a\n" +
 			"known point after a disconnect.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			log := zap.L()
+			log.Debug("eventWatchCommand: running command", zap.String("min_severity", f.minSeverity), zap.Strings("types", f.types),
+				zap.String("resource", f.resource), zap.Bool("json", f.jsonOut), zap.Uint64("since_id", sinceID), zap.Bool("replay", replay))
 			// No timeout: this is meant to run until the operator stops it.
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("eventWatchCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
@@ -124,13 +137,17 @@ func eventWatchCommand() *cobra.Command {
 			// since_id 0 means "replay everything retained", so watching from now
 			// requires asking for the newest id first and starting after it.
 			if replay {
+				log.Debug("eventWatchCommand: replaying retained history")
 				sinceID = 0
 			} else if sinceID == 0 {
+				log.Debug("eventWatchCommand: starting from now, asking for the newest id")
 				resp, err := c.ListEvents(ctx, &haifypb.ListEventsRequest{Limit: 1})
 				if err != nil {
+					log.Debug("eventWatchCommand: ListEvents failed", zap.Error(err))
 					return err
 				}
 				sinceID = resp.Published
+				log.Debug("eventWatchCommand: starting after newest id", zap.Uint64("since_id", sinceID))
 			}
 
 			stream, err := c.WatchEvents(ctx, &haifypb.WatchEventsRequest{
@@ -140,6 +157,7 @@ func eventWatchCommand() *cobra.Command {
 				SinceId:     sinceID,
 			})
 			if err != nil {
+				log.Debug("eventWatchCommand: WatchEvents failed", zap.Error(err))
 				return err
 			}
 
@@ -150,14 +168,18 @@ func eventWatchCommand() *cobra.Command {
 			for {
 				e, err := stream.Recv()
 				if err == io.EOF || ctx.Err() != nil {
+					log.Debug("eventWatchCommand: stream ended", zap.Bool("eof", err == io.EOF), zap.NamedError("ctx_err", ctx.Err()))
 					return nil
 				}
 				if err != nil {
+					log.Debug("eventWatchCommand: stream Recv failed", zap.Error(err))
 					return fmt.Errorf("event stream closed: %w", err)
 				}
 				// Ids are monotonic, so a jump means the controller dropped
 				// events for this watcher rather than that nothing happened.
+				log.Debug("eventWatchCommand: event received", zap.Uint64("id", e.Id), zap.String("type", e.Type), zap.String("severity", e.Severity))
 				if lastID != 0 && e.Id > lastID+1 {
+					log.Debug("eventWatchCommand: gap in event ids", zap.Uint64("last_id", lastID), zap.Uint64("id", e.Id))
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 						"warning: missed %d event(s) — this client fell behind\n", e.Id-lastID-1)
 				}
@@ -187,6 +209,8 @@ func printEvent(w io.Writer, e *haifypb.Event, asJSON bool) {
 		})
 		if err == nil {
 			_, _ = fmt.Fprintln(w, string(body))
+		} else {
+			zap.L().Debug("printEvent: event not marshalable, skipped", zap.Uint64("id", e.Id), zap.Error(err))
 		}
 		return
 	}

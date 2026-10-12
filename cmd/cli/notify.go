@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/client"
 )
@@ -43,24 +44,31 @@ func notifyListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List notification channels",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			log := zap.L()
+			log.Debug("notifyListCommand: running command")
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("notifyListCommand: newHaifyClient failed", zap.Error(err))
 				return err
 			}
 			defer func() { _ = c.Close() }()
 
 			channels, kinds, err := c.ListNotifyChannels(ctx)
 			if err != nil {
+				log.Debug("notifyListCommand: ListNotifyChannels failed", zap.Error(err))
 				return err
 			}
 			if len(channels) == 0 {
+				log.Debug("notifyListCommand: no channels", zap.Strings("kinds", kinds))
 				fmt.Println("No notification channels configured.")
 				fmt.Printf("Supported kinds: %s\n", strings.Join(kinds, ", "))
 				return nil
 			}
 			for _, ch := range channels {
+				log.Debug("notifyListCommand: channel", zap.String("name", ch.Name), zap.String("kind", ch.Kind),
+					zap.Bool("enabled", ch.Enabled), zap.String("min_severity", ch.MinSeverity), zap.Bool("has_secret", ch.HasSecret))
 				state := "enabled"
 				if !ch.Enabled {
 					state = "MUTED"
@@ -79,6 +87,7 @@ func notifyListCommand() *cobra.Command {
 					fmt.Printf("  signing secret: configured\n")
 				}
 			}
+			log.Debug("notifyListCommand: done", zap.Int("count", len(channels)))
 			return nil
 		},
 	}
@@ -112,11 +121,18 @@ Examples:
   haify channel add --name ops --kind dingtalk \
       --url 'https://oapi.dingtalk.com/robot/send?access_token=xxxx'`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			log := zap.L()
+			log.Debug("notifyAddCommand: running command", zap.String("name", name), zap.String("kind", kind),
+				zap.Bool("has_url", url != ""), zap.String("min_severity", minSeverity), zap.Strings("types", types),
+				zap.Int("headers", len(headers)), zap.Bool("muted", disabled), zap.Bool("has_secret_file", secretFile != ""),
+				zap.Bool("clear_secret", clearSecret))
 			if name == "" || url == "" {
+				log.Debug("notifyAddCommand: --name or --url missing", zap.Bool("has_name", name != ""), zap.Bool("has_url", url != ""))
 				return fmt.Errorf("--name and --url are required")
 			}
 			hdrs, err := parseHeaderFlags(headers)
 			if err != nil {
+				log.Debug("notifyAddCommand: parseHeaderFlags failed", zap.Error(err))
 				return err
 			}
 			// Absent means "keep what is stored"; the empty string would be
@@ -124,6 +140,7 @@ Examples:
 			// --clear-secret exists as its own flag.
 			secret, err := readOptionalNotifySecret(cmd.InOrStdin(), secretFile)
 			if err != nil {
+				log.Debug("notifyAddCommand: readOptionalNotifySecret failed", zap.Error(err))
 				return err
 			}
 
@@ -131,6 +148,7 @@ Examples:
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("notifyAddCommand: newHaifyClient failed", zap.Error(err))
 				return err
 			}
 			defer func() { _ = c.Close() }()
@@ -138,10 +156,12 @@ Examples:
 			ch, err := c.SaveNotifyChannel(ctx, clientNotifySpec(name, kind, url, minSeverity,
 				types, hdrs, !disabled, secret, clearSecret))
 			if err != nil {
+				log.Debug("notifyAddCommand: SaveNotifyChannel failed", zap.Error(err))
 				return err
 			}
 			fmt.Printf("Notification channel %q saved (%s)\n", ch.Name, ch.Kind)
 			fmt.Printf("Send a test message with: haify channel test %s\n", ch.Name)
+			log.Debug("notifyAddCommand: done", zap.String("name", ch.Name), zap.String("kind", ch.Kind), zap.Bool("has_secret", secret != ""))
 			return nil
 		},
 	}
@@ -169,18 +189,23 @@ func notifyDeleteCommand() *cobra.Command {
 		Short: "Delete a notification channel",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("notifyDeleteCommand: running command", zap.Strings("args", args))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("notifyDeleteCommand: newHaifyClient failed", zap.Error(err))
 				return err
 			}
 			defer func() { _ = c.Close() }()
 
 			if err := c.DeleteNotifyChannel(ctx, args[0]); err != nil {
+				log.Debug("notifyDeleteCommand: DeleteNotifyChannel failed", zap.Error(err))
 				return err
 			}
 			fmt.Printf("Notification channel %q deleted\n", args[0])
+			log.Debug("notifyDeleteCommand: done")
 			return nil
 		},
 	}
@@ -201,19 +226,24 @@ The message does not go through the event bus: it neither reaches the other
 channels nor appears in the event history.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("notifyTestCommand: running command", zap.Strings("args", args))
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("notifyTestCommand: newHaifyClient failed", zap.Error(err))
 				return err
 			}
 			defer func() { _ = c.Close() }()
 
 			msg, err := c.TestNotifyChannel(ctx, args[0])
 			if err != nil {
+				log.Debug("notifyTestCommand: TestNotifyChannel failed", zap.Error(err))
 				return err
 			}
 			fmt.Println(msg)
+			log.Debug("notifyTestCommand: done")
 			return nil
 		},
 	}
@@ -221,17 +251,25 @@ channels nor appears in the event history.`,
 
 // parseHeaderFlags turns repeated Name=Value flags into a map.
 func parseHeaderFlags(in []string) (map[string]string, error) {
+	// Header values can be credentials (Authorization, API keys): only the
+	// names are traced.
+	log := zap.L()
+	log.Debug("parseHeaderFlags: parsing headers", zap.Int("count", len(in)))
 	if len(in) == 0 {
+		log.Debug("parseHeaderFlags: no headers")
 		return nil, nil
 	}
 	out := make(map[string]string, len(in))
 	for _, h := range in {
 		name, value, ok := strings.Cut(h, "=")
 		if !ok || strings.TrimSpace(name) == "" {
+			log.Debug("parseHeaderFlags: header not in Name=Value form", zap.String("name", name), zap.Bool("has_separator", ok))
 			return nil, fmt.Errorf("header %q is not in Name=Value form", h)
 		}
+		log.Debug("parseHeaderFlags: header", zap.String("name", strings.TrimSpace(name)), zap.Bool("has_value", value != ""))
 		out[strings.TrimSpace(name)] = value
 	}
+	log.Debug("parseHeaderFlags: done", zap.Int("count", len(out)))
 	return out, nil
 }
 
@@ -241,21 +279,29 @@ func parseHeaderFlags(in []string) (map[string]string, error) {
 // secret at all, and DingTalk robots can be secured by a keyword or an IP
 // allowlist instead of by signing.
 func readOptionalNotifySecret(stdin io.Reader, secretFile string) (string, error) {
+	log := zap.L()
+	log.Debug("readOptionalNotifySecret: resolving secret source", zap.Bool("has_secret_file", secretFile != ""))
 	switch {
 	case secretFile == "-":
+		log.Debug("readOptionalNotifySecret: reading secret from stdin")
 		data, err := io.ReadAll(stdin)
 		if err != nil {
+			log.Debug("readOptionalNotifySecret: ReadAll failed", zap.Error(err))
 			return "", fmt.Errorf("read secret from stdin: %w", err)
 		}
 		return strings.TrimRight(string(data), "\r\n"), nil
 	case secretFile != "":
+		log.Debug("readOptionalNotifySecret: reading secret file", zap.String("path", secretFile))
 		data, err := os.ReadFile(secretFile)
 		if err != nil {
+			log.Debug("readOptionalNotifySecret: ReadFile failed", zap.String("path", secretFile), zap.Error(err))
 			return "", fmt.Errorf("read secret file: %w", err)
 		}
 		return strings.TrimRight(string(data), "\r\n"), nil
 	default:
-		return os.Getenv(notifySecretEnvVar), nil
+		secret := os.Getenv(notifySecretEnvVar)
+		log.Debug("readOptionalNotifySecret: secret from environment", zap.String("env", notifySecretEnvVar), zap.Bool("has_secret", secret != ""))
+		return secret, nil
 	}
 }
 

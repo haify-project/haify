@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 // haSelfCommand manages high availability of the controller itself: its
@@ -45,10 +46,15 @@ The current controller restarts under reactor management during the handoff,
 so this command's connection drops by design. Track progress with
 'haify ha self status' (against the VIP) or the handoff log on the node.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("haSelfEnable: running command", zap.Strings("args", args), zap.String("vip", vip), zap.String("pool", pool),
+				zap.Uint32("size_gb", sizeGB), zap.Uint32("port", port), zap.String("nodes", nodes))
 			if vip == "" {
+				log.Debug("haSelfEnable: returning early", zap.String("condition", "vip == \"\""))
 				return fmt.Errorf("--vip is required (CIDR, e.g. 192.168.1.50/24)")
 			}
 			if pool == "" {
+				log.Debug("haSelfEnable: returning early", zap.String("condition", "pool == \"\""))
 				return fmt.Errorf("--pool is required")
 			}
 
@@ -58,6 +64,7 @@ so this command's connection drops by design. Track progress with
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("haSelfEnable: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -65,10 +72,14 @@ so this command's connection drops by design. Track progress with
 			var nodeList []string
 			if nodes != "" {
 				nodeList = strings.Split(nodes, ",")
+				log.Debug("haSelfEnable: limiting to nodes", zap.Strings("nodes", nodeList))
+			} else {
+				log.Debug("haSelfEnable: no --nodes, using every registered node")
 			}
 
 			resource, handoffLog, err := haifyClient.EnableSelfHa(ctx, vip, pool, sizeGB, port, nodeList)
 			if err != nil {
+				log.Debug("haSelfEnable: EnableSelfHa failed", zap.Error(err))
 				return fmt.Errorf("failed to enable self-HA: %w", err)
 			}
 
@@ -80,6 +91,7 @@ so this command's connection drops by design. Track progress with
 			vipAddr := strings.Split(vip, "/")[0]
 			fmt.Printf("Verify with:  haify -c %s:3374 ha self status\n", vipAddr)
 
+			log.Debug("haSelfEnable: done", zap.String("resource", resource), zap.String("handoff_log", handoffLog))
 			return nil
 		},
 	}
@@ -98,25 +110,32 @@ func haSelfStatus() *cobra.Command {
 		Use:   "status",
 		Short: "Show controller self-HA status",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("haSelfStatus: running command", zap.Strings("args", args))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("haSelfStatus: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			status, err := haifyClient.GetSelfHaStatus(ctx)
 			if err != nil {
+				log.Debug("haSelfStatus: GetSelfHaStatus failed", zap.Error(err))
 				return fmt.Errorf("failed to get self-HA status: %w", err)
 			}
 
 			if !status.Enabled {
+				log.Debug("haSelfStatus: returning early", zap.String("condition", "!status.Enabled"))
 				fmt.Println("Controller self-HA: disabled (standalone controller)")
 				return nil
 			}
 
+			log.Debug("haSelfStatus: self-HA enabled", zap.String("resource", status.Resource), zap.String("vip", status.VIP),
+				zap.Strings("nodes", status.Nodes), zap.String("active_node", status.ActiveNode))
 			fmt.Println("Controller self-HA: enabled")
 			fmt.Printf("  Resource:    %s\n", status.Resource)
 			fmt.Printf("  VIP:         %s\n", status.VIP)
@@ -128,6 +147,7 @@ func haSelfStatus() *cobra.Command {
 			}
 			fmt.Printf("\nDetails: haify ha status %s\n", status.Resource)
 
+			log.Debug("haSelfStatus: done")
 			return nil
 		},
 	}
@@ -147,7 +167,10 @@ removed afterwards with 'haify resource delete haify-meta'.
 The managed controller stops during this operation, so this command's
 connection drops by design.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("haSelfDisable: running command", zap.Strings("args", args), zap.String("node", node))
 			if node == "" {
+				log.Debug("haSelfDisable: returning early", zap.String("condition", "node == \"\""))
 				return fmt.Errorf("--node is required (the node that keeps running the controller)")
 			}
 
@@ -156,11 +179,13 @@ connection drops by design.`,
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("haSelfDisable: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			if err := haifyClient.DisableSelfHa(ctx, node); err != nil {
+				log.Debug("haSelfDisable: DisableSelfHa failed", zap.Error(err))
 				return fmt.Errorf("failed to disable self-HA: %w", err)
 			}
 
@@ -168,6 +193,7 @@ connection drops by design.`,
 			fmt.Printf("  Controller will restart standalone on: %s\n", node)
 			fmt.Printf("\nVerify with:  haify -c %s:3374 ha self status\n", node)
 
+			log.Debug("haSelfDisable: done")
 			return nil
 		},
 	}

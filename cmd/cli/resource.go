@@ -8,6 +8,7 @@ import (
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/client"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -82,17 +83,22 @@ func resourceRepair() *cobra.Command {
 			"cluster with a tiebreaker before this was fixed are in that state.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceRepair: running command", zap.Strings("args", args))
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceRepair: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 			if err := haifyClient.RepairResource(ctx, args[0]); err != nil {
+				log.Debug("resourceRepair: RepairResource failed", zap.Error(err))
 				return fmt.Errorf("failed to repair %s: %w", args[0], err)
 			}
 			fmt.Printf("Config for '%s' reconciled on every node and adjusted\n", args[0])
+			log.Debug("resourceRepair: done")
 			return nil
 		},
 	}
@@ -109,20 +115,27 @@ func resourceSetOptions() *cobra.Command {
 			"a bare key goes to the resource-level options section.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			// Option values are not traced: net/shared-secret is one of them.
+			log.Debug("resourceSetOptions: running command", zap.Strings("args", args), zap.Int("options", len(options)))
 			if len(options) == 0 {
+				log.Debug("resourceSetOptions: no --drbd-options given")
 				return fmt.Errorf("at least one --drbd-options key=value is required")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceSetOptions: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 			if err := haifyClient.UpdateResourceOptions(ctx, args[0], options); err != nil {
+				log.Debug("resourceSetOptions: UpdateResourceOptions failed", zap.Error(err))
 				return fmt.Errorf("failed to update options: %w", err)
 			}
 			fmt.Printf("Options applied to '%s' and adjusted: %v\n", args[0], options)
+			log.Debug("resourceSetOptions: done")
 			return nil
 		},
 	}
@@ -137,6 +150,8 @@ func resourceGet() *cobra.Command {
 		Short: "Get resource details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceGet: running command", zap.Strings("args", args))
 			name := args[0]
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -144,15 +159,21 @@ func resourceGet() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceGet: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			resource, err := haifyClient.GetResource(ctx, name)
 			if err != nil {
+				log.Debug("resourceGet: GetResource failed", zap.Error(err))
 				return fmt.Errorf("failed to get resource: %w", err)
 			}
 
+			log.Debug("resourceGet: resource", zap.String("resource", resource.Name), zap.Uint32("port", resource.Port),
+				zap.Strings("nodes", resource.Nodes), zap.Strings("tiebreakers", resource.DisklessNodes),
+				zap.Strings("diskless_clients", resource.DisklessClients), zap.Int("volumes", len(resource.Volumes)),
+				zap.Bool("encrypted", resource.Encrypted), zap.Bool("quorum_risk", resource.QuorumRisk))
 			fmt.Printf("Resource: %s\n", resource.Name)
 			fmt.Printf("  Port:     %d\n", resource.Port)
 			fmt.Printf("  Protocol: %s\n", resource.Protocol)
@@ -171,6 +192,7 @@ func resourceGet() *cobra.Command {
 						diskState = fmt.Sprintf(", disk: %s", ns.DiskState)
 					}
 				}
+				log.Debug("resourceGet: node", zap.String("node", node), zap.String("role", state), zap.String("disk_state", diskState))
 				fmt.Printf("    %s: %s%s\n", node, state, diskState)
 			}
 			for _, node := range resource.DisklessNodes {
@@ -189,6 +211,7 @@ func resourceGet() *cobra.Command {
 				}
 			}
 
+			log.Debug("resourceGet: done")
 			return nil
 		},
 	}
@@ -202,6 +225,8 @@ func resourceDelete() *cobra.Command {
 		Short: "Delete a resource",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceDelete: running command", zap.Strings("args", args))
 			name := args[0]
 
 			ctx, cancel := context.WithTimeout(context.Background(), nodeOpTimeout)
@@ -209,16 +234,19 @@ func resourceDelete() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceDelete: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			err = haifyClient.DeleteResource(ctx, name)
 			if err != nil {
+				log.Debug("resourceDelete: DeleteResource failed", zap.Error(err))
 				return fmt.Errorf("failed to delete resource: %w", err)
 			}
 
 			fmt.Printf("Resource '%s' deleted successfully\n", name)
+			log.Debug("resourceDelete: done")
 			return nil
 		},
 	}
@@ -232,31 +260,40 @@ func resourceList() *cobra.Command {
 		Use:   "list",
 		Short: "List all resources",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceList: running command", zap.Strings("args", args), zap.String("profile", profile))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceList: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			var resources []*haifypb.ResourceInfo
 			if profile != "" {
+				log.Debug("resourceList: listing the profile's members", zap.String("profile", profile))
 				resources, err = haifyClient.ListProfileMembers(ctx, profile)
 			} else {
+				log.Debug("resourceList: listing every resource")
 				resources, err = haifyClient.ListResources(ctx)
 			}
 			if err != nil {
+				log.Debug("resourceList: listing failed", zap.Error(err))
 				return fmt.Errorf("failed to list resources: %w", err)
 			}
 
 			if len(resources) == 0 {
+				log.Debug("resourceList: no resources")
 				fmt.Println("No resources found")
 				return nil
 			}
 
 			for _, r := range resources {
+				log.Debug("resourceList: resource", zap.String("resource", r.Name), zap.Strings("nodes", r.Nodes),
+					zap.Bool("quorum_risk", r.QuorumRisk), zap.String("fault_domain_risk", r.FaultDomainRisk))
 				line := fmt.Sprintf("%s (port=%d, protocol=%s, nodes=%v)", r.Name, r.Port, r.Protocol, r.Nodes)
 				line += fmt.Sprintf(" profile=%s labels=%s", displayValue(r.Profile), formatLabels(r.Labels))
 				if len(r.DisklessNodes) > 0 {
@@ -274,6 +311,7 @@ func resourceList() *cobra.Command {
 				fmt.Println(line)
 			}
 
+			log.Debug("resourceList: done", zap.Int("count", len(resources)))
 			return nil
 		},
 	}
@@ -286,13 +324,19 @@ func resourceList() *cobra.Command {
 // need request fields pkg/client does not expose. It must honour the same
 // token and TLS settings as newHaifyClient.
 func newResourceGRPCClient() (haifypb.HaifyControllerClient, *grpc.ClientConn, error) {
+	log := zap.L()
+	log.Debug("newResourceGRPCClient: dialing controller", zap.String("controller", controllerAddr))
 	transport := insecure.NewCredentials()
 	if tlsOpts := client.ResolveTLS(tlsFlags); tlsOpts.Active() {
+		log.Debug("newResourceGRPCClient: TLS active", zap.String("ca_cert", tlsOpts.CACert), zap.String("server_name", tlsOpts.ServerName), zap.Bool("insecure", tlsOpts.Insecure))
 		creds, err := tlsOpts.Credentials()
 		if err != nil {
+			log.Debug("newResourceGRPCClient: Credentials failed", zap.Error(err))
 			return nil, nil, err
 		}
 		transport = creds
+	} else {
+		log.Debug("newResourceGRPCClient: TLS not active, plaintext")
 	}
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(transport),
@@ -300,6 +344,7 @@ func newResourceGRPCClient() (haifypb.HaifyControllerClient, *grpc.ClientConn, e
 		grpc.WithChainStreamInterceptor(client.TraceStreamInterceptor()),
 	}
 	if token := client.ResolveToken(tokenFlag); token != "" {
+		log.Debug("newResourceGRPCClient: sending a bearer token")
 		dialOpts = append(dialOpts, grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 			ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 			return invoker(ctx, method, req, reply, cc, opts...)
@@ -307,8 +352,10 @@ func newResourceGRPCClient() (haifypb.HaifyControllerClient, *grpc.ClientConn, e
 	}
 	conn, err := grpc.NewClient(controllerAddr, dialOpts...)
 	if err != nil {
+		log.Debug("newResourceGRPCClient: NewClient failed", zap.Error(err))
 		return nil, nil, err
 	}
+	log.Debug("newResourceGRPCClient: client ready", zap.String("controller", controllerAddr))
 	return haifypb.NewHaifyControllerClient(conn), conn, nil
 }
 

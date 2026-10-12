@@ -7,6 +7,7 @@ import (
 
 	v1 "github.com/haify-project/haify/api/proto/v1"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func gatewayNVMe() *cobra.Command {
@@ -30,21 +31,27 @@ func nvmeCreate() *cobra.Command {
 		Use:   "create --resource <name> --nqn <nqn> --service-ip <ip/cidr>",
 		Short: "Create NVMe-oF gateway",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("nvmeCreate: running command", zap.Strings("args", args), zap.String("resource", resource), zap.String("nqn", nqn), zap.String("service_ip", serviceIP), zap.String("transport_type", transportType))
 			ctx := cmd.Context()
 
 			if resource == "" {
+				log.Debug("nvmeCreate: returning early", zap.String("condition", "resource == \"\""))
 				return fmt.Errorf("--resource is required")
 			}
 			if nqn == "" {
+				log.Debug("nvmeCreate: returning early", zap.String("condition", "nqn == \"\""))
 				return fmt.Errorf("--nqn is required")
 			}
 			if serviceIP == "" {
+				log.Debug("nvmeCreate: returning early", zap.String("condition", "serviceIP == \"\""))
 				return fmt.Errorf("--service-ip is required")
 			}
 
 			// Create Haify client
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("nvmeCreate: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -58,15 +65,18 @@ func nvmeCreate() *cobra.Command {
 			}
 
 			if req.TransportType == "" {
+				log.Debug("nvmeCreate: no transport given, using tcp")
 				req.TransportType = "tcp"
 			}
 
 			resp, err := haifyClient.CreateNVMeGateway(ctx, req)
 			if err != nil {
+				log.Debug("nvmeCreate: CreateNVMeGateway failed", zap.Error(err))
 				return fmt.Errorf("failed to create NVMe-oF gateway: %w", err)
 			}
 
 			if !resp.Success {
+				log.Debug("nvmeCreate: controller reported failure", zap.String("message", resp.Message))
 				return fmt.Errorf("failed to create NVMe-oF gateway: %s", resp.Message)
 			}
 
@@ -77,6 +87,7 @@ func nvmeCreate() *cobra.Command {
 			fmt.Printf("  Config Path:  %s\n", resp.ConfigPath)
 			fmt.Printf("\nCheck gateway status: haify gateway list\n")
 
+			log.Debug("nvmeCreate: done", zap.String("resource", resource), zap.String("config_path", resp.ConfigPath))
 			return nil
 		},
 	}
@@ -98,16 +109,20 @@ func nvmeList() *cobra.Command {
 		Use:   "list",
 		Short: "List NVMe-oF gateways",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("nvmeList: running command", zap.Strings("args", args))
 			ctx := cmd.Context()
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("nvmeList: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			gateways, err := haifyClient.ListGateways(ctx)
 			if err != nil {
+				log.Debug("nvmeList: ListGateways failed", zap.Error(err))
 				return fmt.Errorf("failed to list gateways: %w", err)
 			}
 
@@ -118,8 +133,10 @@ func nvmeList() *cobra.Command {
 					nvmeGateways = append(nvmeGateways, gw)
 				}
 			}
+			log.Debug("nvmeList: filtered NVMe-oF gateways", zap.Int("total", len(gateways)), zap.Int("nvmeof", len(nvmeGateways)))
 
 			if len(nvmeGateways) == 0 {
+				log.Debug("nvmeList: returning early", zap.String("condition", "len(nvmeGateways) == 0"))
 				fmt.Println("No NVMe-oF gateways configured")
 				return nil
 			}
@@ -134,6 +151,7 @@ func nvmeList() *cobra.Command {
 
 			_ = w.Flush()
 
+			log.Debug("nvmeList: done")
 			return nil
 		},
 	}

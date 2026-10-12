@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
@@ -21,8 +22,11 @@ an HA config, gateway, snapshot schedule, backups, snapshots, WAN replication
 or encryption refer to the old name.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceRenameCommand: running command", zap.Strings("args", args))
 			c, conn, err := newResourceGRPCClient()
 			if err != nil {
+				log.Debug("resourceRenameCommand: newResourceGRPCClient failed", zap.Error(err))
 				return err
 			}
 			defer func() { _ = conn.Close() }()
@@ -30,12 +34,15 @@ or encryption refer to the old name.`,
 			defer cancel()
 			r, err := c.RenameResource(ctx, &haifypb.RenameResourceRequest{Name: args[0], NewName: args[1]})
 			if err != nil {
+				log.Debug("resourceRenameCommand: RenameResource failed", zap.Error(err))
 				return err
 			}
 			if !r.Success {
+				log.Debug("resourceRenameCommand: controller reported failure", zap.String("message", r.Message))
 				return fmt.Errorf("%s", r.Message)
 			}
 			fmt.Println(r.Message)
+			log.Debug("resourceRenameCommand: done", zap.String("resource", args[0]), zap.String("new_name", args[1]))
 			return nil
 		},
 	}

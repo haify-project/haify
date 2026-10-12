@@ -7,6 +7,7 @@ import (
 
 	"github.com/haify-project/haify/pkg/util"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 // poolAddCache puts an SSD in front of one node's pool with lvmcache.
@@ -46,7 +47,11 @@ the pool already has a cache.
 
   haify pool add-cache --node node1 --pool pool0 --device /dev/nvme0n1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("poolAddCache: running command", zap.Strings("args", args), zap.String("node", node), zap.String("pool", pool),
+				zap.String("device", device), zap.String("mode", mode))
 			if node == "" || pool == "" || device == "" {
+				log.Debug("poolAddCache: --node, --pool or --device missing")
 				return fmt.Errorf("--node, --pool and --device are all required")
 			}
 
@@ -57,21 +62,26 @@ the pool already has a cache.
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("poolAddCache: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			applied, size, err := haifyClient.AddPoolCache(ctx, node, pool, device, mode)
 			if err != nil {
+				log.Debug("poolAddCache: AddPoolCache failed", zap.Error(err))
 				return fmt.Errorf("failed to add cache: %w", err)
 			}
 
+			log.Debug("poolAddCache: cache attached", zap.String("node", node), zap.String("pool", pool), zap.String("mode", applied), zap.Uint64("size_bytes", size))
 			fmt.Printf("Cache attached to %s on %s: %s of %s, %s mode.\n",
 				pool, node, util.FormatBytes(size), device, applied)
 			if applied == "writeback" {
+				log.Debug("poolAddCache: writeback mode, printing the data-loss warning")
 				fmt.Printf("Writes are acknowledged from %s before they reach the slow disk.\n", device)
 				fmt.Printf("If that device is lost, its undestaged writes are gone unless a replica has them.\n")
 			}
+			log.Debug("poolAddCache: done")
 			return nil
 		},
 	}
@@ -106,7 +116,10 @@ lvconvert --uncache --force needed to accept that loss deliberately.
 
   haify pool remove-cache --node node1 --pool pool0`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("poolRemoveCache: running command", zap.Strings("args", args), zap.String("node", node), zap.String("pool", pool))
 			if node == "" || pool == "" {
+				log.Debug("poolRemoveCache: --node or --pool missing")
 				return fmt.Errorf("--node and --pool are both required")
 			}
 
@@ -117,15 +130,18 @@ lvconvert --uncache --force needed to accept that loss deliberately.
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("poolRemoveCache: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			if err := haifyClient.RemovePoolCache(ctx, node, pool); err != nil {
+				log.Debug("poolRemoveCache: RemovePoolCache failed", zap.Error(err))
 				return fmt.Errorf("failed to remove cache: %w", err)
 			}
 
 			fmt.Printf("Cache on %s on %s flushed, detached, and its device released.\n", pool, node)
+			log.Debug("poolRemoveCache: done")
 			return nil
 		},
 	}

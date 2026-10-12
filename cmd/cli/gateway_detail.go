@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 func gatewayGet() *cobra.Command {
@@ -15,21 +16,28 @@ func gatewayGet() *cobra.Command {
 		Use:   "get --resource <name>",
 		Short: "Get gateway details",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("gatewayGet: running command", zap.Strings("args", args), zap.String("resource", resource))
 			if resource == "" {
+				log.Debug("gatewayGet: returning early", zap.String("condition", "resource == \"\""))
 				return fmt.Errorf("--resource is required")
 			}
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("gatewayGet: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			gw, err := haifyClient.GetGateway(cmd.Context(), resource)
 			if err != nil {
+				log.Debug("gatewayGet: GetGateway failed", zap.Error(err))
 				return fmt.Errorf("failed to get gateway: %w", err)
 			}
 
+			log.Debug("gatewayGet: gateway", zap.String("resource", gw.Resource), zap.String("type", gw.Type),
+				zap.String("state", gw.State), zap.String("node", gw.Node), zap.Int("options", len(gw.Options)))
 			fmt.Printf("Resource: %s\n", gw.Resource)
 			fmt.Printf("Type:     %s\n", gw.Type)
 			fmt.Printf("State:    %s\n", emptyGatewayValue(gw.State, "unknown"))
@@ -44,6 +52,7 @@ func gatewayGet() *cobra.Command {
 				}
 			}
 
+			log.Debug("gatewayGet: done")
 			return nil
 		},
 	}
@@ -61,21 +70,28 @@ func gatewayStatus() *cobra.Command {
 		Use:   "status --resource <name>",
 		Short: "Show gateway status",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("gatewayStatus: running command", zap.Strings("args", args), zap.String("resource", resource))
 			if resource == "" {
+				log.Debug("gatewayStatus: returning early", zap.String("condition", "resource == \"\""))
 				return fmt.Errorf("--resource is required")
 			}
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("gatewayStatus: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
 
 			gw, err := haifyClient.GetGateway(cmd.Context(), resource)
 			if err != nil {
+				log.Debug("gatewayStatus: GetGateway failed", zap.Error(err))
 				return fmt.Errorf("failed to get gateway status: %w", err)
 			}
 
+			log.Debug("gatewayStatus: gateway", zap.String("resource", gw.Resource), zap.String("type", gw.Type),
+				zap.String("state", gw.State), zap.String("node", gw.Node), zap.String("role", gw.Options["role"]))
 			fmt.Printf("%s %s\n", strings.ToUpper(gw.Type), gw.Resource)
 			fmt.Printf("  state: %s\n", emptyGatewayValue(gw.State, "unknown"))
 			fmt.Printf("  node:  %s\n", emptyGatewayValue(gw.Node, "-"))
@@ -89,6 +105,7 @@ func gatewayStatus() *cobra.Command {
 				fmt.Printf("  path:  %s\n", path)
 			}
 
+			log.Debug("gatewayStatus: done")
 			return nil
 		},
 	}

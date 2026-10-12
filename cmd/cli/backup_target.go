@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
@@ -75,14 +76,23 @@ Examples:
       --endpoint https://s3.example.com --user AKIAEXAMPLE \
       --lock-mode compliance --lock-days 30`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupTargetAddCommand: running command", zap.Strings("args", args), zap.String("name", name),
+				zap.String("kind", kind), zap.String("prefix", prefix), zap.String("bucket", bucket), zap.String("endpoint", endpoint),
+				zap.String("region", region), zap.String("host", host), zap.String("share", share), zap.Bool("has_user", user != ""),
+				zap.Bool("has_secret_file", secretFile != ""), zap.Bool("secret_obscured", secretObscured),
+				zap.String("lock_mode", lockMode), zap.Uint32("lock_days", lockDays), zap.Uint32("full_every_days", fullEveryDays))
 			if name == "" {
+				log.Debug("backupTargetAddCommand: --name missing")
 				return fmt.Errorf("--name is required")
 			}
 			if kind == "" {
+				log.Debug("backupTargetAddCommand: --kind missing")
 				return fmt.Errorf("--kind is required (s3, smb or webdav)")
 			}
 			secret, err := readBackupSecret(cmd.InOrStdin(), secretFile)
 			if err != nil {
+				log.Debug("backupTargetAddCommand: readBackupSecret failed", zap.Error(err))
 				return err
 			}
 
@@ -90,6 +100,7 @@ Examples:
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupTargetAddCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
@@ -101,6 +112,7 @@ Examples:
 				User: user, Secret: secret, SecretObscured: secretObscured,
 				LockMode: lockMode, LockDays: lockDays, FullEveryDays: fullEveryDays,
 			}); err != nil {
+				log.Debug("backupTargetAddCommand: AddBackupTarget failed", zap.Error(err))
 				return fmt.Errorf("failed to add backup target: %w", err)
 			}
 			// Writes to the command's own output stream are best-effort. The only ways
@@ -108,6 +120,7 @@ Examples:
 			// which this command can report anywhere the operator is still looking, and
 			// treating them as errors would report a successful operation as failed.
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backup target %q saved\n", name)
+			log.Debug("backupTargetAddCommand: done")
 			return nil
 		},
 	}
@@ -137,29 +150,36 @@ func backupTargetListCommand() *cobra.Command {
 		Use:   "list",
 		Short: "List backup targets (secrets are never shown)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupTargetListCommand: running command", zap.Strings("args", args))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupTargetListCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 
 			targets, err := c.ListBackupTargets(ctx)
 			if err != nil {
+				log.Debug("backupTargetListCommand: ListBackupTargets failed", zap.Error(err))
 				return fmt.Errorf("failed to list backup targets: %w", err)
 			}
 			out := cmd.OutOrStdout()
 			if len(targets) == 0 {
+				log.Debug("backupTargetListCommand: no targets")
 				_, _ = fmt.Fprintln(out, "No backup targets configured")
 				return nil
 			}
 			for _, t := range targets {
+				log.Debug("backupTargetListCommand: target", zap.String("name", t.Name), zap.Bool("has_user", t.User != ""))
 				_, _ = fmt.Fprintf(out, "%s\n  %s\n", t.Name, t.Description)
 				if t.User != "" {
 					_, _ = fmt.Fprintf(out, "  user: %s\n", t.User)
 				}
 			}
+			log.Debug("backupTargetListCommand: done", zap.Int("count", len(targets)))
 			return nil
 		},
 	}
@@ -177,18 +197,23 @@ ability to restore those backups or even to delete their objects. --force drops
 it anyway, for a target whose storage is already gone.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("backupTargetDeleteCommand: running command", zap.Strings("args", args), zap.Bool("force", force))
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			c, err := newHaifyClient()
 			if err != nil {
+				log.Debug("backupTargetDeleteCommand: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(c)
 
 			if err := c.DeleteBackupTarget(ctx, args[0], force); err != nil {
+				log.Debug("backupTargetDeleteCommand: DeleteBackupTarget failed", zap.Error(err))
 				return fmt.Errorf("failed to delete backup target: %w", err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Backup target %q deleted\n", args[0])
+			log.Debug("backupTargetDeleteCommand: done")
 			return nil
 		},
 	}
@@ -201,26 +226,36 @@ it anyway, for a target whose storage is already gone.`,
 // heredocs both add one, and a secret with a stray newline fails to
 // authenticate in a way that looks like a wrong password.
 func readBackupSecret(stdin io.Reader, secretFile string) (string, error) {
+	log := zap.L()
+	log.Debug("readBackupSecret: resolving secret source", zap.Bool("has_secret_file", secretFile != ""))
 	switch {
 	case secretFile == "-":
+		log.Debug("readBackupSecret: reading secret from stdin")
 		data, err := io.ReadAll(stdin)
 		if err != nil {
+			log.Debug("readBackupSecret: ReadAll failed", zap.Error(err))
 			return "", fmt.Errorf("read secret from stdin: %w", err)
 		}
+		log.Debug("readBackupSecret: secret read from stdin", zap.Bool("has_secret", len(strings.TrimRight(string(data), "\r\n")) > 0))
 		return strings.TrimRight(string(data), "\r\n"), nil
 	case secretFile != "":
+		log.Debug("readBackupSecret: reading secret file", zap.String("path", secretFile))
 		data, err := os.ReadFile(secretFile)
 		if err != nil {
+			log.Debug("readBackupSecret: ReadFile failed", zap.String("path", secretFile), zap.Error(err))
 			return "", fmt.Errorf("read secret file: %w", err)
 		}
+		log.Debug("readBackupSecret: secret file read", zap.String("path", secretFile), zap.Int("bytes", len(data)))
 		return strings.TrimRight(string(data), "\r\n"), nil
 	default:
 		secret := os.Getenv(secretEnvVar)
 		if secret == "" {
+			log.Debug("readBackupSecret: no secret in environment", zap.String("env", secretEnvVar))
 			return "", fmt.Errorf(
 				"no secret supplied: set %s, or pass --secret-file (\"-\" reads stdin). "+
 					"There is no --secret-key flag on purpose: it would land in your shell history", secretEnvVar)
 		}
+		log.Debug("readBackupSecret: using secret from environment", zap.String("env", secretEnvVar))
 		return secret, nil
 	}
 }

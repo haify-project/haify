@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 )
 
 // resourceSnapshot manages snapshots for DRBD resources
@@ -27,172 +27,6 @@ func resourceSnapshot() *cobra.Command {
 	return cmd
 }
 
-// resourceSnapshotSchedule manages cron-driven snapshot schedules with GFS retention.
-func resourceSnapshotSchedule() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "schedule",
-		Short: "Scheduled snapshots with GFS retention",
-	}
-	cmd.AddCommand(resourceSnapshotScheduleCreate())
-	cmd.AddCommand(resourceSnapshotScheduleList())
-	cmd.AddCommand(resourceSnapshotScheduleDelete())
-	cmd.AddCommand(resourceSnapshotScheduleFreeze(), resourceSnapshotScheduleUnfreeze())
-	return cmd
-}
-
-func resourceSnapshotScheduleCreate() *cobra.Command {
-	var resource, cronExpr string
-	var hourly, daily, weekly, monthly, yearly int
-	var disabled bool
-	var lockDays uint32
-
-	cmd := &cobra.Command{
-		Use:   "create",
-		Short: "Create or replace a snapshot schedule for a resource",
-		Long: `Create or replace a snapshot schedule for a resource.
-
---lock-days N locks every snapshot the schedule takes for N days: retention, a
-full thin pool and API deletes all leave it alone until then, and the schedule
-and resource cannot be deleted, nor the lock lowered, while any is locked. It is
-what keeps the clean snapshots from before a volume was encrypted: a pool
-filling fast used to give up its oldest snapshots first. Size the pool for N
-days of change; a pool that fills with locked snapshots raises a critical
-pool.snapshots_locked event. Root on a storage node can still remove them —
-for that, back up to a locked S3 target. Without the flag a replaced schedule
-keeps its lock.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if resource == "" {
-				return fmt.Errorf("--resource is required")
-			}
-			if cronExpr == "" {
-				return fmt.Errorf("--cron is required (standard 5-field cron, e.g. \"0 * * * *\")")
-			}
-
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			haifyClient, err := newHaifyClient()
-			if err != nil {
-				return fmt.Errorf("failed to connect to controller: %w", err)
-			}
-			defer closeClient(haifyClient)
-
-			keep := &haifypb.GFSRetention{
-				Hourly:  int32(hourly),
-				Daily:   int32(daily),
-				Weekly:  int32(weekly),
-				Monthly: int32(monthly),
-				Yearly:  int32(yearly),
-			}
-			var lock *uint32
-			if cmd.Flags().Changed("lock-days") {
-				lock = &lockDays
-			}
-			if err := haifyClient.CreateSnapshotScheduleLocked(ctx, resource, cronExpr, keep, !disabled, lock); err != nil {
-				return fmt.Errorf("failed to create snapshot schedule: %w", err)
-			}
-			fmt.Printf("Snapshot schedule for %q created (cron=%q)\n", resource, cronExpr)
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&resource, "resource", "", "Target resource (required)")
-	cmd.Flags().StringVar(&cronExpr, "cron", "", "Standard 5-field cron expression (required)")
-	cmd.Flags().IntVar(&hourly, "keep-hourly", 0, "Hourly snapshots to retain")
-	cmd.Flags().IntVar(&daily, "keep-daily", 0, "Daily snapshots to retain")
-	cmd.Flags().IntVar(&weekly, "keep-weekly", 0, "Weekly snapshots to retain")
-	cmd.Flags().IntVar(&monthly, "keep-monthly", 0, "Monthly snapshots to retain")
-	cmd.Flags().IntVar(&yearly, "keep-yearly", 0, "Yearly snapshots to retain")
-	cmd.Flags().BoolVar(&disabled, "disabled", false, "Create the schedule disabled")
-	cmd.Flags().Uint32Var(&lockDays, "lock-days", 0, "Lock every snapshot the schedule takes for this many days (see above)")
-	return cmd
-}
-
-func resourceSnapshotScheduleList() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List snapshot schedules",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			haifyClient, err := newHaifyClient()
-			if err != nil {
-				return fmt.Errorf("failed to connect to controller: %w", err)
-			}
-			defer closeClient(haifyClient)
-
-			schedules, err := haifyClient.ListSnapshotSchedules(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to list snapshot schedules: %w", err)
-			}
-			if len(schedules) == 0 {
-				fmt.Println("No snapshot schedules found")
-				return nil
-			}
-			for _, s := range schedules {
-				state := "enabled"
-				if !s.Enabled {
-					state = "disabled"
-				}
-				k := s.Keep
-				fmt.Printf("%s (resource=%s, cron=%q, %s)\n", s.Name, s.Resource, s.Cron, state)
-				fmt.Printf("  keep: hourly=%d daily=%d weekly=%d monthly=%d yearly=%d\n",
-					k.GetHourly(), k.GetDaily(), k.GetWeekly(), k.GetMonthly(), k.GetYearly())
-				if s.LastRun != "" {
-					fmt.Printf("  last run: %s\n", s.LastRun)
-				}
-				if s.NextRun != "" {
-					fmt.Printf("  next run: %s\n", s.NextRun)
-				}
-				if s.LockDays > 0 {
-					fmt.Printf("  snapshots locked for %d days", s.LockDays)
-					if s.LockedUntil != "" {
-						fmt.Printf("; newest locked until %s", s.LockedUntil)
-					}
-					fmt.Println()
-				}
-				if s.FrozenUntil != "" {
-					fmt.Printf("  FROZEN until %s (%s): nothing is pruned or deleted\n", s.FrozenUntil, s.FrozenReason)
-				}
-			}
-			return nil
-		},
-	}
-	return cmd
-}
-
-func resourceSnapshotScheduleDelete() *cobra.Command {
-	var name, resourceFlag string
-	cmd := &cobra.Command{
-		Use:   "delete",
-		Short: "Delete a snapshot schedule (existing snapshots are kept)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if name == "" {
-				name = resourceFlag
-			}
-			if name == "" {
-				return fmt.Errorf("--resource is required")
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			haifyClient, err := newHaifyClient()
-			if err != nil {
-				return fmt.Errorf("failed to connect to controller: %w", err)
-			}
-			defer closeClient(haifyClient)
-
-			if err := haifyClient.DeleteSnapshotSchedule(ctx, name); err != nil {
-				return fmt.Errorf("failed to delete snapshot schedule: %w", err)
-			}
-			fmt.Printf("Snapshot schedule %q deleted\n", name)
-			return nil
-		},
-	}
-	// --resource matches schedule create; --name is the older spelling.
-	cmd.Flags().StringVar(&resourceFlag, "resource", "", "Resource whose schedule to delete (required)")
-	cmd.Flags().StringVar(&name, "name", "", "Same as --resource")
-	_ = cmd.Flags().MarkHidden("name")
-	return cmd
-}
-
 func resourceSnapshotDelete() *cobra.Command {
 	var resource string
 	var snapshotName string
@@ -204,15 +38,22 @@ func resourceSnapshotDelete() *cobra.Command {
 		Use:   "delete",
 		Short: "Delete a snapshot",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceSnapshotDelete: running command", zap.Strings("args", args), zap.String("resource", resource),
+				zap.String("snapshot", snapshotName), zap.String("node", node), zap.String("storage_type", storageType), zap.String("pool", pool))
 			if resource == "" {
+				log.Debug("resourceSnapshotDelete: --resource missing")
 				return fmt.Errorf("resource name is required")
 			}
 			if snapshotName == "" {
+				log.Debug("resourceSnapshotDelete: --name missing")
 				return fmt.Errorf("snapshot name is required")
 			}
 			if pool == "" || node == "" {
+				log.Debug("resourceSnapshotDelete: pool or node not given, asking the resource")
 				var err error
 				if pool, node, err = snapshotTarget(resource, pool, node); err != nil {
+					log.Debug("resourceSnapshotDelete: snapshotTarget failed", zap.Error(err))
 					return err
 				}
 			}
@@ -222,6 +63,7 @@ func resourceSnapshotDelete() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceSnapshotDelete: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -234,21 +76,26 @@ func resourceSnapshotDelete() *cobra.Command {
 				// pkg/deployment/deployment.go ZFSDestroySnapshot: "sudo zfs destroy %s"
 				// So it needs FULL path.
 				snapshotPath := fmt.Sprintf("%s/%s_data@%s", pool, resource, snapshotName)
+				log.Debug("resourceSnapshotDelete: deleting ZFS snapshot", zap.String("snapshot", snapshotPath), zap.String("node", node))
 				err = haifyClient.DeleteZFSSnapshot(ctx, snapshotPath, node)
 				if err != nil {
+					log.Debug("resourceSnapshotDelete: DeleteZFSSnapshot failed", zap.Error(err))
 					return fmt.Errorf("failed to delete ZFS snapshot: %w", err)
 				}
 				fmt.Printf("ZFS snapshot '%s' deleted on node '%s'\n", snapshotName, node)
 			} else {
 				// LVM snapshot
 				// Pass pool as VG name
+				log.Debug("resourceSnapshotDelete: deleting LVM snapshot", zap.String("pool", pool), zap.String("snapshot", snapshotName), zap.String("node", node))
 				err = haifyClient.DeleteLvmSnapshot(ctx, pool, snapshotName, node)
 				if err != nil {
+					log.Debug("resourceSnapshotDelete: DeleteLvmSnapshot failed", zap.Error(err))
 					return fmt.Errorf("failed to delete LVM snapshot: %w", err)
 				}
 				fmt.Printf("LVM snapshot '%s' deleted on node '%s'\n", snapshotName, node)
 			}
 
+			log.Debug("resourceSnapshotDelete: done")
 			return nil
 		},
 	}
@@ -277,15 +124,23 @@ func resourceSnapshotCreate() *cobra.Command {
 		Use:   "create",
 		Short: "Create a snapshot of DRBD resource",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceSnapshotCreate: running command", zap.Strings("args", args), zap.String("resource", resource),
+				zap.String("snapshot", snapshotName), zap.String("node", node), zap.String("size", size),
+				zap.String("storage_type", storageType), zap.String("pool", pool))
 			if resource == "" {
+				log.Debug("resourceSnapshotCreate: --resource missing")
 				return fmt.Errorf("resource name is required")
 			}
 			if snapshotName == "" {
+				log.Debug("resourceSnapshotCreate: --name missing")
 				return fmt.Errorf("snapshot name is required")
 			}
 			if pool == "" || node == "" {
+				log.Debug("resourceSnapshotCreate: pool or node not given, asking the resource")
 				var err error
 				if pool, node, err = snapshotTarget(resource, pool, node); err != nil {
+					log.Debug("resourceSnapshotCreate: snapshotTarget failed", zap.Error(err))
 					return err
 				}
 			}
@@ -295,6 +150,7 @@ func resourceSnapshotCreate() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceSnapshotCreate: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -302,25 +158,32 @@ func resourceSnapshotCreate() *cobra.Command {
 			if storageType == "zfs" {
 				// ZFS snapshot: pool/resource_data@snapshot
 				dataset := fmt.Sprintf("%s/%s_data", pool, resource)
+				log.Debug("resourceSnapshotCreate: creating ZFS snapshot", zap.String("dataset", dataset), zap.String("snapshot", snapshotName), zap.String("node", node))
 				err = haifyClient.CreateZFSSnapshot(ctx, dataset, snapshotName, node)
 				if err != nil {
+					log.Debug("resourceSnapshotCreate: CreateZFSSnapshot failed", zap.Error(err))
 					return fmt.Errorf("failed to create ZFS snapshot: %w", err)
 				}
 				fmt.Printf("ZFS snapshot '%s' created for resource '%s' on node '%s'\n", snapshotName, resource, node)
 			} else {
 				// LVM snapshot (default)
 				if size == "" {
+					log.Debug("resourceSnapshotCreate: no --size, using 1G")
 					size = "1G"
 				}
 				lvName := fmt.Sprintf("%s_data", resource)
+				log.Debug("resourceSnapshotCreate: creating LVM snapshot", zap.String("pool", pool), zap.String("lv", lvName),
+					zap.String("snapshot", snapshotName), zap.String("node", node), zap.String("size", size))
 				// Pass pool as the VG name (first argument)
 				err = haifyClient.CreateLvmSnapshot(ctx, pool, lvName, snapshotName, node, size)
 				if err != nil {
+					log.Debug("resourceSnapshotCreate: CreateLvmSnapshot failed", zap.Error(err))
 					return fmt.Errorf("failed to create LVM snapshot: %w", err)
 				}
 				fmt.Printf("LVM snapshot '%s' created for resource '%s' on node '%s'\n", snapshotName, resource, node)
 			}
 
+			log.Debug("resourceSnapshotCreate: done")
 			return nil
 		},
 	}
@@ -348,12 +211,18 @@ func resourceSnapshotList() *cobra.Command {
 		Use:   "list",
 		Short: "List snapshots for DRBD resource",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceSnapshotList: running command", zap.Strings("args", args), zap.String("resource", resource),
+				zap.String("node", node), zap.String("storage_type", storageType), zap.String("pool", pool))
 			if resource == "" {
+				log.Debug("resourceSnapshotList: --resource missing")
 				return fmt.Errorf("resource name is required")
 			}
 			if pool == "" || node == "" {
+				log.Debug("resourceSnapshotList: pool or node not given, asking the resource")
 				var err error
 				if pool, node, err = snapshotTarget(resource, pool, node); err != nil {
+					log.Debug("resourceSnapshotList: snapshotTarget failed", zap.Error(err))
 					return err
 				}
 			}
@@ -363,6 +232,7 @@ func resourceSnapshotList() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceSnapshotList: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -372,13 +242,16 @@ func resourceSnapshotList() *cobra.Command {
 				dataset := fmt.Sprintf("%s/%s_data", pool, resource)
 				snapshots, err := haifyClient.ListZFSSnapshots(ctx, dataset, node)
 				if err != nil {
+					log.Debug("resourceSnapshotList: ListZFSSnapshots failed", zap.Error(err))
 					return fmt.Errorf("failed to list ZFS snapshots: %w", err)
 				}
 
 				if len(snapshots) == 0 {
+					log.Debug("resourceSnapshotList: no ZFS snapshots", zap.String("dataset", dataset))
 					fmt.Printf("No ZFS snapshots found for resource '%s'\n", resource)
 					return nil
 				}
+				log.Debug("resourceSnapshotList: ZFS snapshots", zap.String("dataset", dataset), zap.Int("count", len(snapshots)))
 
 				fmt.Printf("ZFS snapshots for resource '%s':\n", resource)
 				for _, snap := range snapshots {
@@ -389,13 +262,16 @@ func resourceSnapshotList() *cobra.Command {
 				// narrows the group's snapshots down to this one's volumes.
 				snapshots, err := haifyClient.ListLvmSnapshots(ctx, pool, node, resource)
 				if err != nil {
+					log.Debug("resourceSnapshotList: ListLvmSnapshots failed", zap.Error(err))
 					return fmt.Errorf("failed to list LVM snapshots: %w", err)
 				}
 
 				if len(snapshots) == 0 {
+					log.Debug("resourceSnapshotList: no LVM snapshots", zap.String("pool", pool), zap.String("node", node))
 					fmt.Printf("No LVM snapshots found for resource '%s'\n", resource)
 					return nil
 				}
+				log.Debug("resourceSnapshotList: LVM snapshots", zap.String("pool", pool), zap.String("node", node), zap.Int("count", len(snapshots)))
 
 				fmt.Printf("LVM snapshots for resource '%s':\n", resource)
 				fmt.Printf("  %-45s %-8s %-14s %s\n", "Name", "Size", "Origin", "Created")
@@ -411,6 +287,7 @@ func resourceSnapshotList() *cobra.Command {
 				}
 			}
 
+			log.Debug("resourceSnapshotList: done")
 			return nil
 		},
 	}
@@ -436,15 +313,22 @@ func resourceSnapshotRestore() *cobra.Command {
 		Use:   "restore",
 		Short: "Restore DRBD resource from snapshot",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("resourceSnapshotRestore: running command", zap.Strings("args", args), zap.String("resource", resource),
+				zap.String("snapshot", snapshotName), zap.String("node", node), zap.String("storage_type", storageType), zap.String("pool", pool))
 			if resource == "" {
+				log.Debug("resourceSnapshotRestore: --resource missing")
 				return fmt.Errorf("resource name is required")
 			}
 			if snapshotName == "" {
+				log.Debug("resourceSnapshotRestore: --name missing")
 				return fmt.Errorf("snapshot name is required")
 			}
 			if pool == "" || node == "" {
+				log.Debug("resourceSnapshotRestore: pool or node not given, asking the resource")
 				var err error
 				if pool, node, err = snapshotTarget(resource, pool, node); err != nil {
+					log.Debug("resourceSnapshotRestore: snapshotTarget failed", zap.Error(err))
 					return err
 				}
 			}
@@ -454,6 +338,7 @@ func resourceSnapshotRestore() *cobra.Command {
 
 			haifyClient, err := newHaifyClient()
 			if err != nil {
+				log.Debug("resourceSnapshotRestore: newHaifyClient failed", zap.Error(err))
 				return fmt.Errorf("failed to connect to controller: %w", err)
 			}
 			defer closeClient(haifyClient)
@@ -461,16 +346,20 @@ func resourceSnapshotRestore() *cobra.Command {
 			if storageType == "zfs" {
 				// ZFS rollback
 				dataset := fmt.Sprintf("%s/%s_data", pool, resource)
+				log.Debug("resourceSnapshotRestore: rolling back ZFS dataset", zap.String("dataset", dataset), zap.String("snapshot", snapshotName), zap.String("node", node))
 				err = haifyClient.RestoreZFSSnapshot(ctx, dataset, snapshotName, node)
 				if err != nil {
+					log.Debug("resourceSnapshotRestore: RestoreZFSSnapshot failed", zap.Error(err))
 					return fmt.Errorf("failed to restore ZFS snapshot: %w", err)
 				}
 				fmt.Printf("ZFS snapshot '%s' restored for resource '%s' on node '%s'\n", snapshotName, resource, node)
 			} else {
 				// LVM snapshot restore (merge)
 				// Pass pool as VG name
+				log.Debug("resourceSnapshotRestore: merging LVM snapshot", zap.String("pool", pool), zap.String("snapshot", snapshotName), zap.String("node", node))
 				err = haifyClient.RestoreLvmSnapshot(ctx, pool, snapshotName, node)
 				if err != nil {
+					log.Debug("resourceSnapshotRestore: RestoreLvmSnapshot failed", zap.Error(err))
 					return fmt.Errorf("failed to restore LVM snapshot: %w", err)
 				}
 				fmt.Printf("LVM snapshot '%s' restored for resource '%s' on node '%s'\n", snapshotName, resource, node)
@@ -479,6 +368,7 @@ func resourceSnapshotRestore() *cobra.Command {
 				fmt.Printf("complete copy. Follow it with: haify resource status %s\n", resource)
 			}
 
+			log.Debug("resourceSnapshotRestore: done")
 			return nil
 		},
 	}
@@ -501,15 +391,19 @@ func resourceSnapshotRestore() *cobra.Command {
 // every snapshot command failed unless --pool was given — although the
 // controller has always known which pool a resource is in.
 func snapshotTarget(resource, pool, node string) (string, string, error) {
+	log := zap.L()
+	log.Debug("snapshotTarget: looking up the resource's pool and node", zap.String("resource", resource), zap.String("pool", pool), zap.String("node", node))
 	ctx, cancel := context.WithTimeout(context.Background(), nodeOpTimeout)
 	defer cancel()
 	c, err := newHaifyClient()
 	if err != nil {
+		log.Debug("snapshotTarget: newHaifyClient failed", zap.Error(err))
 		return "", "", fmt.Errorf("failed to connect to controller: %w", err)
 	}
 	defer closeClient(c)
 	info, err := c.GetResource(ctx, resource)
 	if err != nil {
+		log.Debug("snapshotTarget: GetResource failed", zap.Error(err))
 		return "", "", fmt.Errorf("look up resource %s: %w", resource, err)
 	}
 	if pool == "" {
@@ -520,15 +414,20 @@ func snapshotTarget(resource, pool, node string) (string, string, error) {
 			}
 		}
 		if pool == "" {
+			log.Debug("snapshotTarget: resource records no pool", zap.String("resource", resource))
 			return "", "", fmt.Errorf("resource %s does not record its pool; pass --pool", resource)
 		}
+		log.Debug("snapshotTarget: pool from the resource", zap.String("pool", pool))
 	}
 	if node == "" {
 		if nodes := info.GetNodes(); len(nodes) > 0 {
 			node = nodes[0]
+			log.Debug("snapshotTarget: node from the resource's first replica", zap.String("node", node))
 		} else {
+			log.Debug("snapshotTarget: resource has no replica node", zap.String("resource", resource))
 			return "", "", fmt.Errorf("resource %s has no replica node; pass --node", resource)
 		}
 	}
+	log.Debug("snapshotTarget: done", zap.String("pool", pool), zap.String("node", node))
 	return pool, node, nil
 }

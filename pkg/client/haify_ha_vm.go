@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 )
 
 // LibvirtDomainLabel marks the resources a libvirt guest's disks are on, with
@@ -26,8 +27,11 @@ var vmDomainRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.+-]{0,62}$`)
 // another replica. The agent reads the definition from the file libvirt keeps
 // for a defined guest.
 func VirtualDomainAgent(domain string) (*haifypb.OcfAgent, error) {
+	log := zap.L()
+	log.Debug("VirtualDomainAgent: building VirtualDomain agent", zap.String("domain", domain))
 	domain = strings.TrimSpace(domain)
 	if !vmDomainRe.MatchString(domain) {
+		log.Debug("VirtualDomainAgent: invalid libvirt domain name", zap.String("domain", domain))
 		return nil, fmt.Errorf("VM %q: a libvirt domain name is 1-63 letters, digits and . _ + -, starting with a letter or digit", domain)
 	}
 	return &haifypb.OcfAgent{
