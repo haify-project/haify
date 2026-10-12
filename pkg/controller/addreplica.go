@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -47,35 +48,47 @@ type AddReplicaOpts struct {
 // AddReplicaWith is AddReplica with options.
 func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node string, opts AddReplicaOpts) error {
 	ignoreFreeSpace := opts.IgnoreFreeSpace
+	log := rm.controller.traceLogger()
+	log.Debug("AddReplicaWith: start", zap.String("resource", resource), zap.String("node", node),
+		zap.Bool("ignore_free_space", ignoreFreeSpace), zap.Bool("allow_unreachable", opts.AllowUnreachable))
 	if rm.deployment == nil {
+		log.Debug("AddReplicaWith: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("deployment client not set")
 	}
 	if rm.controller.db == nil {
+		log.Debug("AddReplicaWith: no database", zap.String("resource", resource))
 		return fmt.Errorf("database not available")
 	}
 
+	start := time.Now()
 	dbRes, err := rm.controller.db.GetResource(ctx, resource)
+	log.Debug("AddReplicaWith: db get resource", zap.String("resource", resource), zap.Bool("found", dbRes != nil),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil || dbRes == nil {
 		return fmt.Errorf("resource %q not found", resource)
 	}
 
 	node = strings.TrimSpace(node)
 	if node == "" {
+		log.Debug("AddReplicaWith: no node given", zap.String("resource", resource))
 		return fmt.Errorf("a node is required")
 	}
 	if rm.controller.nodes.GetNodeAddressByName(node) == "" {
+		log.Debug("AddReplicaWith: node not registered", zap.String("node", node))
 		return fmt.Errorf("node %q is not a registered node", node)
 	}
 
 	existing := splitCSV(dbRes.Nodes)
 	for _, n := range existing {
 		if n == node {
+			log.Debug("AddReplicaWith: node already holds a replica", zap.String("node", node), zap.Strings("nodes", existing))
 			return fmt.Errorf("node %q already holds a replica of %q", node, resource)
 		}
 	}
 	// A diskless member — client or tiebreaker — gets its disk in place
 	// (addreplica_convert.go).
 	if nodeTakesPart(node, dbRes.DisklessNodes, dbRes.DisklessClients) {
+		log.Debug("AddReplicaWith: node is a diskless member, converting in place", zap.String("node", node))
 		return rm.convertDisklessToReplica(ctx, dbRes, node, opts)
 	}
 
@@ -89,27 +102,39 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 			}
 		}
 	}
+	log.Debug("AddReplicaWith: primary-site replicas", zap.String("resource", resource), zap.Strings("primaries", primaries),
+		zap.Bool("wan_mode", dbRes.WANMode), zap.String("dr_node", dbRes.DRNode))
 	if len(primaries) == 0 {
+		log.Debug("AddReplicaWith: no primary-site replica", zap.String("resource", resource))
 		return fmt.Errorf("resource %q has no primary-site replica to copy from", resource)
 	}
 
 	if !ignoreFreeSpace {
 		if err := rm.assertPoolRoom(ctx, resource, node); err != nil {
+			log.Debug("AddReplicaWith: pool has no room", zap.String("node", node), zap.Error(err))
 			return err
 		}
+	} else {
+		log.Debug("AddReplicaWith: free-space check skipped", zap.String("node", node))
 	}
 	if pool, sizeGB := rm.memberPoolAndSize(ctx, resource, ""); pool != "" {
+		log.Debug("AddReplicaWith: checking overcommit", zap.String("pool", pool), zap.Uint64("size_gb", sizeGB))
 		if err := rm.assertOvercommit(ctx, pool, []string{node}, sizeGB); err != nil {
+			log.Debug("AddReplicaWith: overcommit refused", zap.String("pool", pool), zap.Error(err))
 			return err
 		}
+	} else {
+		log.Debug("AddReplicaWith: no member pool known, overcommit not checked")
 	}
 	if err := rm.assertNewMemberTLS(ctx, resource, node); err != nil {
+		log.Debug("AddReplicaWith: replication TLS check failed", zap.String("node", node), zap.Error(err))
 		return err
 	}
 
 	tiebreakers := splitCSV(dbRes.DisklessNodes)
 	away, err := rm.unreachableMembers(ctx, dbRes, primaries, tiebreakers, opts.AllowUnreachable)
 	if err != nil {
+		log.Debug("AddReplicaWith: unreachable members block the add", zap.Error(err))
 		return err
 	}
 
@@ -117,6 +142,7 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	// A replica takes part in failover, so it gets the resource's promoters
 	// once it is in; check now that it could run them, while refusing is free.
 	if err := rm.checkPromoterPrereqs(ctx, resource, []string{newAddr}); err != nil {
+		log.Debug("AddReplicaWith: promoter prerequisites missing", zap.String("host", newAddr), zap.Error(err))
 		return err
 	}
 	// Commands go to the members that answer; the config still names them all.
@@ -125,6 +151,8 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	for _, n := range reachablePrimaries {
 		primaryAddrs = append(primaryAddrs, rm.controller.ResolveHost(n))
 	}
+	log.Debug("AddReplicaWith: reachable replicas", zap.String("host", newAddr), zap.Strings("away", away),
+		zap.Strings("primary_addrs", primaryAddrs))
 
 	// A replica of an encrypted resource is encrypted, or it is a hole: the new
 	// node would hold a full plaintext copy of data every other node keeps
@@ -132,6 +160,7 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	// the newcomer cannot do it, before any storage is provisioned.
 	if dbRes.Encrypted {
 		if err := rm.assertEncryptionSupported(ctx, []string{newAddr}, []string{node}); err != nil {
+			log.Debug("AddReplicaWith: node cannot encrypt", zap.String("node", node), zap.Error(err))
 			return err
 		}
 	}
@@ -144,10 +173,14 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 
 	hosts := primaryAddrs
 	if len(hosts) == 0 {
+		log.Debug("AddReplicaWith: no reachable hosts", zap.String("resource", resource))
 		return fmt.Errorf("resource %q has no reachable hosts", resource)
 	}
 	resPath := fmt.Sprintf("/etc/drbd.d/%s.res", resource)
+	start = time.Now()
 	catRes, err := rm.deployment.Exec(ctx, []string{hosts[0]}, "cat "+resPath)
+	log.Debug("AddReplicaWith: read live config", zap.String("host", hosts[0]), zap.String("path", resPath),
+		zap.Strings("failed_hosts", tracedFailedHosts(catRes)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("read resource config: %w", err)
 	}
@@ -157,23 +190,30 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 		break
 	}
 	if !readOK || strings.TrimSpace(liveConfig) == "" {
+		log.Debug("AddReplicaWith: live config unreadable or empty", zap.Bool("read_ok", readOK))
 		return fmt.Errorf("read resource config for %q: %s", resource, catRes.FailureDetails())
 	}
 
 	if err := rm.assertMinorsFreeOn(ctx, newAddr, resource, resourceMinors(liveConfig)); err != nil {
+		log.Debug("AddReplicaWith: minors not free on the new node", zap.String("host", newAddr), zap.Error(err))
 		return err
 	}
 	// A diskful peer needs a bitmap slot on every existing replica, and slots are
 	// allocated once, at create-md time. Check before provisioning anything.
 	if err := rm.assertBitmapSlotFree(ctx, primaryAddrs, reachablePrimaries, resource); err != nil {
+		log.Debug("AddReplicaWith: no bitmap slot", zap.Error(err))
 		return err
 	}
 
+	start = time.Now()
 	dbVols, err := rm.controller.db.ListVolumes(ctx, resource)
+	log.Debug("AddReplicaWith: db list volumes", zap.String("resource", resource), zap.Int("count", len(dbVols)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("list volumes of %q: %w", resource, err)
 	}
 	if len(dbVols) == 0 {
+		log.Debug("AddReplicaWith: no recorded volumes", zap.String("resource", resource))
 		return fmt.Errorf("resource %q has no recorded volumes to replicate", resource)
 	}
 	// Size from what the existing replicas actually export, not from the recorded
@@ -182,9 +222,11 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	// is even one sector short.
 	backingSizes, err := rm.primaryBackingSizes(ctx, primaryAddrs, resource, len(dbVols))
 	if err != nil {
+		log.Debug("AddReplicaWith: backing sizes unreadable", zap.Error(err))
 		return err
 	}
 	backingSizes = replicaBackingSizes(backingSizes, dbRes.Encrypted)
+	log.Debug("AddReplicaWith: new replica sizes", zap.Uint64s("size_bytes", backingSizes), zap.Bool("encrypted", dbRes.Encrypted))
 
 	lanHosts := append([]string{}, primaryAddrs...)
 	for _, n := range withoutAll(tiebreakers, away) {
@@ -194,18 +236,23 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	if dbRes.WANMode && dbRes.DRNode != "" {
 		allHosts = append(allHosts, rm.controller.ResolveHost(dbRes.DRNode))
 	}
+	log.Debug("AddReplicaWith: hosts that get the new config", zap.Strings("lan_hosts", lanHosts), zap.Strings("hosts", allHosts))
 
 	succeeded := false
 	defer func() {
 		if succeeded {
 			return
 		}
+		log.Debug("AddReplicaWith: failed part way, rolling back", zap.String("resource", resource), zap.String("node", node))
 		rm.undoAddReplica(context.WithoutCancel(ctx), resource, resPath, liveConfig,
 			lanHosts, newAddr, dbVols, dbRes.Encrypted)
 	}()
 
 	for i, v := range dbVols {
+		log.Debug("AddReplicaWith: creating backing volume", zap.String("host", newAddr), zap.String("pool", v.Pool),
+			zap.String("volume", v.VolumeName), zap.Uint64("size_bytes", backingSizes[i]))
 		if cerr := rm.createBackingVolumeOn(ctx, newAddr, v.Pool, v.VolumeName, backingSizes[i]); cerr != nil {
+			log.Debug("AddReplicaWith: backing volume creation failed", zap.String("volume", v.VolumeName), zap.Error(cerr))
 			return fmt.Errorf("create backing volume %s/%s on %q: %w", v.Pool, v.VolumeName, node, cerr)
 		}
 		// The newcomer generates its own key, exactly as every other replica
@@ -213,6 +260,7 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 		if dbRes.Encrypted {
 			if cerr := rm.encryptBackingVolumeOn(ctx, newAddr, node, v.Pool, v.VolumeName,
 				fmt.Sprintf("/dev/%s/%s", v.Pool, v.VolumeName)); cerr != nil {
+				log.Debug("AddReplicaWith: encrypting volume failed", zap.String("volume", v.VolumeName), zap.Error(cerr))
 				return cerr
 			}
 		}
@@ -236,19 +284,28 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 			BinaryFor: rm.wanproxyBinaryResolver(ctx,
 				append(append([]string{}, withNew...), rm.controller.ResolveHost(dbRes.DRNode))),
 		}
+		log.Debug("AddReplicaWith: two-site resource, provisioning a WAN leg for the newcomer",
+			zap.String("dr_node", dbRes.DRNode), zap.Strings("hosts", withNew))
+		start := time.Now()
 		if err := wanproxy.ProvisionMulti(ctx, rm.wanproxyDeployClient(), multi); err != nil {
+			log.Debug("AddReplicaWith: WAN leg provisioning failed", zap.Duration("took", time.Since(start)), zap.Error(err))
 			return fmt.Errorf("provision WAN leg for %q: %w", node, err)
 		}
+		log.Debug("AddReplicaWith: WAN legs provisioned", zap.Duration("took", time.Since(start)))
 		// After the push, not before: the controller may well have supplied the
 		// binary itself, and checking first would reject a case that works.
 		if err := rm.assertWANProxyBinary(ctx, []string{newAddr}, []string{node}); err != nil {
+			log.Debug("AddReplicaWith: haify-proxy binary missing", zap.String("host", newAddr), zap.Error(err))
 			return err
 		}
 		ports, perr := rm.pickWANBindPorts(ctx, []string{newAddr}, dbRes.Port)
 		if perr != nil {
+			log.Debug("AddReplicaWith: bind port selection failed", zap.Error(perr))
 			return perr
 		}
 		newBind = ports[0]
+	} else {
+		log.Debug("AddReplicaWith: LAN-only resource, no WAN leg", zap.String("resource", resource))
 	}
 
 	// SSH goes to newAddr; DRBD talks over the node's replication network,
@@ -257,10 +314,13 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	if replAddr == "" {
 		replAddr = newAddr
 	}
+	log.Debug("AddReplicaWith: replication address", zap.String("node", node), zap.String("address", replAddr),
+		zap.Int("bind_port", newBind))
 	newConfig, err := rm.addReplicaToConfig(liveConfig, resource, node, resolveToIP(replAddr), dbVols,
 		dbRes.Port, len(primaries), newBind, dbRes.WANMode && dbRes.DRNode != "", dbRes.DRNode,
 		dbRes.Encrypted)
 	if err != nil {
+		log.Debug("AddReplicaWith: config rewrite failed", zap.Error(err))
 		return fmt.Errorf("rewrite config for new replica: %w", err)
 	}
 	// Growing the primary site moves its majority; recompute rather than leaving
@@ -269,33 +329,45 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 		newConfig = setLocalSiteQuorum(newConfig, len(primaries)+1+len(tiebreakers))
 	}
 
-	if _, err := rm.deployment.DistributeConfig(ctx, allHosts, newConfig, resPath); err != nil {
+	start = time.Now()
+	_, err = rm.deployment.DistributeConfig(ctx, allHosts, newConfig, resPath)
+	log.Debug("AddReplicaWith: distribute config", zap.Strings("hosts", allHosts), zap.String("path", resPath),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("distribute config with new replica: %w", err)
 	}
 
 	if err := rm.execAllSuccess(ctx, []string{newAddr},
 		fmt.Sprintf("sudo drbdadm create-md --max-peers=%d --force %s", deployment.DefaultMaxPeers, resource),
 		"create metadata on the new replica"); err != nil {
+		log.Debug("AddReplicaWith: create-md failed", zap.String("host", newAddr), zap.Error(err))
 		return err
 	}
 	if err := rm.execAllSuccess(ctx, allHosts,
 		fmt.Sprintf("sudo drbdadm adjust %s", resource),
 		"adjust peers for the new replica"); err != nil {
+		log.Debug("AddReplicaWith: adjust failed", zap.Strings("hosts", allHosts), zap.Error(err))
 		return err
 	}
+	start = time.Now()
 	upRes, err := rm.deployment.Exec(ctx, []string{newAddr}, fmt.Sprintf("sudo drbdadm up %s", resource))
+	log.Debug("AddReplicaWith: drbdadm up on the new replica", zap.String("host", newAddr),
+		zap.Strings("failed_hosts", tracedFailedHosts(upRes)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("bring up the new replica: %w", err)
 	}
 	if !upRes.AllSuccess() {
 		detail := upRes.FailureDetails()
 		if !strings.Contains(detail, "exists already") && !strings.Contains(detail, "already? still?") {
+			log.Debug("AddReplicaWith: drbdadm up failed", zap.String("node", node))
 			return fmt.Errorf("bring up replica on %q: %s", node, detail)
 		}
+		log.Debug("AddReplicaWith: replica was already up", zap.String("node", node))
 	}
 	// The newcomer may never have held a resource before; without the boot
 	// unit its replica stays down after a reboot.
 	if err := rm.ensureBootUnitOnMembers(ctx, resource, []string{newAddr}, dbRes.Encrypted); err != nil {
+		log.Debug("AddReplicaWith: boot unit install failed", zap.String("host", newAddr), zap.Error(err))
 		return err
 	}
 
@@ -313,8 +385,13 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	// (self_heal_return.go).
 	if len(away) > 0 {
 		dbRes.StaleConfigNodes = strings.Join(append(splitCSV(dbRes.StaleConfigNodes), away...), ",")
+		log.Debug("AddReplicaWith: away members marked for a config repair", zap.String("stale_config_nodes", dbRes.StaleConfigNodes))
 	}
-	if err := rm.controller.db.SaveResource(ctx, dbRes); err != nil {
+	start = time.Now()
+	err = rm.controller.db.SaveResource(ctx, dbRes)
+	log.Debug("AddReplicaWith: db save resource", zap.String("resource", resource), zap.String("nodes", dbRes.Nodes),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("record the new replica: %w", err)
 	}
 
@@ -324,90 +401,12 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	// drbd-reactor will not promote a replica that is still syncing, so the
 	// promoter can go in now and takes effect once the copy is UpToDate.
 	if err := rm.SyncPromoters(ctx, resource); err != nil {
+		log.Debug("AddReplicaWith: promoter sync failed", zap.String("resource", resource), zap.Error(err))
 		return fmt.Errorf("replica added on %s, but the resource's promoters could not be placed there: %w; "+
 			"fix that and run `haify resource repair %s`", node, err, resource)
 	}
+	log.Debug("AddReplicaWith: done", zap.String("resource", resource), zap.String("node", node))
 	return nil
-}
-
-// addReplicaToConfig adds a diskful node to a live resource config.
-func (rm *ResourceManager) addReplicaToConfig(content, resource, node, addr string,
-	vols []*database.Volume, port, legIndex, bindPort int, wan bool, drNode string,
-	encrypted bool) (string, error) {
-
-	name := rm.controller.nodes.GetDRBDNameByRef(node)
-	blocks := parseOnBlocks(content)
-	for _, b := range blocks {
-		if b.name == name {
-			return "", fmt.Errorf("node %q is already in the config of %q", node, resource)
-		}
-	}
-	nextID := 0
-	for _, b := range blocks {
-		if b.nodeID >= nextID {
-			nextID = b.nodeID + 1
-		}
-	}
-
-	var stanza strings.Builder
-	fmt.Fprintf(&stanza, "\n    on %s {\n", name)
-	fmt.Fprintf(&stanza, "        address   %s:%d;\n", addr, port)
-	fmt.Fprintf(&stanza, "        node-id   %d;\n", nextID)
-	for _, v := range vols {
-		// The crypt container is what DRBD attaches on an encrypted resource.
-		// Its name comes from pool and volume, which are identical on every
-		// node, so the newcomer's stanza names the same device as its peers
-		// even though the key behind it is its own.
-		disk := fmt.Sprintf("/dev/%s/%s", v.Pool, v.VolumeName)
-		if encrypted {
-			disk = luksMapperPath(v.Pool, v.VolumeName)
-		}
-		fmt.Fprintf(&stanza, "        volume %d {\n", v.VolumeID)
-		fmt.Fprintf(&stanza, "            device    minor %d;\n", minorForVolume(content, v.VolumeID))
-		fmt.Fprintf(&stanza, "            disk      %s;\n", disk)
-		fmt.Fprintf(&stanza, "            meta-disk internal;\n")
-		fmt.Fprintf(&stanza, "        }\n")
-	}
-	fmt.Fprintf(&stanza, "    }\n")
-
-	out, err := insertBeforeResourceClose(stripConnectionMesh(content), stanza.String())
-	if err != nil {
-		return "", err
-	}
-
-	// Rebuild the mesh over the LAN hosts, which now include the newcomer. A
-	// WAN-attached host stays out: a mesh entry would pair it with every other
-	// host on that host's LAN address, which is unroutable from the other site.
-	mesh := lanHostNames(parseOnBlocks(out))
-	if len(mesh) > 1 {
-		out, err = insertBeforeResourceClose(out, buildConnectionMesh(mesh))
-		if err != nil {
-			return "", err
-		}
-	}
-
-	// Two-site resource: the newcomer also needs an explicit leg to the DR, on
-	// the same port layout the other legs use.
-	if wan && drNode != "" {
-		legPort := port + legIndex
-		var leg strings.Builder
-		fmt.Fprintf(&leg, "\n    connection {\n")
-		fmt.Fprintf(&leg, "        host %s address 127.0.0.1:%d;\n", name, bindPort)
-		fmt.Fprintf(&leg, "        host %s address 127.0.0.1:%d;\n",
-			rm.controller.nodes.GetDRBDNameByRef(drNode), legPort)
-		fmt.Fprintf(&leg, "        net {\n")
-		fmt.Fprintf(&leg, "            protocol A;\n")
-		fmt.Fprintf(&leg, "            on-congestion pull-ahead;\n")
-		fmt.Fprintf(&leg, "            congestion-fill 400M;\n")
-		fmt.Fprintf(&leg, "            csums-alg %s;\n", wanCsumsAlg)
-		fmt.Fprintf(&leg, "        }\n")
-		fmt.Fprintf(&leg, "    }\n")
-		out, err = insertBeforeResourceClose(out, leg.String())
-		if err != nil {
-			return "", err
-		}
-	}
-	return out, nil
 }
 
 // undoAddReplica returns the cluster to its previous shape after a failed add.
@@ -422,32 +421,48 @@ func (rm *ResourceManager) undoAddReplica(ctx context.Context, resource, resPath
 
 	log := rm.controller.logger.With(zap.String("resource", resource), zap.String("node", newAddr))
 	log.Warn("Rolling back replica addition")
+	log.Debug("undoAddReplica: start", zap.Strings("lan_hosts", lanHosts), zap.Int("volumes", len(vols)),
+		zap.Bool("encrypted", encrypted), zap.Bool("has_original_config", strings.TrimSpace(originalConfig) != ""))
 
 	if len(lanHosts) > 0 && strings.TrimSpace(originalConfig) != "" {
+		start := time.Now()
 		if _, err := rm.deployment.DistributeConfig(ctx, lanHosts, originalConfig, resPath); err != nil {
 			log.Error("Rollback: failed to restore the previous config", zap.Error(err))
 		} else if _, err := rm.deployment.Exec(ctx, lanHosts,
 			fmt.Sprintf("sudo drbdadm adjust %s", resource)); err != nil {
 			log.Error("Rollback: failed to re-adjust the surviving members", zap.Error(err))
 		}
+		log.Debug("undoAddReplica: previous config restored and adjusted", zap.Strings("hosts", lanHosts),
+			zap.Duration("took", time.Since(start)))
+	} else {
+		log.Debug("undoAddReplica: no previous config to restore")
 	}
 
-	if _, err := rm.deployment.Exec(ctx, []string{newAddr},
-		fmt.Sprintf("sudo drbdadm down %s 2>/dev/null; sudo rm -f %s", resource, resPath)); err != nil {
+	start := time.Now()
+	_, err := rm.deployment.Exec(ctx, []string{newAddr},
+		fmt.Sprintf("sudo drbdadm down %s 2>/dev/null; sudo rm -f %s", resource, resPath))
+	log.Debug("undoAddReplica: new replica down and config removed", zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		log.Error("Rollback: failed to tear down the new replica", zap.Error(err))
 	}
 	for _, v := range vols {
+		log.Debug("undoAddReplica: removing backing volume", zap.String("pool", v.Pool), zap.String("volume", v.VolumeName))
 		// The container holds the LV open, and its key is worth destroying
 		// whether or not the lvremove that follows succeeds.
 		if encrypted {
 			rm.closeBackingVolumeOn(ctx, []string{newAddr}, v.Pool, v.VolumeName)
 		}
-		if _, err := rm.deployment.Exec(ctx, []string{newAddr},
-			fmt.Sprintf("sudo lvremove -f %s/%s", v.Pool, v.VolumeName)); err != nil {
+		start := time.Now()
+		_, err := rm.deployment.Exec(ctx, []string{newAddr},
+			fmt.Sprintf("sudo lvremove -f %s/%s", v.Pool, v.VolumeName))
+		log.Debug("undoAddReplica: lvremove done", zap.String("volume", v.VolumeName),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			log.Error("Rollback: failed to remove a backing volume",
 				zap.String("volume", v.Pool+"/"+v.VolumeName), zap.Error(err))
 		}
 	}
+	log.Debug("undoAddReplica: done")
 }
 
 // wanproxyBinaryProbe reports whether the proxy binary is present and runnable.
@@ -467,8 +482,13 @@ const wanproxyBinaryProbe = `test -x /usr/local/bin/haify-proxy && echo present 
 // A node that has never carried a WAN leg is exactly the node likely to be
 // missing it — which is to say, every node this code path is about.
 func (rm *ResourceManager) assertWANProxyBinary(ctx context.Context, hosts, nodes []string) error {
+	log := rm.controller.traceLogger()
+	log.Debug("assertWANProxyBinary: checking", zap.Strings("hosts", hosts), zap.Strings("nodes", nodes))
 	for i, host := range hosts {
+		start := time.Now()
 		res, err := rm.deployment.Exec(ctx, []string{host}, wanproxyBinaryProbe)
+		log.Debug("assertWANProxyBinary: probe done", zap.String("host", host),
+			zap.Strings("failed_hosts", tracedFailedHosts(res)), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			return fmt.Errorf("check for the haify-proxy binary on %q: %w", nodes[i], err)
 		}
@@ -477,6 +497,7 @@ func (rm *ResourceManager) assertWANProxyBinary(ctx context.Context, hosts, node
 			out = strings.TrimSpace(r.Output)
 			break
 		}
+		log.Debug("assertWANProxyBinary: probe result", zap.String("node", nodes[i]), zap.String("output", out))
 		if strings.Contains(out, "missing") {
 			return fmt.Errorf(
 				"node %q has no executable %s, so its WAN leg would start and immediately fail "+
@@ -485,5 +506,6 @@ func (rm *ResourceManager) assertWANProxyBinary(ctx context.Context, hosts, node
 				nodes[i], wanproxyLocalBinaryPath)
 		}
 	}
+	log.Debug("assertWANProxyBinary: binary present everywhere", zap.Strings("hosts", hosts))
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"strings"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -29,23 +30,31 @@ const healthServicePrefix = "/grpc.health.v1.Health/"
 func authTokenValid(ctx context.Context, want string) bool {
 	// Defense in depth: an empty configured token must never validate, even
 	// though config validation already rejects it.
+	log := zap.L()
 	if want == "" {
+		log.Debug("authTokenValid: no token configured, rejecting")
 		return false
 	}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
+		log.Debug("authTokenValid: request carries no metadata, rejecting")
 		return false
 	}
+	header := "authorization"
 	values := md.Get("authorization")
 	if len(values) == 0 {
+		header = "grpcgateway-authorization"
 		values = md.Get("grpcgateway-authorization")
 	}
+	log.Debug("authTokenValid: checking presented credentials", zap.String("header", header), zap.Int("count", len(values)))
 	for _, v := range values {
 		token := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "Bearer"))
 		if subtle.ConstantTimeCompare([]byte(token), []byte(want)) == 1 {
+			log.Debug("authTokenValid: token accepted", zap.String("header", header))
 			return true
 		}
 	}
+	log.Debug("authTokenValid: no presented token matched", zap.String("header", header), zap.Int("count", len(values)))
 	return false
 }
 
@@ -59,8 +68,10 @@ func authUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
 			return handler(ctx, req)
 		}
 		if !authTokenValid(ctx, token) {
+			zap.L().Debug("authUnaryInterceptor: unauthenticated call refused", zap.String("method", info.FullMethod))
 			return nil, errUnauthenticated
 		}
+		zap.L().Debug("authUnaryInterceptor: call authenticated", zap.String("method", info.FullMethod))
 		return handler(ctx, req)
 	}
 }
@@ -72,8 +83,10 @@ func authStreamInterceptor(token string) grpc.StreamServerInterceptor {
 			return handler(srv, ss)
 		}
 		if !authTokenValid(ss.Context(), token) {
+			zap.L().Debug("authStreamInterceptor: unauthenticated stream refused", zap.String("method", info.FullMethod))
 			return errUnauthenticated
 		}
+		zap.L().Debug("authStreamInterceptor: stream authenticated", zap.String("method", info.FullMethod))
 		return handler(srv, ss)
 	}
 }

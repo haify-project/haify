@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // onBlock is a parsed `on <name> { ... node-id N; ... }` host stanza.
@@ -51,6 +53,7 @@ func parseOnBlocks(content string) []onBlock {
 			cur = nil
 		}
 	}
+	zap.L().Debug("parseOnBlocks: parsed host stanzas", zap.Int("count", len(blocks)))
 	return blocks
 }
 
@@ -64,9 +67,12 @@ func parseOnBlocks(content string) []onBlock {
 // two replicas with no connection to each other at all.
 func meshNeeded(lan, all []string) bool {
 	if len(lan) > 2 {
+		zap.L().Debug("meshNeeded: more than two LAN hosts", zap.Strings("lan", lan))
 		return true
 	}
-	return len(lan) >= 2 && len(lan) < len(all)
+	need := len(lan) >= 2 && len(lan) < len(all)
+	zap.L().Debug("meshNeeded: decided", zap.Strings("lan", lan), zap.Int("all", len(all)), zap.Bool("needed", need))
+	return need
 }
 
 // lanHostNames returns the hosts that belong in a connection-mesh: everything
@@ -75,6 +81,7 @@ func lanHostNames(blocks []onBlock) []string {
 	names := make([]string, 0, len(blocks))
 	for _, b := range blocks {
 		if b.loopback {
+			zap.L().Debug("lanHostNames: WAN-attached host left out", zap.String("host", b.name))
 			continue
 		}
 		names = append(names, b.name)
@@ -100,12 +107,15 @@ func dedupResourceVolumes(vols []resourceConfigVolume) []resourceConfigVolume {
 	var out []resourceConfigVolume
 	for _, v := range vols {
 		if v.Minor < 0 || seen[v.VolumeID] {
+			zap.L().Debug("dedupResourceVolumes: dropping duplicate or minorless block",
+				zap.Int("volume", v.VolumeID), zap.Int("minor", v.Minor))
 			continue
 		}
 		seen[v.VolumeID] = true
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].VolumeID < out[j].VolumeID })
+	zap.L().Debug("dedupResourceVolumes: done", zap.Int("in", len(vols)), zap.Int("out", len(out)))
 	return out
 }
 
@@ -121,8 +131,10 @@ func insertBeforeResourceClose(content, block string) (string, error) {
 		}
 	}
 	if idx < 0 {
+		zap.L().Debug("insertBeforeResourceClose: no closing brace", zap.Int("lines", len(lines)))
 		return "", fmt.Errorf("malformed resource config: no closing brace")
 	}
+	zap.L().Debug("insertBeforeResourceClose: inserting block", zap.Int("at_line", idx))
 	blockLines := strings.Split(strings.TrimRight(block, "\n"), "\n")
 	out := make([]string, 0, len(lines)+len(blockLines))
 	out = append(out, lines[:idx]...)
@@ -141,6 +153,7 @@ func stripConnectionMesh(content string) string {
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !skipping && strings.HasPrefix(trimmed, "connection-mesh") && strings.Contains(trimmed, "{") {
+			zap.L().Debug("stripConnectionMesh: removing connection-mesh stanza")
 			skipping = true
 			depth = strings.Count(line, "{") - strings.Count(line, "}")
 			continue
@@ -160,6 +173,7 @@ func stripConnectionMesh(content string) string {
 // buildConnectionMesh renders a full-mesh stanza listing every host. DRBD 9
 // needs an explicit mesh once a resource has more than two nodes.
 func buildConnectionMesh(hosts []string) string {
+	zap.L().Debug("buildConnectionMesh: rendering mesh", zap.Strings("hosts", hosts))
 	var b strings.Builder
 	b.WriteString("\n    connection-mesh {\n        hosts")
 	for _, h := range hosts {
@@ -174,9 +188,13 @@ func buildConnectionMesh(hosts []string) string {
 // free node-id, and the connection-mesh is rebuilt to include it. It returns
 // errDisklessAlreadyPresent if node already has an `on` block.
 func addDisklessClientBlock(content, node, ip string, port int) (string, error) {
+	log := zap.L()
+	log.Debug("addDisklessClientBlock: adding diskless stanza", zap.String("node", node),
+		zap.String("ip", ip), zap.Int("port", port))
 	blocks := parseOnBlocks(content)
 	for _, b := range blocks {
 		if b.name == node {
+			log.Debug("addDisklessClientBlock: node already has a stanza", zap.String("node", node))
 			return "", errDisklessAlreadyPresent
 		}
 	}
@@ -189,7 +207,10 @@ func addDisklessClientBlock(content, node, ip string, port int) (string, error) 
 	}
 
 	vols := dedupResourceVolumes(parseResourceConfigVolumes(content))
+	log.Debug("addDisklessClientBlock: next node-id and volumes", zap.String("node", node),
+		zap.Int("node_id", nextID), zap.Int("volumes", len(vols)))
 	if len(vols) == 0 {
+		log.Debug("addDisklessClientBlock: config has no volumes")
 		return "", fmt.Errorf("resource config has no volumes to render diskless")
 	}
 
@@ -208,6 +229,7 @@ func addDisklessClientBlock(content, node, ip string, port int) (string, error) 
 	stripped := stripConnectionMesh(content)
 	withOn, err := insertBeforeResourceClose(stripped, blk.String())
 	if err != nil {
+		log.Debug("addDisklessClientBlock: inserting stanza failed", zap.Error(err))
 		return "", err
 	}
 
@@ -215,11 +237,14 @@ func addDisklessClientBlock(content, node, ip string, port int) (string, error) 
 	// host keeps its explicit connection and stays out.
 	allHosts := append(lanHostNames(blocks), node)
 	if meshNeeded(allHosts, append(onHostNames(blocks), node)) {
+		log.Debug("addDisklessClientBlock: rebuilding connection-mesh", zap.Strings("hosts", allHosts))
 		withOn, err = insertBeforeResourceClose(withOn, buildConnectionMesh(allHosts))
 		if err != nil {
+			log.Debug("addDisklessClientBlock: inserting mesh failed", zap.Error(err))
 			return "", err
 		}
 	}
+	log.Debug("addDisklessClientBlock: stanza added", zap.String("node", node))
 	return withOn, nil
 }
 
@@ -227,6 +252,8 @@ func addDisklessClientBlock(content, node, ip string, port int) (string, error) 
 // the connection-mesh rebuilt (dropped entirely if two or fewer hosts remain).
 // It returns errDisklessNotPresent if node has no `on` block.
 func removeDisklessClientBlock(content, node string) (string, error) {
+	log := zap.L()
+	log.Debug("removeDisklessClientBlock: removing stanza", zap.String("node", node))
 	var out []string
 	depth := 0
 	removing := false
@@ -251,6 +278,7 @@ func removeDisklessClientBlock(content, node string) (string, error) {
 		out = append(out, line)
 	}
 	if !removed {
+		log.Debug("removeDisklessClientBlock: node has no stanza", zap.String("node", node))
 		return "", errDisklessNotPresent
 	}
 
@@ -258,8 +286,10 @@ func removeDisklessClientBlock(content, node string) (string, error) {
 	blocksLeft := parseOnBlocks(stripped)
 	remaining := lanHostNames(blocksLeft)
 	if meshNeeded(remaining, onHostNames(blocksLeft)) {
+		log.Debug("removeDisklessClientBlock: rebuilding connection-mesh", zap.Strings("hosts", remaining))
 		return insertBeforeResourceClose(stripped, buildConnectionMesh(remaining))
 	}
+	log.Debug("removeDisklessClientBlock: stanza removed, no mesh needed", zap.Strings("remaining", remaining))
 	return stripped, nil
 }
 
@@ -295,6 +325,7 @@ func addDisklessVolumeOverrides(content string, volNum, minor int) string {
 	inOn := false
 	onHasDiskNone := false
 	onHasThisVolume := false
+	added := 0
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !inOn && depth == 1 && strings.HasPrefix(trimmed, "on ") && strings.Contains(trimmed, "{") {
@@ -313,6 +344,7 @@ func addDisklessVolumeOverrides(content string, volNum, minor int) string {
 		// The line that closes the `on` stanza: depth returns to 1 after it.
 		if inOn && closes > 0 && depth+opens-closes == 1 {
 			if onHasDiskNone && !onHasThisVolume {
+				added++
 				out = append(out,
 					fmt.Sprintf("        volume %d {", volNum),
 					fmt.Sprintf("            device    minor %d;", minor),
@@ -324,6 +356,8 @@ func addDisklessVolumeOverrides(content string, volNum, minor int) string {
 		out = append(out, line)
 		depth += opens - closes
 	}
+	zap.L().Debug("addDisklessVolumeOverrides: overrides added", zap.Int("volume", volNum),
+		zap.Int("minor", minor), zap.Int("count", added))
 	return strings.Join(out, "\n")
 }
 
@@ -340,6 +374,7 @@ func removeDisklessVolumeOverrides(content string, volNum int) string {
 	inOn := false
 	skipping := false
 	skipDepth := 0
+	removed := 0
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		opens := strings.Count(line, "{")
@@ -350,6 +385,7 @@ func removeDisklessVolumeOverrides(content string, volNum int) string {
 		if inOn && !skipping && depth == 2 {
 			if f := strings.Fields(trimmed); len(f) >= 2 && f[0] == "volume" && strings.TrimSuffix(f[1], "{") == strconv.Itoa(volNum) {
 				skipping, skipDepth = true, depth
+				removed++
 			}
 		}
 		next := depth + opens - closes
@@ -366,6 +402,7 @@ func removeDisklessVolumeOverrides(content string, volNum int) string {
 		}
 		depth = next
 	}
+	zap.L().Debug("removeDisklessVolumeOverrides: overrides removed", zap.Int("volume", volNum), zap.Int("count", removed))
 	return strings.Join(out, "\n")
 }
 
@@ -375,6 +412,7 @@ func removeDisklessVolumeOverrides(content string, volNum int) string {
 // agreement.
 func reconcileDisklessVolumeOverrides(content string) string {
 	for _, v := range dedupResourceVolumes(parseResourceConfigVolumes(content)) {
+		zap.L().Debug("reconcileDisklessVolumeOverrides: reconciling volume", zap.Int("volume", v.VolumeID), zap.Int("minor", v.Minor))
 		content = addDisklessVolumeOverrides(content, v.VolumeID, v.Minor)
 	}
 	return content

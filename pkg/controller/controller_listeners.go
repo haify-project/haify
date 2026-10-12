@@ -23,9 +23,12 @@ import (
 // startGRPCServer starts the gRPC server with gRPC-Gateway on separate ports
 func (c *Controller) startGRPCServer() error {
 	// Start gRPC server on the configured port
+	log := c.traceLogger()
 	grpcAddr := fmt.Sprintf("%s:%d", c.config.Server.ListenAddress, c.config.Server.Port)
+	log.Debug("Controller.startGRPCServer: listening for gRPC", zap.String("address", grpcAddr))
 	grpcLis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
+		log.Debug("Controller.startGRPCServer: gRPC listen failed", zap.String("address", grpcAddr), zap.Error(err))
 		return fmt.Errorf("failed to listen for gRPC: %w", err)
 	}
 
@@ -35,6 +38,7 @@ func (c *Controller) startGRPCServer() error {
 	unaryInterceptors := []grpc.UnaryServerInterceptor{traceUnaryInterceptor(c.logger)}
 	streamInterceptors := []grpc.StreamServerInterceptor{traceStreamInterceptor(c.logger)}
 	if c.metrics != nil {
+		log.Debug("Controller.startGRPCServer: adding metrics interceptor")
 		unaryInterceptors = append(unaryInterceptors, c.metrics.UnaryServerInterceptor())
 	}
 
@@ -44,8 +48,11 @@ func (c *Controller) startGRPCServer() error {
 	var auditUser userResolver
 	if c.config.RBAC.Enabled {
 		var err error
+		log.Debug("Controller.startGRPCServer: building RBAC engine", zap.Int("users", len(c.config.RBAC.Users)),
+			zap.Int("policies", len(c.config.RBAC.Policies)))
 		rbacEngine, err = rbac.New(dbRBACStore{c.db}, toRBACUsers(c.config.RBAC.Users), toRBACPolicies(c.config.RBAC.Policies))
 		if err != nil {
+			log.Debug("Controller.startGRPCServer: RBAC engine failed", zap.Error(err))
 			return fmt.Errorf("failed to initialize RBAC: %w", err)
 		}
 		c.rbac = rbacEngine
@@ -67,6 +74,8 @@ func (c *Controller) startGRPCServer() error {
 			zap.Bool("persisted", sink != nil))
 	}
 
+	log.Debug("Controller.startGRPCServer: choosing API access control", zap.Bool("rbac", c.config.RBAC.Enabled),
+		zap.Bool("auth", c.config.Auth.Enabled), zap.Bool("has_token", c.config.Auth.Token != ""))
 	switch {
 	case c.config.RBAC.Enabled:
 		unaryInterceptors = append(unaryInterceptors,
@@ -92,8 +101,10 @@ func (c *Controller) startGRPCServer() error {
 	// network in the clear on a cluster whose operator believed otherwise.
 	tlsSetup, err := newTLSSetup(c.config.TLS)
 	if err != nil {
+		log.Debug("Controller.startGRPCServer: TLS setup failed", zap.Error(err))
 		return fmt.Errorf("failed to configure TLS: %w", err)
 	}
+	log.Debug("Controller.startGRPCServer: TLS decided", zap.Bool("tls", tlsSetup != nil))
 	if tlsSetup != nil {
 		c.restLoopbackTLS = tlsSetup.restLoopback
 	}
@@ -124,6 +135,8 @@ func (c *Controller) startGRPCServer() error {
 		MinTime:             5 * time.Second,
 		PermitWithoutStream: true,
 	}))
+	log.Debug("Controller.startGRPCServer: creating gRPC server", zap.Int("unary_interceptors", len(unaryInterceptors)),
+		zap.Int("stream_interceptors", len(streamInterceptors)), zap.Int("options", len(opts)))
 	c.server = grpc.NewServer(opts...)
 
 	// Register health service
@@ -147,13 +160,16 @@ func (c *Controller) startGRPCServer() error {
 		if err := c.server.Serve(grpcLis); err != nil {
 			c.logger.Error("gRPC server error", zap.Error(err))
 		}
+		log.Debug("Controller.startGRPCServer: gRPC server stopped serving", zap.String("address", grpcAddr))
 	}()
 
 	// Start HTTP REST API gateway
 	restPort := c.restPort()
 	restAddr := fmt.Sprintf("%s:%d", c.config.Server.ListenAddress, restPort)
+	log.Debug("Controller.startGRPCServer: listening for REST", zap.String("address", restAddr))
 	restLis, err := net.Listen("tcp", restAddr)
 	if err != nil {
+		log.Debug("Controller.startGRPCServer: REST listen failed", zap.String("address", restAddr), zap.Error(err))
 		return fmt.Errorf("failed to listen for REST: %w", err)
 	}
 	restScheme := "http"
@@ -177,8 +193,11 @@ func (c *Controller) startGRPCServer() error {
 
 	// Dial loopback explicitly — grpcAddr above is a LISTEN address and is
 	// normally "0.0.0.0:3374", which is not a destination. See loopbackTarget.
+	log.Debug("Controller.startGRPCServer: registering REST gateway", zap.String("loopback", loopbackTarget(c.config)),
+		zap.String("scheme", restScheme))
 	if err := haifypb.RegisterHaifyControllerHandlerFromEndpoint(
 		context.Background(), gatewayMux, loopbackTarget(c.config), loopbackDialOptions(tlsSetup)); err != nil {
+		log.Debug("Controller.startGRPCServer: registering REST gateway failed", zap.Error(err))
 		return fmt.Errorf("failed to register gateway handler: %w", err)
 	}
 
@@ -207,6 +226,7 @@ func (c *Controller) startGRPCServer() error {
 		if err := gatewayServer.Serve(restLis); err != nil && err != http.ErrServerClosed {
 			c.logger.Error("HTTP gateway server error", zap.Error(err))
 		}
+		log.Debug("Controller.startGRPCServer: REST gateway stopped serving", zap.String("address", restAddr))
 	}()
 
 	c.logger.Info("Server listening",
@@ -230,10 +250,12 @@ func corsMiddleware(h http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Type")
 
 		if r.Method == "OPTIONS" {
+			zap.L().Debug("corsMiddleware: answering preflight", zap.String("path", r.URL.Path))
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
+		zap.L().Debug("corsMiddleware: passing request on", zap.String("method", r.Method), zap.String("path", r.URL.Path))
 		h.ServeHTTP(w, r)
 	})
 }
@@ -241,6 +263,8 @@ func corsMiddleware(h http.Handler) http.Handler {
 // startMetricsServer starts the Prometheus metrics HTTP server
 func (c *Controller) startMetricsServer() error {
 	addr := fmt.Sprintf("%s:%d", c.config.Metrics.ListenAddress, c.config.Metrics.Port)
+	log := c.traceLogger()
+	log.Debug("Controller.startMetricsServer: starting", zap.String("address", addr))
 	c.metricsServer = &http.Server{
 		Addr:    addr,
 		Handler: c.metrics.Handler(),
@@ -251,6 +275,7 @@ func (c *Controller) startMetricsServer() error {
 		if err := c.metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			c.logger.Error("Metrics server error", zap.Error(err))
 		}
+		log.Debug("Controller.startMetricsServer: stopped serving", zap.String("address", addr))
 	}()
 
 	return nil

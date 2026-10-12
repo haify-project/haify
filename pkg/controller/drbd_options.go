@@ -3,6 +3,8 @@ package controller
 import (
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // applyDrbdOptions edits an existing DRBD .res config in place, applying each
@@ -13,7 +15,11 @@ import (
 // created. Volumes, on-sections and unrelated settings are preserved, so this
 // is safe to run against a live, multi-volume resource.
 func applyDrbdOptions(config string, raw map[string]string) (string, error) {
+	// Option values are not traced: net/shared-secret is one of them.
+	log := zap.L()
+	log.Debug("applyDrbdOptions: applying", zap.Int("options", len(raw)), zap.Int("config_bytes", len(config)))
 	if strings.TrimSpace(config) == "" {
+		log.Debug("applyDrbdOptions: empty config")
 		return "", fmt.Errorf("empty resource config")
 	}
 	lines := strings.Split(config, "\n")
@@ -24,15 +30,20 @@ func applyDrbdOptions(config string, raw map[string]string) (string, error) {
 			key = strings.TrimSpace(k[i+1:])
 		}
 		if key == "" {
+			log.Debug("applyDrbdOptions: invalid option key", zap.String("option", k))
 			return "", fmt.Errorf("invalid option key %q", k)
 		}
+		log.Debug("applyDrbdOptions: setting option", zap.String("section", section), zap.String("key", key),
+			zap.Bool("has_value", strings.TrimSpace(v) != ""))
 		paths := [][]string{{section}}
 		if section == "disk" {
 			// disk options live inside each per-volume block, not at top level.
 			volumes, err := volumeHeaders(lines)
 			if err != nil {
+				log.Debug("applyDrbdOptions: reading volume blocks failed", zap.Error(err))
 				return "", err
 			}
+			log.Debug("applyDrbdOptions: disk option goes into every volume block", zap.Strings("volumes", volumes))
 			paths = paths[:0]
 			for _, vol := range volumes {
 				paths = append(paths, []string{vol, "disk"})
@@ -42,10 +53,12 @@ func applyDrbdOptions(config string, raw map[string]string) (string, error) {
 			var err error
 			lines, err = setOptionAtPath(lines, path, key, strings.TrimSpace(v))
 			if err != nil {
+				log.Debug("applyDrbdOptions: setting option failed", zap.Strings("path", path), zap.String("key", key), zap.Error(err))
 				return "", err
 			}
 		}
 	}
+	log.Debug("applyDrbdOptions: done", zap.Int("lines", len(lines)))
 	return strings.Join(lines, "\n"), nil
 }
 
@@ -56,6 +69,7 @@ func applyDrbdOptions(config string, raw map[string]string) (string, error) {
 func volumeHeaders(lines []string) ([]string, error) {
 	open, close, err := resourceBlock(lines)
 	if err != nil {
+		zap.L().Debug("volumeHeaders: no resource block", zap.Error(err))
 		return nil, err
 	}
 	var headers []string
@@ -72,8 +86,10 @@ func volumeHeaders(lines []string) ([]string, error) {
 		}
 	}
 	if len(headers) == 0 {
+		zap.L().Debug("volumeHeaders: no volume block, using volume 0")
 		headers = []string{"volume 0"}
 	}
+	zap.L().Debug("volumeHeaders: found", zap.Strings("volumes", headers))
 	return headers, nil
 }
 
@@ -107,6 +123,7 @@ func resourceBlock(lines []string) (open, close int, err error) {
 		}
 	}
 	if open == -1 {
+		zap.L().Debug("resourceBlock: no opening brace", zap.Int("lines", len(lines)))
 		return 0, 0, fmt.Errorf("no resource block found")
 	}
 	depth := 0
@@ -116,6 +133,7 @@ func resourceBlock(lines []string) (open, close int, err error) {
 			return open, j, nil
 		}
 	}
+	zap.L().Debug("resourceBlock: unbalanced braces", zap.Int("open", open), zap.Int("lines", len(lines)))
 	return 0, 0, fmt.Errorf("unbalanced braces in config")
 }
 
@@ -129,9 +147,11 @@ func findChildBlock(lines []string, parentOpen, parentClose int, header string) 
 			for j := i; j <= parentClose; j++ {
 				d += braceDelta(lines[j])
 				if d == 0 {
+					zap.L().Debug("findChildBlock: found", zap.String("header", header), zap.Int("open", i), zap.Int("close", j))
 					return i, j, true
 				}
 			}
+			zap.L().Debug("findChildBlock: block never closes inside parent", zap.String("header", header))
 			return 0, 0, false
 		}
 		depth += braceDelta(lines[i])
@@ -139,6 +159,7 @@ func findChildBlock(lines []string, parentOpen, parentClose int, header string) 
 			depth = 0
 		}
 	}
+	zap.L().Debug("findChildBlock: not found", zap.String("header", header))
 	return 0, 0, false
 }
 
@@ -146,6 +167,7 @@ func findChildBlock(lines []string, parentOpen, parentClose int, header string) 
 // parent's closing brace and returns the updated lines plus the new block's
 // open/close indices.
 func createChildBlock(lines []string, parentOpen, parentClose int, header string) ([]string, int, int) {
+	zap.L().Debug("createChildBlock: creating block", zap.String("header", header), zap.Int("at_line", parentClose))
 	indent := indentOf(lines[parentOpen]) + "    "
 	block := []string{indent + header + " {", indent + "}"}
 	out := make([]string, 0, len(lines)+len(block))
@@ -165,6 +187,7 @@ func setKeyInBlock(lines []string, open, close int, key, value string) []string 
 		t := strings.TrimSpace(lines[i])
 		if depth == 0 && !strings.Contains(t, "{") {
 			if f := strings.Fields(t); len(f) >= 1 && f[0] == key {
+				zap.L().Debug("setKeyInBlock: replacing existing key", zap.String("key", key), zap.Int("line", i))
 				lines[i] = newLine
 				return lines
 			}
@@ -174,6 +197,7 @@ func setKeyInBlock(lines []string, open, close int, key, value string) []string 
 			depth = 0
 		}
 	}
+	zap.L().Debug("setKeyInBlock: inserting new key", zap.String("key", key), zap.Int("line", close))
 	out := make([]string, 0, len(lines)+1)
 	out = append(out, lines[:close]...)
 	out = append(out, newLine)
@@ -186,11 +210,13 @@ func setKeyInBlock(lines []string, open, close int, key, value string) []string 
 func setOptionAtPath(lines []string, path []string, key, value string) ([]string, error) {
 	open, close, err := resourceBlock(lines)
 	if err != nil {
+		zap.L().Debug("setOptionAtPath: no resource block", zap.Strings("path", path), zap.Error(err))
 		return nil, err
 	}
 	for _, header := range path {
 		childOpen, childClose, found := findChildBlock(lines, open, close, header)
 		if !found {
+			zap.L().Debug("setOptionAtPath: block missing, creating it", zap.String("header", header))
 			lines, childOpen, childClose = createChildBlock(lines, open, close, header)
 		}
 		open, close = childOpen, childClose

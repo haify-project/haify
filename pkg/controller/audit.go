@@ -51,13 +51,16 @@ func shortMethod(fullMethod string) string {
 func isReadOnly(method string) bool {
 	// Any *Status method is a read, as RBAC classifies it.
 	if readOnlyMethods[method] || strings.Contains(method, "Status") {
+		zap.L().Debug("isReadOnly: read by name", zap.String("method", method))
 		return true
 	}
 	for _, p := range readOnlyPrefixes {
 		if strings.HasPrefix(method, p) {
+			zap.L().Debug("isReadOnly: read by verb", zap.String("method", method), zap.String("prefix", p))
 			return true
 		}
 	}
+	zap.L().Debug("isReadOnly: mutating call", zap.String("method", method))
 	return false
 }
 
@@ -68,16 +71,20 @@ func clientAddr(ctx context.Context) string {
 		for _, key := range []string{"x-forwarded-for", "grpcgateway-x-forwarded-for"} {
 			if vals := md.Get(key); len(vals) > 0 && vals[0] != "" {
 				// X-Forwarded-For may be a list; the first hop is the client.
+				addr := strings.TrimSpace(vals[0])
 				if i := strings.IndexByte(vals[0], ','); i >= 0 {
-					return strings.TrimSpace(vals[0][:i])
+					addr = strings.TrimSpace(vals[0][:i])
 				}
-				return strings.TrimSpace(vals[0])
+				zap.L().Debug("clientAddr: from forwarded header", zap.String("header", key), zap.String("client", addr))
+				return addr
 			}
 		}
 	}
 	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		zap.L().Debug("clientAddr: from gRPC peer", zap.String("client", p.Addr.String()))
 		return p.Addr.String()
 	}
+	zap.L().Debug("clientAddr: caller address unknown")
 	return "unknown"
 }
 
@@ -161,6 +168,7 @@ func writeAuditEntry(log *zap.Logger, sink auditSink, method, addr, user, target
 	log.Info("api call", fields...)
 
 	if sink == nil {
+		log.Debug("writeAuditEntry: no persistent sink, log only", zap.String("method", method))
 		return
 	}
 	ev := &database.AuditEvent{
@@ -176,7 +184,10 @@ func writeAuditEntry(log *zap.Logger, sink auditSink, method, addr, user, target
 	if err != nil {
 		ev.Error = status.Convert(err).Message()
 	}
+	sinkStart := time.Now()
 	sink(ev)
+	log.Debug("writeAuditEntry: entry persisted", zap.String("method", method), zap.String("result", result),
+		zap.Duration("took", time.Since(sinkStart)))
 }
 
 // softFailureOf reads a failure a handler reported in its response rather than
@@ -194,6 +205,7 @@ func softFailureOf(resp interface{}) error {
 	if m, ok := resp.(interface{ GetMessage() string }); ok && m.GetMessage() != "" {
 		msg = m.GetMessage()
 	}
+	zap.L().Debug("softFailureOf: response reports failure", zap.String("message", msg))
 	return errors.New(msg)
 }
 
@@ -212,8 +224,11 @@ func auditUnaryInterceptor(log *zap.Logger, includeReads bool, resolve userResol
 		}
 		method := shortMethod(info.FullMethod)
 		if !includeReads && isReadOnly(method) {
+			log.Debug("auditUnaryInterceptor: read not audited", zap.String("method", method))
 			return handler(ctx, req)
 		}
+		log.Debug("auditUnaryInterceptor: auditing call", zap.String("method", method),
+			zap.Bool("has_user_resolver", resolve != nil), zap.Bool("has_sink", sink != nil))
 		start := time.Now()
 		resp, err := handler(ctx, req)
 		writeAuditEntry(log, sink, method, clientAddr(ctx), resolveUser(resolve, ctx), auditTarget(req), start, err, softFailureOf(resp))
@@ -229,8 +244,11 @@ func auditStreamInterceptor(log *zap.Logger, includeReads bool, resolve userReso
 		}
 		method := shortMethod(info.FullMethod)
 		if !includeReads && isReadOnly(method) {
+			log.Debug("auditStreamInterceptor: read stream not audited", zap.String("method", method))
 			return handler(srv, ss)
 		}
+		log.Debug("auditStreamInterceptor: auditing stream", zap.String("method", method),
+			zap.Bool("has_user_resolver", resolve != nil), zap.Bool("has_sink", sink != nil))
 		start := time.Now()
 		err := handler(srv, ss)
 		writeAuditEntry(log, sink, method, clientAddr(ss.Context()), resolveUser(resolve, ss.Context()), "", start, err, nil)

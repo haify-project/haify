@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -45,15 +46,23 @@ const deltaCoalesceGap = 1 << 20
 func (bm *BackupManager) incrementalBase(ctx context.Context, info *ResourceInfo, target, node, host string,
 	sizes map[uint32]uint64, encrypted map[uint32]bool) (*database.Backup, string) {
 
+	log := bm.controller.traceLogger()
+	log.Debug("BackupManager.incrementalBase: looking for a base", zap.String("resource", info.Name),
+		zap.String("target", target), zap.String("node", node), zap.String("host", host))
+	full := func(reason string) (*database.Backup, string) {
+		log.Debug("BackupManager.incrementalBase: full backup needed", zap.String("resource", info.Name),
+			zap.String("target", target), zap.String("reason", reason))
+		return nil, reason
+	}
 	parent := bm.latestCompleted(ctx, info.Name, target)
 	if parent == nil {
-		return nil, "no earlier backup of this resource on this target"
+		return full("no earlier backup of this resource on this target")
 	}
 	if parent.Node != node {
-		return nil, fmt.Sprintf("the last backup was read on %s, this one on %s", parent.Node, node)
+		return full(fmt.Sprintf("the last backup was read on %s, this one on %s", parent.Node, node))
 	}
 	if n := bm.chainLength(ctx, parent); n >= maxIncrementalChain {
-		return nil, fmt.Sprintf("the chain already holds %d incrementals", n)
+		return full(fmt.Sprintf("the chain already holds %d incrementals", n))
 	}
 	byID := make(map[uint32]database.BackupVolume, len(parent.Volumes))
 	for _, v := range parent.Volumes {
@@ -61,75 +70,101 @@ func (bm *BackupManager) incrementalBase(ctx context.Context, info *ResourceInfo
 	}
 	for _, v := range info.Volumes {
 		pv, ok := byID[v.VolumeID]
+		log.Debug("BackupManager.incrementalBase: checking volume against parent", zap.Uint32("volume", v.VolumeID),
+			zap.String("parent", parent.ID), zap.Bool("in_parent", ok), zap.String("snapshot", pv.Snapshot))
 		switch {
 		case !ok:
-			return nil, fmt.Sprintf("volume %d is not in the last backup", v.VolumeID)
+			return full(fmt.Sprintf("volume %d is not in the last backup", v.VolumeID))
 		case pv.Snapshot == "":
-			return nil, fmt.Sprintf("the last backup kept no base snapshot of volume %d", v.VolumeID)
+			return full(fmt.Sprintf("the last backup kept no base snapshot of volume %d", v.VolumeID))
 		case pv.Pool != v.Pool || pv.BackingVolume != v.BackingVolume:
-			return nil, fmt.Sprintf("volume %d is backed by a different volume than in the last backup", v.VolumeID)
+			return full(fmt.Sprintf("volume %d is backed by a different volume than in the last backup", v.VolumeID))
 		case pv.Bytes != sizes[v.VolumeID]:
-			return nil, fmt.Sprintf("volume %d changed size since the last backup", v.VolumeID)
+			return full(fmt.Sprintf("volume %d changed size since the last backup", v.VolumeID))
 		case encrypted[v.VolumeID] && !pv.ReadThroughLUKS:
 			// Changes on top of a ciphertext image would restore to noise.
-			return nil, fmt.Sprintf("the last backup of encrypted volume %d holds its ciphertext, not its data", v.VolumeID)
+			return full(fmt.Sprintf("the last backup of encrypted volume %d holds its ciphertext, not its data", v.VolumeID))
 		}
+		start := time.Now()
 		thin, err := bm.controller.deployment.LVIsThin(ctx, host, pv.Pool, pv.Snapshot)
+		log.Debug("BackupManager.incrementalBase: checked base snapshot", zap.String("host", host), zap.String("pool", pv.Pool),
+			zap.String("snapshot", pv.Snapshot), zap.Bool("thin", thin), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil || !thin {
-			return nil, fmt.Sprintf("the base snapshot %s/%s is gone from %s", pv.Pool, pv.Snapshot, node)
+			return full(fmt.Sprintf("the base snapshot %s/%s is gone from %s", pv.Pool, pv.Snapshot, node))
 		}
 	}
+	log.Debug("BackupManager.incrementalBase: base found", zap.String("resource", info.Name), zap.String("parent", parent.ID))
 	return parent, ""
 }
 
 // latestCompleted is the newest completed backup of resource on target.
 func (bm *BackupManager) latestCompleted(ctx context.Context, resource, target string) *database.Backup {
+	log := bm.controller.traceLogger()
+	start := time.Now()
 	backups, err := bm.controller.db.ListBackups(ctx, resource, target)
+	log.Debug("BackupManager.latestCompleted: listed backups", zap.String("resource", resource), zap.String("target", target),
+		zap.Int("count", len(backups)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil
 	}
 	for _, b := range backups {
 		if b.State == database.BackupStateCompleted {
+			log.Debug("BackupManager.latestCompleted: newest completed backup", zap.String("backup", b.ID))
 			return b
 		}
 	}
+	log.Debug("BackupManager.latestCompleted: no completed backup", zap.String("resource", resource), zap.String("target", target))
 	return nil
 }
 
 // chainLength counts the incrementals from rec down to its full backup.
 func (bm *BackupManager) chainLength(ctx context.Context, rec *database.Backup) int {
+	log := bm.controller.traceLogger()
 	n := 0
 	for rec != nil && rec.Kind == database.BackupKindIncremental && n <= maxIncrementalChain {
 		n++
 		parent, err := bm.controller.db.GetBackup(ctx, rec.Parent)
+		log.Debug("BackupManager.chainLength: followed parent", zap.String("backup", rec.ID),
+			zap.String("parent", rec.Parent), zap.Bool("found", err == nil), zap.Error(err))
 		if err != nil {
 			break
 		}
 		rec = parent
 	}
+	log.Debug("BackupManager.chainLength: chain counted", zap.Int("count", n))
 	return n
 }
 
 // restoreChain returns the backups to apply to restore rec, full backup first.
 func (bm *BackupManager) restoreChain(ctx context.Context, rec *database.Backup) ([]*database.Backup, error) {
+	log := bm.controller.traceLogger()
+	log.Debug("BackupManager.restoreChain: building restore chain", zap.String("backup", rec.ID), zap.String("kind", rec.Kind))
 	chain := []*database.Backup{rec}
 	for cur := rec; cur.Kind == database.BackupKindIncremental; {
 		if len(chain) > maxIncrementalChain+1 {
+			log.Debug("BackupManager.restoreChain: chain too long", zap.String("backup", rec.ID), zap.Int("count", len(chain)))
 			return nil, fmt.Errorf("backup %q: the chain to its full backup is longer than %d", rec.ID, maxIncrementalChain)
 		}
 		parent, err := bm.controller.db.GetBackup(ctx, cur.Parent)
 		if err != nil {
+			log.Debug("BackupManager.restoreChain: parent gone", zap.String("backup", cur.ID),
+				zap.String("parent", cur.Parent), zap.Error(err))
 			return nil, fmt.Errorf("backup %q is built on %q, which is gone: %w", cur.ID, cur.Parent, err)
 		}
 		if parent.State != database.BackupStateCompleted {
+			log.Debug("BackupManager.restoreChain: parent not completed", zap.String("backup", cur.ID),
+				zap.String("parent", parent.ID), zap.String("state", parent.State))
 			return nil, fmt.Errorf("backup %q is built on %q, which is %s", cur.ID, parent.ID, parent.State)
 		}
+		log.Debug("BackupManager.restoreChain: parent added", zap.String("backup", cur.ID), zap.String("parent", parent.ID),
+			zap.String("kind", parent.Kind))
 		chain = append(chain, parent)
 		cur = parent
 	}
 	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
 		chain[i], chain[j] = chain[j], chain[i]
 	}
+	log.Debug("BackupManager.restoreChain: chain built", zap.String("backup", rec.ID), zap.Int("count", len(chain)))
 	return chain, nil
 }
 
@@ -139,6 +174,9 @@ func (bm *BackupManager) uploadDeltas(ctx context.Context, sess backup.Session, 
 	info *ResourceInfo, parent *database.Backup, snaps map[uint32]string, sizes map[uint32]uint64,
 	encrypted map[uint32]bool, rec *database.Backup, uploaded *[]string) error {
 
+	log := bm.controller.traceLogger()
+	log.Debug("BackupManager.uploadDeltas: uploading changes", zap.String("resource", info.Name), zap.String("host", host),
+		zap.String("backup", rec.ID), zap.String("parent", parent.ID), zap.Int("volumes", len(info.Volumes)))
 	bases := make(map[uint32]string, len(parent.Volumes))
 	for _, v := range parent.Volumes {
 		bases[v.VolumeID] = v.Snapshot
@@ -147,14 +185,21 @@ func (bm *BackupManager) uploadDeltas(ctx context.Context, sess backup.Session, 
 		size := sizes[v.VolumeID]
 		ranges := backup.ObjectPath(rec.Prefix, fmt.Sprintf("volume-%d.ranges", v.VolumeID))
 		object := backup.ObjectPath(rec.Prefix, fmt.Sprintf("volume-%d.delta.gz", v.VolumeID))
+		log.Debug("BackupManager.uploadDeltas: volume", zap.Uint32("volume", v.VolumeID), zap.String("pool", v.Pool),
+			zap.String("base", bases[v.VolumeID]), zap.String("snapshot", snaps[v.VolumeID]),
+			zap.Uint64("size_bytes", size), zap.Bool("encrypted", encrypted[v.VolumeID]))
 		source, closeSource, err := backupSnapshotSource(v.Pool, v.BackingVolume, snaps[v.VolumeID], encrypted[v.VolumeID])
 		if err != nil {
+			log.Debug("BackupManager.uploadDeltas: no snapshot source", zap.Uint32("volume", v.VolumeID), zap.Error(err))
 			return fmt.Errorf("volume %d of %q: %w", v.VolumeID, info.Name, err)
 		}
 		cmd := deltaUploadCmd(v.Pool, bases[v.VolumeID], snaps[v.VolumeID], size, source, closeSource,
 			sess.PushCmd(ranges, 0), sess.PushCmd(object, size))
 		*uploaded = append(*uploaded, ranges, object)
+		start := time.Now()
 		res, err := bm.execDataMove(ctx, host, "bash -c "+shellSingleQuote(cmd))
+		log.Debug("BackupManager.uploadDeltas: thin_delta upload ran", zap.String("host", host), zap.Uint32("volume", v.VolumeID),
+			zap.Bool("success", err == nil && res.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			return fmt.Errorf("upload changes to volume %d of %q: %w", v.VolumeID, info.Name, err)
 		}
@@ -163,10 +208,16 @@ func (bm *BackupManager) uploadDeltas(ctx context.Context, sess backup.Session, 
 		}
 		report, err := parseDeltaReport(res)
 		if err != nil {
+			log.Debug("BackupManager.uploadDeltas: no upload report", zap.Uint32("volume", v.VolumeID), zap.Error(err))
 			return fmt.Errorf("upload changes to volume %d of %q: %w", v.VolumeID, info.Name, err)
 		}
+		log.Debug("BackupManager.uploadDeltas: upload report", zap.Uint32("volume", v.VolumeID), zap.Uint64("sent", report.sent),
+			zap.Uint64("ranges_bytes", report.rangesBytes), zap.Uint64("changed_bytes", report.changed))
 		for obj, want := range map[string]uint64{ranges: report.rangesBytes, object: report.sent} {
+			start := time.Now()
 			stored, err := sess.SizeBytes(ctx, obj)
+			log.Debug("BackupManager.uploadDeltas: verified stored size", zap.String("object", obj), zap.Uint64("want", want),
+				zap.Uint64("stored", stored), zap.Duration("took", time.Since(start)), zap.Error(err))
 			if err != nil {
 				return fmt.Errorf("verify volume %d of %q: %w", v.VolumeID, info.Name, err)
 			}
@@ -182,6 +233,8 @@ func (bm *BackupManager) uploadDeltas(ctx context.Context, sess backup.Session, 
 		})
 		rec.TotalBytes += size
 	}
+	log.Debug("BackupManager.uploadDeltas: all changes uploaded", zap.String("backup", rec.ID),
+		zap.Uint64("total_bytes", rec.TotalBytes))
 	return nil
 }
 
@@ -277,6 +330,7 @@ func parseDeltaReport(res *deployment.ExecResult) (deltaReport, error) {
 		}
 	}
 	if len(seen) != 3 || r.sent == 0 {
+		zap.L().Debug("parseDeltaReport: counters missing", zap.Int("seen", len(seen)), zap.Uint64("sent", r.sent))
 		return r, fmt.Errorf("the upload did not report what it sent")
 	}
 	return r, nil
@@ -306,10 +360,16 @@ sudo blockdev --flushbufs %s`, pullRanges, pullData, target, target)
 // LVM snapshot slows every write to its origin for as long as it exists, and
 // half a set of bases cannot serve as one.
 func (bm *BackupManager) keepBases(ctx context.Context, host string, rec *database.Backup, snaps map[uint32]string) map[uint32]bool {
+	log := bm.controller.traceLogger()
+	log.Debug("BackupManager.keepBases: deciding which snapshots stay", zap.String("backup", rec.ID), zap.String("host", host))
 	keep := make(map[uint32]bool, len(rec.Volumes))
 	for _, v := range rec.Volumes {
+		start := time.Now()
 		thin, err := bm.controller.deployment.LVIsThin(ctx, host, v.Pool, snaps[v.VolumeID])
+		log.Debug("BackupManager.keepBases: checked snapshot", zap.String("host", host), zap.String("pool", v.Pool),
+			zap.String("snapshot", snaps[v.VolumeID]), zap.Bool("thin", thin), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil || !thin {
+			log.Debug("BackupManager.keepBases: not every volume thin, keeping none", zap.String("backup", rec.ID))
 			return map[uint32]bool{}
 		}
 		keep[v.VolumeID] = true
@@ -317,19 +377,26 @@ func (bm *BackupManager) keepBases(ctx context.Context, host string, rec *databa
 	for i := range rec.Volumes {
 		rec.Volumes[i].Snapshot = snaps[rec.Volumes[i].VolumeID]
 	}
+	log.Debug("BackupManager.keepBases: snapshots kept as bases", zap.String("backup", rec.ID), zap.Int("count", len(keep)))
 	return keep
 }
 
 // releaseBases removes the base snapshots rec kept and records that they are
 // gone. Failures are logged: a leftover snapshot costs pool space, not data.
 func (bm *BackupManager) releaseBases(ctx context.Context, rec *database.Backup) {
+	log := bm.controller.traceLogger()
 	host := bm.controller.ResolveHost(rec.Node)
+	log.Debug("BackupManager.releaseBases: releasing base snapshots", zap.String("backup", rec.ID), zap.String("host", host))
 	changed := false
 	for i, v := range rec.Volumes {
 		if v.Snapshot == "" {
 			continue
 		}
-		if _, err := bm.controller.deployment.LVRemoveSnapshot(ctx, []string{host}, v.Pool, v.Snapshot); err != nil {
+		start := time.Now()
+		_, err := bm.controller.deployment.LVRemoveSnapshot(ctx, []string{host}, v.Pool, v.Snapshot)
+		log.Debug("BackupManager.releaseBases: removed snapshot", zap.String("host", host), zap.String("pool", v.Pool),
+			zap.String("snapshot", v.Snapshot), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			bm.controller.logger.Warn("Failed to remove a backup base snapshot",
 				zap.String("backup", rec.ID), zap.String("snapshot", v.Snapshot), zap.Error(err))
 			continue
@@ -338,9 +405,13 @@ func (bm *BackupManager) releaseBases(ctx context.Context, rec *database.Backup)
 		changed = true
 	}
 	if changed {
+		start := time.Now()
 		if err := bm.controller.db.SaveBackup(ctx, rec); err != nil {
 			bm.controller.logger.Warn("Failed to record a released base snapshot",
 				zap.String("backup", rec.ID), zap.Error(err))
+		} else {
+			log.Debug("BackupManager.releaseBases: recorded release", zap.String("backup", rec.ID),
+				zap.Duration("took", time.Since(start)))
 		}
 	}
 }
@@ -348,7 +419,10 @@ func (bm *BackupManager) releaseBases(ctx context.Context, rec *database.Backup)
 // releaseOlderBases drops the base snapshots every other backup of rec's
 // resource on rec's target still holds: rec's own are the base from now on.
 func (bm *BackupManager) releaseOlderBases(ctx context.Context, rec *database.Backup) {
+	log := bm.controller.traceLogger()
 	all, err := bm.controller.db.ListBackups(ctx, rec.Resource, rec.Target)
+	log.Debug("BackupManager.releaseOlderBases: listed backups", zap.String("backup", rec.ID),
+		zap.String("resource", rec.Resource), zap.String("target", rec.Target), zap.Int("count", len(all)), zap.Error(err))
 	if err != nil {
 		return
 	}
@@ -362,17 +436,29 @@ func (bm *BackupManager) releaseOlderBases(ctx context.Context, rec *database.Ba
 // readable reports whether node holds an UpToDate replica a backup may be read
 // from: never the asynchronous DR copy, which may be behind.
 func (bm *BackupManager) readable(info *ResourceInfo, node string) bool {
+	log := bm.controller.traceLogger()
 	if node == "" || (info.WANMode && node == info.DRNode) {
+		log.Debug("BackupManager.readable: node not a backup source", zap.String("resource", info.Name),
+			zap.String("node", node), zap.Bool("wan_mode", info.WANMode), zap.String("dr_node", info.DRNode))
 		return false
 	}
 	st := info.NodeStates[node]
-	return st != nil && st.DiskState == "UpToDate"
+	ok := st != nil && st.DiskState == "UpToDate"
+	disk := ""
+	if st != nil {
+		disk = st.DiskState
+	}
+	log.Debug("BackupManager.readable: replica state", zap.String("resource", info.Name), zap.String("node", node),
+		zap.String("disk_state", disk), zap.Bool("readable", ok))
+	return ok
 }
 
 // dependents lists the backups built directly on id.
 func (bm *BackupManager) dependents(ctx context.Context, rec *database.Backup) ([]string, error) {
+	log := bm.controller.traceLogger()
 	all, err := bm.controller.db.ListBackups(ctx, rec.Resource, rec.Target)
 	if err != nil {
+		log.Debug("BackupManager.dependents: listing backups failed", zap.String("backup", rec.ID), zap.Error(err))
 		return nil, err
 	}
 	var out []string
@@ -381,5 +467,6 @@ func (bm *BackupManager) dependents(ctx context.Context, rec *database.Backup) (
 			out = append(out, b.ID)
 		}
 	}
+	log.Debug("BackupManager.dependents: backups built on this one", zap.String("backup", rec.ID), zap.Strings("dependents", out))
 	return out, nil
 }

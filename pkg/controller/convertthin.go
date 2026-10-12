@@ -1,14 +1,11 @@
 package controller
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
 
 	"go.uber.org/zap"
-
-	"github.com/haify-project/haify/pkg/deployment"
 )
 
 // Converting a thick LVM pool to a thin one, in place, one node at a time.
@@ -104,7 +101,13 @@ const thinPoolName = "haifythin"
 // planThinConversion decides whether this node's pool can be rebuilt as thin
 // right now, and how big to make the pool.
 func planThinConversion(in *thinConversionInput) (*thinConversionPlan, error) {
+	log := zap.L()
+	log.Debug("planThinConversion: planning", zap.String("node", in.Node), zap.String("pool", in.Pool),
+		zap.Uint64("vg_free_bytes", in.VGFreeBytes), zap.Int("resources", len(in.Resources)),
+		zap.Bool("thin_pool_exists", in.ThinPoolExists), zap.String("existing_thin_pool", in.ExistingThinPool),
+		zap.Uint64("thin_pool_metadata_bytes", in.ThinPoolMetadataBytes))
 	if in.Node == "" || in.Pool == "" {
+		log.Debug("planThinConversion: node or pool missing")
 		return nil, fmt.Errorf("node and pool are both required")
 	}
 
@@ -119,20 +122,28 @@ func planThinConversion(in *thinConversionInput) (*thinConversionPlan, error) {
 	for _, res := range in.Resources {
 		for _, v := range res.Volumes {
 			if v.Pool != in.Pool {
+				log.Debug("planThinConversion: volume in another pool, skipped", zap.String("resource", res.Name),
+					zap.String("volume", v.BackingVolume), zap.String("volume_pool", v.Pool))
 				continue // a different pool on the same node is not our business
 			}
 			if !hasNode(res, in.Node) {
+				log.Debug("planThinConversion: resource not on node, skipped", zap.String("resource", res.Name))
 				continue
 			}
 			if in.AlreadyThin[v.BackingVolume] {
+				log.Debug("planThinConversion: volume already thin", zap.String("resource", res.Name),
+					zap.String("volume", v.BackingVolume))
 				alreadyThin++
 				continue // a half-converted pool still has work in the rest of it
 			}
 			if err := checkSafeToRebuild(res, in.Node, in.DRBDName[in.Node]); err != nil {
+				log.Debug("planThinConversion: unsafe to rebuild", zap.String("resource", res.Name), zap.Error(err))
 				return nil, err
 			}
 			size, ok := in.BackingBytes[v.BackingVolume]
 			if !ok || size == 0 {
+				log.Debug("planThinConversion: exact size unknown", zap.String("resource", res.Name),
+					zap.String("volume", v.BackingVolume), zap.Bool("found", ok))
 				return nil, fmt.Errorf("could not read the exact size of %s/%s; refusing to guess",
 					in.Pool, v.BackingVolume)
 			}
@@ -140,6 +151,9 @@ func planThinConversion(in *thinConversionInput) (*thinConversionPlan, error) {
 			if p, ok := in.Present[v.BackingVolume]; ok {
 				present = p
 			}
+			log.Debug("planThinConversion: volume to convert", zap.String("resource", res.Name),
+				zap.String("volume", v.BackingVolume), zap.Uint64("size_bytes", size),
+				zap.Bool("present", present), zap.Bool("encrypted", v.Encrypted))
 			vols = append(vols, thinVolumePlan{
 				Resource: res.Name, LV: v.BackingVolume, SizeBytes: size, NeedsTeardown: present,
 				Encrypted: v.Encrypted,
@@ -151,6 +165,7 @@ func planThinConversion(in *thinConversionInput) (*thinConversionPlan, error) {
 		}
 	}
 	if len(vols) == 0 {
+		log.Debug("planThinConversion: nothing to convert", zap.Int("already_thin", alreadyThin))
 		if alreadyThin > 0 {
 			return nil, fmt.Errorf("every volume in %s on %s is already thin; nothing to convert",
 				in.Pool, in.Node)
@@ -171,6 +186,8 @@ func planThinConversion(in *thinConversionInput) (*thinConversionPlan, error) {
 		if name == "" {
 			name = thinPoolName
 		}
+		log.Debug("planThinConversion: extending existing thin pool", zap.String("thin_pool", name),
+			zap.Uint64("metadata_grow_to", grow), zap.Int("volumes", len(vols)))
 		return &thinConversionPlan{
 			Node: in.Node, Pool: in.Pool, ThinPoolName: name,
 			CreatePool: false, ExtendPool: true, MetadataGrowTo: grow, Volumes: vols,
@@ -183,12 +200,18 @@ func planThinConversion(in *thinConversionInput) (*thinConversionPlan, error) {
 	usable := freeable + in.VGFreeBytes
 	metadata := thinMetadataBytes(usable)
 	reserved := 2 * metadata
+	log.Debug("planThinConversion: sizing new thin pool", zap.Uint64("usable_bytes", usable),
+		zap.Uint64("origin_bytes", originTotal), zap.Uint64("metadata_bytes", metadata))
 	if usable <= originTotal+reserved {
+		log.Debug("planThinConversion: no headroom for snapshots", zap.Uint64("usable_bytes", usable),
+			zap.Uint64("needed_bytes", originTotal+reserved))
 		return nil, fmt.Errorf(
 			"converting %s on %s would leave no headroom for snapshots (%d MiB free beyond the volumes); "+
 				"grow the volume group first", in.Pool, in.Node, (usable-originTotal)/(1<<20))
 	}
 	poolBytes := usable - reserved
+	log.Debug("planThinConversion: creating thin pool", zap.String("thin_pool", thinPoolName),
+		zap.Uint64("pool_bytes", poolBytes), zap.Int("volumes", len(vols)))
 
 	return &thinConversionPlan{
 		Node:          in.Node,
@@ -204,11 +227,16 @@ func planThinConversion(in *thinConversionInput) (*thinConversionPlan, error) {
 // checkSafeToRebuild refuses the cases where losing this node's copy — for the
 // length of a full resync — is not something the resource can absorb.
 func checkSafeToRebuild(res *ResourceInfo, node, drbdName string) error {
+	log := zap.L()
+	log.Debug("checkSafeToRebuild: checking", zap.String("resource", res.Name), zap.String("node", node),
+		zap.String("drbd_name", drbdName))
 	st, ok := liveState(res, node, drbdName)
 	if !ok {
+		log.Debug("checkSafeToRebuild: no live state", zap.String("resource", res.Name), zap.String("node", node))
 		return fmt.Errorf("no live DRBD state for %s on %s; refusing to convert blind", res.Name, node)
 	}
 	if strings.EqualFold(st.Role, "Primary") {
+		log.Debug("checkSafeToRebuild: node is Primary", zap.String("resource", res.Name), zap.String("node", node))
 		return fmt.Errorf("%s is Primary on %s; move it first (haify ha evict, or resource secondary)",
 			res.Name, node)
 	}
@@ -219,7 +247,10 @@ func checkSafeToRebuild(res *ResourceInfo, node, drbdName string) error {
 		if peer == node || (drbdName != "" && peer == drbdName) {
 			continue
 		}
+		log.Debug("checkSafeToRebuild: peer state", zap.String("resource", res.Name), zap.String("peer", peer),
+			zap.String("disk_state", ps.DiskState), zap.String("replication", ps.Replication))
 		if isResyncing(ps.Replication) {
+			log.Debug("checkSafeToRebuild: peer resyncing", zap.String("resource", res.Name), zap.String("peer", peer))
 			return fmt.Errorf("%s is mid-resync on %s (%s, %.0f%%); wait for it to finish",
 				res.Name, peer, ps.Replication, ps.SyncPercent)
 		}
@@ -227,16 +258,19 @@ func checkSafeToRebuild(res *ResourceInfo, node, drbdName string) error {
 			continue // a tiebreaker votes but holds nothing
 		}
 		if ps.DiskState != "UpToDate" {
+			log.Debug("checkSafeToRebuild: peer not UpToDate", zap.String("resource", res.Name), zap.String("peer", peer))
 			return fmt.Errorf("%s is %s on %s; every other replica must be UpToDate first",
 				res.Name, ps.DiskState, peer)
 		}
 		diskful++
 	}
 	if diskful < 2 {
+		log.Debug("checkSafeToRebuild: too few diskful copies", zap.String("resource", res.Name), zap.Int("diskful", diskful))
 		return fmt.Errorf(
 			"converting %s on %s would leave only one diskful copy while it resyncs; "+
 				"add a replica first", res.Name, node)
 	}
+	log.Debug("checkSafeToRebuild: safe", zap.String("resource", res.Name), zap.String("node", node), zap.Int("diskful", diskful))
 	return nil
 }
 
@@ -259,13 +293,18 @@ func isResyncing(replication string) bool {
 // review and then refused every node on a real cluster.
 func liveState(res *ResourceInfo, node, drbdName string) (*ResourceNodeState, bool) {
 	if st, ok := res.NodeStates[node]; ok {
+		zap.L().Debug("liveState: found under node name", zap.String("resource", res.Name), zap.String("node", node))
 		return st, true
 	}
 	if drbdName != "" {
 		if st, ok := res.NodeStates[drbdName]; ok {
+			zap.L().Debug("liveState: found under DRBD name", zap.String("resource", res.Name),
+				zap.String("node", node), zap.String("drbd_name", drbdName))
 			return st, true
 		}
 	}
+	zap.L().Debug("liveState: not found", zap.String("resource", res.Name), zap.String("node", node),
+		zap.String("drbd_name", drbdName))
 	return nil, false
 }
 
@@ -276,241 +315,6 @@ func hasNode(res *ResourceInfo, node string) bool {
 		}
 	}
 	return false
-}
-
-// ConvertPoolToThin rebuilds one node's pool as an LVM thin pool.
-//
-// Only one node at a time, on purpose: the node's copy is destroyed and
-// resynced in full from its peers, and a full 6 GiB resync is minutes on a LAN
-// and around half an hour to an off-site replica. Doing two at once would
-// stack those windows.
-func (rm *ResourceManager) ConvertPoolToThin(ctx context.Context, nodeName, poolName string) error {
-	if rm.deployment == nil {
-		return fmt.Errorf("deployment client not set")
-	}
-	host := rm.controller.nodes.GetNodeAddressByName(nodeName)
-	if host == "" {
-		return fmt.Errorf("node %q is not registered", nodeName)
-	}
-
-	resources, err := rm.liveResourcesOn(ctx, nodeName)
-	if err != nil {
-		return err
-	}
-
-	in := &thinConversionInput{
-		Node:         nodeName,
-		Pool:         poolName,
-		Resources:    resources,
-		BackingBytes: map[string]uint64{},
-		AlreadyThin:  map[string]bool{},
-		Present:      map[string]bool{},
-		DRBDName: map[string]string{
-			nodeName: rm.controller.nodes.GetDRBDNameByRef(nodeName),
-		},
-	}
-	if in.VGFreeBytes, err = rm.deployment.VGFreeBytes(ctx, host, poolName); err != nil {
-		return fmt.Errorf("inspect %s on %s: %w", poolName, nodeName, err)
-	}
-	if in.ExistingThinPool, err = rm.deployment.LVThinPoolIn(ctx, host, poolName); err != nil {
-		return fmt.Errorf("look for a thin pool in %s on %s: %w", poolName, nodeName, err)
-	}
-	in.ThinPoolExists = in.ExistingThinPool != ""
-	if in.ThinPoolExists {
-		if in.ThinPoolMetadataBytes, err = rm.deployment.LVSizeBytes(ctx, host, poolName,
-			in.ExistingThinPool+"_tmeta"); err != nil {
-			return fmt.Errorf("read the metadata size of %s/%s on %s: %w",
-				poolName, in.ExistingThinPool, nodeName, err)
-		}
-	}
-	for _, res := range resources {
-		for _, v := range res.Volumes {
-			if v.Pool != poolName || !hasNode(res, nodeName) {
-				continue
-			}
-			thin, terr := rm.deployment.LVIsThin(ctx, host, poolName, v.BackingVolume)
-			if terr != nil {
-				return fmt.Errorf("check whether %s/%s is thin: %w", poolName, v.BackingVolume, terr)
-			}
-			in.AlreadyThin[v.BackingVolume] = thin
-
-			present, perr := rm.deployment.LVExists(ctx, host, poolName, v.BackingVolume)
-			if perr != nil {
-				return fmt.Errorf("look for %s/%s on %s: %w", poolName, v.BackingVolume, nodeName, perr)
-			}
-			in.Present[v.BackingVolume] = present
-
-			// Every replica of a DRBD volume is the same number of bytes, so a
-			// peer is an equally good source — and the only one left when an
-			// earlier attempt already removed this node's copy.
-			sizeHost := host
-			if !present {
-				if sizeHost, err = rm.peerHostWith(res, nodeName); err != nil {
-					return err
-				}
-			}
-			size, serr := rm.deployment.LVSizeBytes(ctx, sizeHost, poolName, v.BackingVolume)
-			if serr != nil {
-				return fmt.Errorf("read size of %s/%s: %w", poolName, v.BackingVolume, serr)
-			}
-			in.BackingBytes[v.BackingVolume] = size
-		}
-	}
-
-	plan, err := planThinConversion(in)
-	if err != nil {
-		return err
-	}
-
-	rm.controller.logger.Info("Converting pool to thin",
-		zap.String("node", nodeName), zap.String("pool", poolName),
-		zap.Uint64("expected_pool_bytes", plan.PoolBytes), zap.Int("volumes", len(plan.Volumes)))
-
-	return rm.applyThinConversion(ctx, host, plan)
-}
-
-// applyThinConversion carries out an approved plan. Every step past the first
-// removal is destructive-in-progress: the node holds no copy until the last
-// attach, so a step that fails has to say so. It is kept apart from planning
-// and from gathering so that failure handling is testable without a cluster.
-func (rm *ResourceManager) applyThinConversion(ctx context.Context, host string, plan *thinConversionPlan) error {
-	log := rm.controller.logger
-
-	// Detach and remove every volume first, then build the pool from all the
-	// freed extents. Interleaving would size the pool against space the other
-	// volumes still hold.
-	for _, v := range plan.Volumes {
-		if !v.NeedsTeardown {
-			continue // an earlier attempt already removed it
-		}
-		if err := execFailure(rm.deployment.DRBDDetach(ctx, host, v.Resource)); err != nil {
-			return fmt.Errorf("detach %s on %s: %w", v.Resource, plan.Node, err)
-		}
-		// The open container holds the LV, so lvremove would refuse. Its key
-		// goes too: the volume it protected is about to be released.
-		if v.Encrypted {
-			rm.closeBackingVolumeOn(ctx, []string{host}, plan.Pool, v.LV)
-		}
-		if err := execFailure(rm.deployment.LVRemove(ctx, []string{host},
-			fmt.Sprintf("%s/%s", plan.Pool, v.LV))); err != nil {
-			return fmt.Errorf("remove %s/%s (the node is now diskless; rerun to finish): %w",
-				plan.Pool, v.LV, err)
-		}
-	}
-
-	switch {
-	case plan.CreatePool:
-		if err := execFailure(rm.deployment.LVCreateThinPoolAllFree(ctx, []string{host},
-			plan.Pool, plan.ThinPoolName, plan.MetadataBytes)); err != nil {
-			return fmt.Errorf("create thin pool %s/%s (the node is diskless; rerun to finish): %w",
-				plan.Pool, plan.ThinPoolName, err)
-		}
-	case plan.ExtendPool:
-		// Metadata first — see LVExtendThinPoolMetadata for why the order is
-		// not interchangeable.
-		if plan.MetadataGrowTo > 0 {
-			if err := execFailure(rm.deployment.LVExtendThinPoolMetadata(ctx, []string{host},
-				plan.Pool, plan.ThinPoolName, plan.MetadataGrowTo)); err != nil {
-				return fmt.Errorf("grow the metadata area of %s/%s: %w", plan.Pool, plan.ThinPoolName, err)
-			}
-		}
-		if err := execFailure(rm.deployment.LVExtendThinPoolAllFree(ctx, []string{host},
-			plan.Pool, plan.ThinPoolName)); err != nil {
-			return fmt.Errorf("grow %s/%s into the freed extents (the node is diskless; rerun to finish): %w",
-				plan.Pool, plan.ThinPoolName, err)
-		}
-	}
-
-	for _, v := range plan.Volumes {
-		if err := execFailure(rm.deployment.LVCreateThinVolume(ctx, []string{host},
-			plan.Pool, plan.ThinPoolName, v.LV, fmt.Sprintf("%dB", v.SizeBytes))); err != nil {
-			return fmt.Errorf("create thin volume %s/%s: %w", plan.Pool, v.LV, err)
-		}
-		// The config still names the container, so DRBD attaches nothing
-		// until it exists again, under a key made fresh on this node. The size
-		// was read from the old LV, header included.
-		if v.Encrypted {
-			if err := rm.encryptBackingVolumeOn(ctx, host, plan.Node, plan.Pool, v.LV,
-				fmt.Sprintf("/dev/%s/%s", plan.Pool, v.LV)); err != nil {
-				return err
-			}
-		}
-		if err := execFailure(rm.deployment.DRBDCreateMD(ctx, []string{host}, v.Resource,
-			deployment.DefaultMaxPeers)); err != nil {
-			return fmt.Errorf("create metadata for %s: %w", v.Resource, err)
-		}
-		if err := execFailure(rm.deployment.DRBDAttach(ctx, host, v.Resource)); err != nil {
-			return fmt.Errorf("attach %s: %w", v.Resource, err)
-		}
-		log.Info("Volume rebuilt as thin; full resync started",
-			zap.String("node", plan.Node), zap.String("volume", v.LV),
-			zap.String("resource", v.Resource))
-	}
-	return nil
-}
-
-// peerHostWith returns the address of another node holding this resource, for
-// the questions this node can no longer answer about itself.
-func (rm *ResourceManager) peerHostWith(res *ResourceInfo, node string) (string, error) {
-	for _, peer := range res.Nodes {
-		if peer == node {
-			continue
-		}
-		if addr := rm.controller.nodes.GetNodeAddressByName(peer); addr != "" {
-			return addr, nil
-		}
-	}
-	return "", fmt.Errorf("no registered peer of %s left to read the size of its volumes from", res.Name)
-}
-
-// execFailure collapses a deployment call's two failure channels into one.
-//
-// Exec returns a nil error whenever SSH itself worked, so a command that ran
-// and exited non-zero — lvcreate exits 5 on "Insufficient free space" — is
-// reported only through the result. Checking the error alone reports those
-// runs as success, which is how a conversion that built nothing at all still
-// printed "rebuilt as thin" and left an empty volume group behind.
-func execFailure(res *deployment.ExecResult, err error) error {
-	if err != nil {
-		return err
-	}
-	if res == nil || res.AllSuccess() {
-		return nil
-	}
-	var msgs []string
-	for _, h := range res.Hosts {
-		if !h.Success {
-			msgs = append(msgs, fmt.Sprintf("%s: %s", h.Host, strings.TrimSpace(h.Output)))
-		}
-	}
-	sort.Strings(msgs) // map iteration order must not change the message
-	return fmt.Errorf("%s", strings.Join(msgs, "; "))
-}
-
-// liveResourcesOn returns live state for every resource with a replica on the
-// node. Planning from the database alone would miss a resync in flight, which
-// is exactly the state that must block a conversion.
-func (rm *ResourceManager) liveResourcesOn(ctx context.Context, nodeName string) ([]*ResourceInfo, error) {
-	if rm.controller.db == nil {
-		return nil, fmt.Errorf("database not available")
-	}
-	dbResources, err := rm.controller.db.ListResources(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list resources: %w", err)
-	}
-	var out []*ResourceInfo
-	for _, dbRes := range dbResources {
-		info, gerr := rm.GetResource(ctx, dbRes.Name)
-		if gerr != nil {
-			// A resource whose state cannot be read might be the one that makes
-			// this unsafe, so refuse rather than plan around it.
-			return nil, fmt.Errorf("read live state of %s: %w", dbRes.Name, gerr)
-		}
-		if hasNode(info, nodeName) {
-			out = append(out, info)
-		}
-	}
-	return out, nil
 }
 
 // thinMetadataFloor is the smallest metadata area worth creating. LVM's own
@@ -534,11 +338,14 @@ func thinMetadataBytes(poolBytes uint64) uint64 {
 	const mib = 1 << 20
 	m := (poolBytes/100 + mib - 1) / mib * mib
 	if m < thinMetadataFloor {
+		zap.L().Debug("thinMetadataBytes: using floor", zap.Uint64("pool_bytes", poolBytes), zap.Uint64("metadata_bytes", thinMetadataFloor))
 		return thinMetadataFloor
 	}
 	// LVM caps thin metadata at 16 GiB.
 	if m > 16*gib {
+		zap.L().Debug("thinMetadataBytes: capped at 16 GiB", zap.Uint64("pool_bytes", poolBytes))
 		return 16 * gib
 	}
+	zap.L().Debug("thinMetadataBytes: one percent of pool", zap.Uint64("pool_bytes", poolBytes), zap.Uint64("metadata_bytes", m))
 	return m
 }

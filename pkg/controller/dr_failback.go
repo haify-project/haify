@@ -31,12 +31,19 @@ const (
 var failbackPollInterval = 5 * time.Second
 
 func (s *Server) DRFailback(ctx context.Context, req *pb.DRFailbackRequest) (*pb.DRFailbackResponse, error) {
+	log := s.ctrl.traceLogger()
 	resp := &pb.DRFailbackResponse{}
 	fail := func(format string, args ...any) (*pb.DRFailbackResponse, error) {
 		resp.Success, resp.Message = false, fmt.Sprintf(format, args...)
+		log.Debug("Server.DRFailback: refused or failed", zap.String("resource", req.GetName()),
+			zap.String("message", resp.Message), zap.Int("steps_done", len(resp.Steps)))
 		return resp, nil
 	}
-	step := func(format string, args ...any) { resp.Steps = append(resp.Steps, fmt.Sprintf(format, args...)) }
+	step := func(format string, args ...any) {
+		resp.Steps = append(resp.Steps, fmt.Sprintf(format, args...))
+		log.Debug("Server.DRFailback: step done", zap.String("resource", req.GetName()),
+			zap.String("step", resp.Steps[len(resp.Steps)-1]))
+	}
 
 	name := strings.TrimSpace(req.GetName())
 	if name == "" {
@@ -45,7 +52,10 @@ func (s *Server) DRFailback(ctx context.Context, req *pb.DRFailbackRequest) (*pb
 	if s.ctrl.db == nil {
 		return fail("database not available")
 	}
+	start := time.Now()
 	dbRes, err := s.ctrl.db.GetResource(ctx, name)
+	log.Debug("Server.DRFailback: db get resource", zap.String("resource", name), zap.Bool("found", dbRes != nil),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil || dbRes == nil {
 		return fail("resource %q not found", name)
 	}
@@ -58,6 +68,7 @@ func (s *Server) DRFailback(ctx context.Context, req *pb.DRFailbackRequest) (*pb
 	}
 	target := strings.TrimSpace(req.GetNode())
 	if target == "" {
+		log.Debug("Server.DRFailback: no node named, using the first primary-site node", zap.String("node", primaries[0]))
 		target = primaries[0]
 	}
 	if !containsString(primaries, target) {
@@ -67,14 +78,21 @@ func (s *Server) DRFailback(ctx context.Context, req *pb.DRFailbackRequest) (*pb
 	rm := s.resources
 	dr := dbRes.DRNode
 	drAddr := s.ctrl.ResolveHost(dr)
+	log.Debug("Server.DRFailback: failing back", zap.String("resource", name), zap.String("dr_node", dr),
+		zap.String("dr_host", drAddr), zap.Strings("primaries", primaries), zap.String("target", target),
+		zap.Uint32("wait_seconds", req.GetWaitSeconds()))
 
 	drState, err := rm.readDrbdStatus(ctx, drAddr, name)
 	if err != nil {
 		return fail("read %s on the DR node %s: %v", name, dr, err)
 	}
+	log.Debug("Server.DRFailback: DR node role", zap.String("dr_node", dr), zap.String("role", drState.Role))
 	if drState.Role != "Primary" {
 		for _, p := range primaries {
-			if st, err := rm.readDrbdStatus(ctx, s.ctrl.ResolveHost(p), name); err == nil && st.Role == "Primary" {
+			st, err := rm.readDrbdStatus(ctx, s.ctrl.ResolveHost(p), name)
+			log.Debug("Server.DRFailback: primary-site node role", zap.String("node", p), zap.Bool("read", err == nil),
+				zap.Bool("primary", err == nil && st.Role == "Primary"), zap.Error(err))
+			if err == nil && st.Role == "Primary" {
 				resp.Success, resp.Phase = true, failbackDone
 				resp.Message = fmt.Sprintf("%s is already Primary on the primary site (%s)", name, p)
 				return resp, nil
@@ -87,12 +105,15 @@ func (s *Server) DRFailback(ctx context.Context, req *pb.DRFailbackRequest) (*pb
 	var rejoined []string
 	for _, p := range primaries {
 		if drPeerInSync(drState, rm.controller.nodes.GetDRBDNameByRef(p)) {
+			log.Debug("Server.DRFailback: node already in sync with the DR", zap.String("node", p))
 			continue
 		}
 		if connected(drState, rm.controller.nodes.GetDRBDNameByRef(p)) {
+			log.Debug("Server.DRFailback: node connected and resyncing, no rejoin", zap.String("node", p))
 			continue // connected and resyncing; nothing to redo
 		}
 		addr := s.ctrl.ResolveHost(p)
+		log.Debug("Server.DRFailback: node must rejoin, discarding its writes", zap.String("node", p), zap.String("host", addr))
 		if open, err := rm.deviceOpen(ctx, addr, name); err != nil {
 			return fail("check %s on %s: %v", name, p, err)
 		} else if open {
@@ -112,6 +133,7 @@ drbdadm connect --discard-my-data %[1]s`, name)
 		step("%s: discarded its writes since the failover and reconnected", p)
 	}
 	if len(rejoined) > 0 {
+		log.Debug("Server.DRFailback: rebuilding WAN tunnels after rejoin", zap.Strings("rejoined", rejoined))
 		rep := s.repairWanLegs(ctx, dbRes, false, false)
 		if !rep.Success {
 			return fail("tunnels to the DR: %s", rep.Message)
@@ -132,10 +154,12 @@ drbdadm connect --discard-my-data %[1]s`, name)
 			return fail("read %s on the DR node %s: %v", name, dr, err)
 		}
 		lagging := laggingPeers(drState, primaries, rm.controller.nodes.GetDRBDNameByRef)
+		log.Debug("Server.DRFailback: resync poll", zap.String("resource", name), zap.Strings("lagging", lagging))
 		if len(lagging) == 0 {
 			break
 		}
 		if !time.Now().Before(deadline) {
+			log.Debug("Server.DRFailback: wait expired while resyncing", zap.String("resource", name))
 			resp.Success, resp.Phase = true, failbackResyncing
 			resp.Message = fmt.Sprintf("the primary site is resyncing from the DR (%s); run dr-failback again to finish",
 				strings.Join(lagging, ", "))
@@ -152,9 +176,11 @@ drbdadm connect --discard-my-data %[1]s`, name)
 	// Phase 3: swap the roles back. The DR must not be in use: demoting under
 	// a mounted filesystem fails, and the service would lose its disk.
 	if drState.Role == "Primary" {
+		log.Debug("Server.DRFailback: demoting the DR node", zap.String("dr_node", dr))
 		if open, err := rm.deviceOpen(ctx, drAddr, name); err != nil {
 			return fail("check %s on %s: %v", name, dr, err)
 		} else if open {
+			log.Debug("Server.DRFailback: device still open on the DR node", zap.String("dr_node", dr))
 			resp.Success, resp.Phase = false, failbackResyncing
 			resp.Message = fmt.Sprintf("the primary site is in sync, but %s is still in use on the DR node %s: "+
 				"stop the service and unmount it there, then run dr-failback again", name, dr)
@@ -177,39 +203,60 @@ drbdadm connect --discard-my-data %[1]s`, name)
 
 // readDrbdStatus reads one node's view of a resource.
 func (rm *ResourceManager) readDrbdStatus(ctx context.Context, address, resource string) (*drbdsetupStatus, error) {
+	log := rm.controller.traceLogger()
+	start := time.Now()
 	res, err := rm.deployment.DRBDStatusJSON(ctx, []string{address}, resource)
 	if err != nil {
+		log.Debug("ResourceManager.readDrbdStatus: status failed", zap.String("host", address), zap.String("resource", resource),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, err
 	}
 	for _, hr := range res.Hosts {
 		if !hr.Success {
+			log.Debug("ResourceManager.readDrbdStatus: status failed on host", zap.String("host", address),
+				zap.String("resource", resource), zap.Duration("took", time.Since(start)))
 			return nil, fmt.Errorf("%s", hostFailure(hr))
 		}
 		var all []drbdsetupStatus
 		if err := json.Unmarshal([]byte(strings.TrimSpace(hr.Output)), &all); err != nil {
+			log.Debug("ResourceManager.readDrbdStatus: decode failed", zap.String("host", address), zap.Error(err))
 			return nil, fmt.Errorf("decode drbdsetup status: %w", err)
 		}
 		if len(all) == 0 {
+			log.Debug("ResourceManager.readDrbdStatus: resource not up", zap.String("host", address), zap.String("resource", resource))
 			return nil, fmt.Errorf("%s is not up there", resource)
 		}
+		log.Debug("ResourceManager.readDrbdStatus: read", zap.String("host", address), zap.String("resource", resource),
+			zap.String("role", all[0].Role), zap.Int("connections", len(all[0].Connections)), zap.Duration("took", time.Since(start)))
 		return &all[0], nil
 	}
+	log.Debug("ResourceManager.readDrbdStatus: no answer", zap.String("host", address), zap.Duration("took", time.Since(start)))
 	return nil, fmt.Errorf("no answer from %s", address)
 }
 
 // deviceOpen reports whether anything holds the resource's device open on the
 // node — a mounted filesystem, a VM, a database with the raw device.
 func (rm *ResourceManager) deviceOpen(ctx context.Context, address, resource string) (bool, error) {
+	log := rm.controller.traceLogger()
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{address}, "sudo drbdsetup status "+resource+" --verbose")
 	if err != nil {
+		log.Debug("ResourceManager.deviceOpen: status failed", zap.String("host", address), zap.String("resource", resource),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return false, err
 	}
 	for _, hr := range res.Hosts {
 		if !hr.Success {
+			log.Debug("ResourceManager.deviceOpen: status failed on host", zap.String("host", address),
+				zap.String("resource", resource), zap.Duration("took", time.Since(start)))
 			return false, fmt.Errorf("%s", hostFailure(hr))
 		}
-		return strings.Contains(hr.Output, "open:yes"), nil
+		open := strings.Contains(hr.Output, "open:yes")
+		log.Debug("ResourceManager.deviceOpen: checked", zap.String("host", address), zap.String("resource", resource),
+			zap.Bool("open", open), zap.Duration("took", time.Since(start)))
+		return open, nil
 	}
+	log.Debug("ResourceManager.deviceOpen: no answer", zap.String("host", address), zap.Duration("took", time.Since(start)))
 	return false, fmt.Errorf("no answer from %s", address)
 }
 
@@ -253,6 +300,7 @@ func laggingPeers(st *drbdsetupStatus, primaries []string, drbdName func(string)
 			continue
 		}
 		desc := p
+		zap.L().Debug("laggingPeers: peer not in sync", zap.String("node", p), zap.String("drbd_name", name))
 		for _, c := range st.Connections {
 			if c.Name != name {
 				continue

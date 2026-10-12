@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/haify-project/haify/pkg/database"
 )
 
@@ -46,13 +48,19 @@ import (
 // thin_delta reports changed ranges of the LV, and every one of them has to be
 // shifted by the header to address the same bytes in the plaintext.
 func backupSnapshotSource(pool, backing, snap string, encrypted bool) (setup, cleanup string, err error) {
+	log := zap.L()
+	log.Debug("backupSnapshotSource: building snapshot source", zap.String("pool", pool), zap.String("backing", backing),
+		zap.String("snapshot", snap), zap.Bool("encrypted", encrypted))
 	if !encrypted {
+		log.Debug("backupSnapshotSource: plain volume, reading the snapshot directly", zap.String("snapshot", snap))
 		return fmt.Sprintf("SRC=%s; OFF=0", shellSingleQuote("/dev/"+pool+"/"+snap)), ":", nil
 	}
 	if err := validateLUKSNames(pool, backing); err != nil {
+		log.Debug("backupSnapshotSource: invalid LUKS names", zap.String("pool", pool), zap.String("backing", backing), zap.Error(err))
 		return "", "", err
 	}
 	if !luksNameRe.MatchString(snap) {
+		log.Debug("backupSnapshotSource: snapshot name cannot be a LUKS container", zap.String("snapshot", snap))
 		return "", "", fmt.Errorf("snapshot name %q cannot be opened as a LUKS container", snap)
 	}
 	key := luksKeyPath(luksContainerName(pool, backing))
@@ -76,6 +84,8 @@ case "$OFF" in ''|*[!0-9]*) echo "could not read the LUKS data offset of $MAP (g
 OFF=$((OFF * 512))`,
 		mapping, key, pool, backing, key, shellSingleQuote("/dev/"+pool+"/"+snap))
 	cleanup = `[ -n "$MAP" ] && { sudo udevadm settle >/dev/null 2>&1; sudo cryptsetup close "$MAP" 2>/dev/null || sudo cryptsetup close --deferred "$MAP" 2>/dev/null; }`
+	log.Debug("backupSnapshotSource: encrypted volume, reading through a crypt mapping", zap.String("snapshot", snap),
+		zap.String("mapping", mapping))
 	return setup, cleanup, nil
 }
 
@@ -87,12 +97,17 @@ OFF=$((OFF * 512))`,
 // resource reached through someone else's device-mapper stack is not ours to
 // open, and a volume added without a container has nothing to open.
 func (bm *BackupManager) encryptedVolumes(ctx context.Context, resource string, backing map[uint32]string) map[uint32]bool {
+	log := bm.controller.traceLogger()
 	out := map[uint32]bool{}
 	if !bm.controller.resources.resourceIsEncrypted(ctx, resource) {
+		log.Debug("BackupManager.encryptedVolumes: resource not encrypted", zap.String("resource", resource))
 		return out
 	}
 	for id, dev := range backing {
-		if luksIsMapperPath(dev) {
+		mapped := luksIsMapperPath(dev)
+		log.Debug("BackupManager.encryptedVolumes: volume", zap.String("resource", resource), zap.Uint32("volume", id),
+			zap.String("device", dev), zap.Bool("luks", mapped))
+		if mapped {
 			out[id] = true
 		}
 	}
@@ -111,9 +126,13 @@ func (bm *BackupManager) encryptedVolumes(ctx context.Context, resource string, 
 // A backup whose source resource has since been deleted cannot be checked this
 // way, and is let through: there is nothing left to compare it with.
 func (bm *BackupManager) assertNotCiphertext(ctx context.Context, chain []*database.Backup) error {
+	log := bm.controller.traceLogger()
+	log.Debug("BackupManager.assertNotCiphertext: checking chain", zap.Int("count", len(chain)))
 	for _, b := range chain {
 		backing, err := bm.backingDevices(ctx, b.Resource)
 		if err != nil {
+			log.Debug("BackupManager.assertNotCiphertext: source resource gone, not checked", zap.String("backup", b.ID),
+				zap.String("resource", b.Resource), zap.Error(err))
 			continue // the source is gone; see above
 		}
 		enc := bm.encryptedVolumes(ctx, b.Resource, backing)
@@ -123,6 +142,8 @@ func (bm *BackupManager) assertNotCiphertext(ctx context.Context, chain []*datab
 				bad = append(bad, fmt.Sprint(v.VolumeID))
 			}
 		}
+		log.Debug("BackupManager.assertNotCiphertext: backup checked", zap.String("backup", b.ID),
+			zap.Int("encrypted_volumes", len(enc)), zap.Strings("ciphertext_volumes", bad))
 		if len(bad) > 0 {
 			return fmt.Errorf(
 				"backup %q of encrypted resource %q holds the ciphertext of volume %s: it was taken before backups read through the LUKS container, "+

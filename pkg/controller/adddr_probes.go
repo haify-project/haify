@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -25,6 +26,15 @@ const maxPeersProbe = `devs=$(drbdadm sh-dev %[1]s 2>/dev/null); lls=$(drbdadm s
 
 var maxPeersRe = regexp.MustCompile(`^\s*(\d+)\s*$`)
 
+// tracedFailedHosts is res.FailedHosts for a trace: nil-safe, because an Exec
+// that failed (or a test double) can hand back no result at all.
+func tracedFailedHosts(res *deployment.ExecResult) []string {
+	if res == nil {
+		return nil
+	}
+	return res.FailedHosts()
+}
+
 // assertBitmapSlotFree fails unless every existing diskful replica has a spare
 // bitmap slot for one more diskful peer.
 //
@@ -32,10 +42,19 @@ var maxPeersRe = regexp.MustCompile(`^\s*(\d+)\s*$`)
 // assigns them a slot. That is why a resource with a tiebreaker can look like it
 // has three nodes and still be out of room at the second diskful one.
 func (rm *ResourceManager) assertBitmapSlotFree(ctx context.Context, hosts, nodes []string, resource string) error {
+	log := rm.controller.traceLogger()
 	needed := len(hosts) // existing diskful peers-per-node, +1 for the newcomer, -1 for self
+	log.Debug("assertBitmapSlotFree: checking bitmap slots", zap.String("resource", resource),
+		zap.Strings("hosts", hosts), zap.Strings("nodes", nodes), zap.Int("needed", needed))
 	for i, host := range hosts {
+		log.Debug("assertBitmapSlotFree: probing max-peers", zap.String("resource", resource),
+			zap.String("host", host), zap.String("node", nodes[i]))
+		start := time.Now()
 		res, err := rm.deployment.Exec(ctx, []string{host}, fmt.Sprintf(maxPeersProbe, resource))
+		log.Debug("assertBitmapSlotFree: drbdmeta dump-md probe done", zap.String("host", host),
+			zap.Strings("failed_hosts", tracedFailedHosts(res)), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
+			log.Debug("assertBitmapSlotFree: probe failed", zap.String("node", nodes[i]), zap.Error(err))
 			return fmt.Errorf("probe bitmap slots on %q: %w", nodes[i], err)
 		}
 		out := ""
@@ -66,7 +85,11 @@ func (rm *ResourceManager) assertBitmapSlotFree(ctx context.Context, hosts, node
 				zap.String("resource", resource), zap.String("node", nodes[i]))
 			continue
 		}
+		log.Debug("assertBitmapSlotFree: node capacity read", zap.String("node", nodes[i]),
+			zap.Int("max_peers", lowest), zap.Int("needed", needed), zap.Bool("enough", lowest >= needed))
 		if lowest < needed {
+			log.Debug("assertBitmapSlotFree: not enough bitmap slots", zap.String("node", nodes[i]),
+				zap.Int("max_peers", lowest), zap.Int("needed", needed))
 			return fmt.Errorf(
 				"node %q has metadata for %d peer(s) but %d are needed to add a DR replica: "+
 					"DRBD allocates bitmap slots once, at create-md time, and they cannot be grown online. "+
@@ -76,6 +99,7 @@ func (rm *ResourceManager) assertBitmapSlotFree(ctx context.Context, hosts, node
 				nodes[i], lowest, needed, resource, deployment.DefaultMaxPeers, resource, resource)
 		}
 	}
+	log.Debug("assertBitmapSlotFree: every diskful replica has a free slot", zap.String("resource", resource))
 	return nil
 }
 
@@ -99,12 +123,18 @@ const freeLoopbackPortProbe = `for p in $(seq %[1]d %[2]d); do ` +
 // "Failed to initiate connection, err=-98", and the leg silently never comes up.
 // Asking the host what is free costs one command and removes the whole class.
 func (rm *ResourceManager) pickWANBindPorts(ctx context.Context, hosts []string, basePort int) ([]int, error) {
+	log := rm.controller.traceLogger()
+	log.Debug("pickWANBindPorts: choosing loopback bind ports", zap.Strings("hosts", hosts), zap.Int("base_port", basePort))
 	ports := make([]int, len(hosts))
 	for i, host := range hosts {
 		start := basePort + wanDRBDBindOffset + i
+		t0 := time.Now()
 		res, err := rm.deployment.Exec(ctx, []string{host},
 			fmt.Sprintf(freeLoopbackPortProbe, start, start+200))
+		log.Debug("pickWANBindPorts: free-port probe done", zap.String("host", host), zap.Int("from_port", start),
+			zap.Strings("failed_hosts", tracedFailedHosts(res)), zap.Duration("took", time.Since(t0)), zap.Error(err))
 		if err != nil {
+			log.Debug("pickWANBindPorts: probe failed", zap.String("host", host), zap.Error(err))
 			return nil, fmt.Errorf("probe a free loopback port on %s: %w", host, err)
 		}
 		out := ""
@@ -121,8 +151,10 @@ func (rm *ResourceManager) pickWANBindPorts(ctx context.Context, hosts []string,
 				zap.String("host", host), zap.Int("port", start))
 			p = start
 		}
+		log.Debug("pickWANBindPorts: port chosen", zap.String("host", host), zap.Int("port", p))
 		ports[i] = p
 	}
+	log.Debug("pickWANBindPorts: done", zap.Ints("ports", ports))
 	return ports, nil
 }
 
@@ -139,11 +171,18 @@ const backingSizeProbe = `for l in $(drbdadm sh-ll-dev %s 2>/dev/null); do sudo 
 // record and DRBD refuses the connection outright — "The peer's disk size is too
 // small" — after everything else is already in place.
 func (rm *ResourceManager) primaryBackingSizes(ctx context.Context, hosts []string, resource string, volumes int) ([]uint64, error) {
+	log := rm.controller.traceLogger()
+	log.Debug("primaryBackingSizes: reading backing sizes", zap.String("resource", resource),
+		zap.Strings("hosts", hosts), zap.Int("volumes", volumes))
 	sizes := make([]uint64, volumes)
 	seen := false
 	for _, host := range hosts {
+		start := time.Now()
 		res, err := rm.deployment.Exec(ctx, []string{host}, fmt.Sprintf(backingSizeProbe, resource))
+		log.Debug("primaryBackingSizes: blockdev probe done", zap.String("host", host),
+			zap.Strings("failed_hosts", tracedFailedHosts(res)), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
+			log.Debug("primaryBackingSizes: skipping host, probe failed", zap.String("host", host), zap.Error(err))
 			continue
 		}
 		out := ""
@@ -165,12 +204,15 @@ func (rm *ResourceManager) primaryBackingSizes(ctx context.Context, hosts []stri
 		}
 	}
 	if !seen {
+		log.Debug("primaryBackingSizes: no size read from any host", zap.String("resource", resource))
 		return nil, fmt.Errorf("could not read backing device sizes for %q from any replica", resource)
 	}
 	for i, s := range sizes {
 		if s == 0 {
+			log.Debug("primaryBackingSizes: volume size missing", zap.String("resource", resource), zap.Int("volume", i))
 			return nil, fmt.Errorf("no backing device size found for volume %d of %q", i, resource)
 		}
 	}
+	log.Debug("primaryBackingSizes: done", zap.String("resource", resource), zap.Uint64s("size_bytes", sizes))
 	return sizes, nil
 }
