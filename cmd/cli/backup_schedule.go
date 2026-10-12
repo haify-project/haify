@@ -229,7 +229,7 @@ same versions.
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&target, "target", "", "Target to read (required); add it first with `backup target add`")
+	cmd.Flags().StringVar(&target, "target", "", "Target to read (required); add it first with backup target add")
 	cmd.Flags().StringVar(&node, "node", "", "Read the target from this node (default: the first registered node with rclone)")
 	cmd.Flags().StringVar(&asOf, "as-of", "", "Read the target as it was at this RFC3339 time (versioned S3 targets)")
 	return cmd

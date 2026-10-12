@@ -89,7 +89,7 @@ func serveCmd() *cobra.Command {
 	f := cmd.Flags()
 	conn.register(cmd, "controller-")
 	f.StringVar(&listen, "listen", "127.0.0.1:43871", "address to listen on")
-	f.StringVar(&adminListen, "admin-listen", "", "second address for the local network that is not capped by --max-role (only tokens from `token create`, no OAuth); never proxy it")
+	f.StringVar(&adminListen, "admin-listen", "", "second address for the local network that is not capped by --max-role (only tokens from token create, no OAuth); never proxy it")
 	f.StringVar(&publicURL, "public-url", "", "URL clients reach this server at, e.g. https://mcp.example.com; enables OAuth for ChatGPT and claude.ai")
 	f.StringVar(&tokens, "tokens", "", "token store (default: HAIFY_MCP_TOKENS env, else "+defaultTokenStore+")")
 	f.StringVar(&maxRole, "max-role", "admin", "highest role any token may use here: read, operate or admin")
