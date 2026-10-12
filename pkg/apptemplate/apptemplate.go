@@ -29,6 +29,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -149,35 +151,51 @@ func (s *Spec) Normalize() error {
 	s.Engine = Engine(strings.ToLower(strings.TrimSpace(string(s.Engine))))
 	s.Resource = strings.TrimSpace(s.Resource)
 	s.ServiceIP = strings.TrimSpace(s.ServiceIP)
+	log := zap.L()
+	log.Debug("Spec.Normalize: validating app spec",
+		zap.String("app", s.Name), zap.String("engine", string(s.Engine)), zap.String("resource", s.Resource),
+		zap.String("service_ip", s.ServiceIP), zap.Int("port", s.Port), zap.Bool("vector", s.Vector))
 
 	if !nameRe.MatchString(s.Name) {
+		log.Debug("Spec.Normalize: invalid name", zap.String("app", s.Name))
 		return invalid("name %q must be 1-40 lower-case letters, digits and inner hyphens", s.Name)
 	}
 	info, ok := engines[s.Engine]
 	if !ok {
+		log.Debug("Spec.Normalize: unknown engine", zap.String("engine", string(s.Engine)))
 		return invalid("unknown engine %q (available: %s)", s.Engine, strings.Join(Engines(), ", "))
 	}
 	if s.Resource == "" {
+		log.Debug("Spec.Normalize: no resource given, using the app name", zap.String("resource", s.Name))
 		s.Resource = s.Name
 	}
 	if !resourceRe.MatchString(s.Resource) {
+		log.Debug("Spec.Normalize: invalid resource name", zap.String("resource", s.Resource))
 		return invalid("resource %q is not a valid resource name", s.Resource)
 	}
 	if s.Vector && s.Engine != Postgres {
+		log.Debug("Spec.Normalize: vector asked for a non-postgres engine", zap.String("engine", string(s.Engine)))
 		return invalid("--vector (pgvector) is a postgres extension; engine %s has no vector option", s.Engine)
 	}
 	if s.Port == 0 {
+		log.Debug("Spec.Normalize: no port given, using the engine's default", zap.Int("port", info.defaultPort))
 		s.Port = info.defaultPort
 	}
 	if s.Port < 1 || s.Port > 65535 {
+		log.Debug("Spec.Normalize: port out of range", zap.Int("port", s.Port))
 		return invalid("port %d is outside 1-65535", s.Port)
 	}
 	if s.Engine == RustFS && ConsolePort(*s) > 65535 {
+		log.Debug("Spec.Normalize: no room for the console port", zap.Int("port", s.Port))
 		return invalid("port %d leaves no room for the console on the next port", s.Port)
 	}
 	if _, _, err := ParseServiceIP(s.ServiceIP); err != nil {
+		log.Debug("Spec.Normalize: invalid service IP", zap.String("service_ip", s.ServiceIP), zap.Error(err))
 		return err
 	}
+	log.Debug("Spec.Normalize: spec valid",
+		zap.String("app", s.Name), zap.String("engine", string(s.Engine)), zap.String("resource", s.Resource),
+		zap.Int("port", s.Port))
 	return nil
 }
 
@@ -185,19 +203,24 @@ func (s *Spec) Normalize() error {
 // IPaddr2 agent takes. The address must be a host address: the network or
 // broadcast address of its subnet would never answer.
 func ParseServiceIP(cidr string) (string, int, error) {
+	log := zap.L()
 	if cidr == "" {
+		log.Debug("ParseServiceIP: no service IP given")
 		return "", 0, invalid("a service IP in CIDR notation is required, e.g. 192.168.1.60/24")
 	}
 	ip, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
+		log.Debug("ParseServiceIP: not CIDR notation", zap.String("service_ip", cidr), zap.Error(err))
 		return "", 0, invalid("service IP %q is not in CIDR notation (e.g. 192.168.1.60/24)", cidr)
 	}
 	ip4 := ip.To4()
 	if ip4 == nil {
+		log.Debug("ParseServiceIP: not IPv4", zap.String("service_ip", cidr))
 		return "", 0, invalid("service IP %q is not IPv4; the IPaddr2 agent manages IPv4 addresses", cidr)
 	}
 	prefix, _ := ipNet.Mask.Size()
 	if prefix == 0 {
+		log.Debug("ParseServiceIP: /0 prefix", zap.String("service_ip", cidr))
 		return "", 0, invalid("service IP %q has a /0 prefix", cidr)
 	}
 	if prefix < 31 {
@@ -207,9 +230,11 @@ func ParseServiceIP(cidr string) (string, int, error) {
 			broadcast[i] = network[i] | ^ipNet.Mask[i]
 		}
 		if ip4.Equal(network) || ip4.Equal(broadcast) {
+			log.Debug("ParseServiceIP: network or broadcast address", zap.String("service_ip", cidr))
 			return "", 0, invalid("service IP %q is the network or broadcast address of its subnet", cidr)
 		}
 	}
+	log.Debug("ParseServiceIP: parsed", zap.String("ip", ip4.String()), zap.Int("prefix", prefix))
 	return ip4.String(), prefix, nil
 }
 

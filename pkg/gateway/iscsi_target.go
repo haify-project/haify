@@ -25,6 +25,8 @@ import (
 
 // AddLUN adds a LUN to an existing iSCSI gateway
 func (i *iSCSIManager) AddLUN(ctx context.Context, resource string, lunNumber int, device string) error {
+	log := i.log()
+	log.Debug("iSCSIManager.AddLUN: start", zap.String("resource", resource), zap.Int("lun", lunNumber), zap.String("device", device))
 	i.logger.Info("Adding LUN to iSCSI gateway",
 		zap.String("resource", resource),
 		zap.Int("lun", lunNumber),
@@ -33,6 +35,7 @@ func (i *iSCSIManager) AddLUN(ctx context.Context, resource string, lunNumber in
 	pluginID := fmt.Sprintf("haify-iscsi-%s", resource)
 	cfg, err := i.readGatewayConfig(ctx, resource, pluginID)
 	if err != nil {
+		log.Debug("iSCSIManager.AddLUN: reading config failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	content := cfg.content
@@ -40,6 +43,7 @@ func (i *iSCSIManager) AddLUN(ctx context.Context, resource string, lunNumber in
 	lines, trailingNewline := splitConfigLines(content)
 	for _, line := range lines {
 		if params, ok := parseISCSILUNLine(line); ok && params["lun"] == fmt.Sprintf("%d", lunNumber) {
+			log.Debug("iSCSIManager.AddLUN: LUN number taken", zap.String("resource", resource), zap.Int("lun", lunNumber))
 			return fmt.Errorf("LUN %d already exists", lunNumber)
 		}
 	}
@@ -49,12 +53,14 @@ func (i *iSCSIManager) AddLUN(ctx context.Context, resource string, lunNumber in
 		return ok
 	})
 	if targetIdx < 0 {
+		log.Debug("iSCSIManager.AddLUN: no target line in config", zap.String("resource", resource))
 		return fmt.Errorf("failed to locate iSCSI target definition")
 	}
 
 	targetParams, _ := parseISCSITargetLine(lines[targetIdx])
 	iqn := targetParams["iqn"]
 	if iqn == "" {
+		log.Debug("iSCSIManager.AddLUN: target line has no IQN", zap.String("resource", resource))
 		return fmt.Errorf("failed to parse target IQN from config")
 	}
 
@@ -67,6 +73,9 @@ func (i *iSCSIManager) AddLUN(ctx context.Context, resource string, lunNumber in
 			anchor = i
 		}
 	}
+	log.Debug("iSCSIManager.AddLUN: inserting LUN line",
+		zap.String("resource", resource), zap.String("iqn", iqn), zap.Int("target_line", targetIdx),
+		zap.Int("after_line", anchor), zap.String("implementation", targetParams["implementation"]))
 	lines = append(lines[:anchor+1], append([]string{newLine}, lines[anchor+1:]...)...)
 
 	return i.persistGatewayConfig(ctx, resource, pluginID, cfg, joinConfigLines(lines, trailingNewline))
@@ -74,6 +83,8 @@ func (i *iSCSIManager) AddLUN(ctx context.Context, resource string, lunNumber in
 
 // RemoveLUN removes a LUN from an iSCSI gateway
 func (i *iSCSIManager) RemoveLUN(ctx context.Context, resource string, lunNumber int) error {
+	log := i.log()
+	log.Debug("iSCSIManager.RemoveLUN: start", zap.String("resource", resource), zap.Int("lun", lunNumber))
 	i.logger.Info("Removing LUN from iSCSI gateway",
 		zap.String("resource", resource),
 		zap.Int("lun", lunNumber))
@@ -81,6 +92,7 @@ func (i *iSCSIManager) RemoveLUN(ctx context.Context, resource string, lunNumber
 	pluginID := fmt.Sprintf("haify-iscsi-%s", resource)
 	cfg, err := i.readGatewayConfig(ctx, resource, pluginID)
 	if err != nil {
+		log.Debug("iSCSIManager.RemoveLUN: reading config failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	content := cfg.content
@@ -91,6 +103,7 @@ func (i *iSCSIManager) RemoveLUN(ctx context.Context, resource string, lunNumber
 		return ok && params["lun"] == fmt.Sprintf("%d", lunNumber)
 	})
 	if !removed {
+		log.Debug("iSCSIManager.RemoveLUN: LUN not in config", zap.String("resource", resource), zap.Int("lun", lunNumber))
 		return fmt.Errorf("LUN %d not found", lunNumber)
 	}
 
@@ -99,9 +112,12 @@ func (i *iSCSIManager) RemoveLUN(ctx context.Context, resource string, lunNumber
 
 // ListLUNs lists all configured LUNs for an iSCSI gateway.
 func (i *iSCSIManager) ListLUNs(ctx context.Context, resource string) ([]map[string]string, error) {
+	log := i.log()
+	log.Debug("iSCSIManager.ListLUNs: start", zap.String("resource", resource))
 	pluginID := fmt.Sprintf("haify-iscsi-%s", resource)
 	cfg, err := i.readGatewayConfig(ctx, resource, pluginID)
 	if err != nil {
+		log.Debug("iSCSIManager.ListLUNs: reading config failed", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 	content := cfg.content
@@ -112,6 +128,7 @@ func (i *iSCSIManager) ListLUNs(ctx context.Context, resource string) ([]map[str
 		if !ok {
 			continue
 		}
+		log.Debug("iSCSIManager.ListLUNs: LUN", zap.String("resource", resource), zap.String("lun", params["lun"]), zap.String("device", params["path"]))
 		luns = append(luns, map[string]string{
 			"lun":        params["lun"],
 			"device":     params["path"],
@@ -119,6 +136,7 @@ func (i *iSCSIManager) ListLUNs(ctx context.Context, resource string) ([]map[str
 		})
 	}
 
+	log.Debug("iSCSIManager.ListLUNs: done", zap.String("resource", resource), zap.Int("count", len(luns)))
 	return luns, nil
 }
 
@@ -126,6 +144,7 @@ func (i *iSCSIManager) ListLUNs(ctx context.Context, resource string) ([]map[str
 
 // CreateTarget creates an iSCSI target on the gateway
 func (i *iSCSIManager) CreateTarget(ctx context.Context, resource string) error {
+	i.log().Debug("iSCSIManager.CreateTarget: refused, the OCF agent owns targets", zap.String("resource", resource))
 	i.logger.Info("Creating iSCSI target", zap.String("resource", resource))
 
 	// Use targetcli or configuration files to create the target
@@ -136,6 +155,7 @@ func (i *iSCSIManager) CreateTarget(ctx context.Context, resource string) error 
 
 // DeleteTarget deletes an iSCSI target
 func (i *iSCSIManager) DeleteTarget(ctx context.Context, resource string) error {
+	i.log().Debug("iSCSIManager.DeleteTarget: refused, gateway deletion removes targets", zap.String("resource", resource))
 	i.logger.Info("Deleting iSCSI target", zap.String("resource", resource))
 
 	return fmt.Errorf("DeleteTarget: use gateway deletion instead")
@@ -146,8 +166,11 @@ func (i *iSCSIManager) DeleteTarget(ctx context.Context, resource string) error 
 // gateway node. host is unused: a target's config lives on every diskful node
 // of its resource, so the union over all nodes is the answer.
 func (i *iSCSIManager) ListTargets(ctx context.Context, host string) ([]string, error) {
+	log := i.log()
+	log.Debug("iSCSIManager.ListTargets: start", zap.String("host", host))
 	contents, err := i.readAllNodeConfigs(ctx, "haify-iscsi-*.toml")
 	if err != nil {
+		log.Debug("iSCSIManager.ListTargets: reading configs failed", zap.Error(err))
 		return nil, err
 	}
 
@@ -160,5 +183,7 @@ func (i *iSCSIManager) ListTargets(ctx context.Context, host string) ([]string, 
 		}
 	}
 
-	return uniqueSortedValues(targets), nil
+	targets = uniqueSortedValues(targets)
+	log.Debug("iSCSIManager.ListTargets: done", zap.Strings("targets", targets))
+	return targets, nil
 }

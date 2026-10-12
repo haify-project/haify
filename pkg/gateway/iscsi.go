@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	v1 "github.com/haify-project/haify/api/proto/v1"
 	"go.uber.org/zap"
@@ -24,6 +25,13 @@ func NewISCSIManager(m *Manager) *iSCSIManager {
 
 // CreateISCSIGateway creates an iSCSI gateway with drbd-reactor configuration
 func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISCSIGatewayRequest) (*v1.CreateISCSIGatewayResponse, error) {
+	log := i.log()
+	begin := time.Now()
+	// The request carries the CHAP password: only whether it is set is traced.
+	log.Debug("iSCSIManager.CreateISCSIGateway: start",
+		zap.String("resource", req.Resource), zap.String("iqn", req.Iqn), zap.String("service_ip", req.ServiceIp),
+		zap.Strings("allowed_initiators", req.AllowedInitiators), zap.String("implementation", req.Implementation),
+		zap.String("username", req.Username), zap.Bool("has_password", req.Password != ""))
 	i.logger.Info("Creating iSCSI gateway",
 		zap.String("resource", req.Resource),
 		zap.String("iqn", req.Iqn),
@@ -32,6 +40,7 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 	// Reject a malformed IQN before anything with a side effect runs — see
 	// validate.go for why this cannot wait until targetcli parses it.
 	if err := validateIQN(req.Iqn); err != nil {
+		log.Debug("iSCSIManager.CreateISCSIGateway: invalid IQN", zap.String("iqn", req.Iqn), zap.Error(err))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: err.Error(),
@@ -39,6 +48,7 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 	}
 	for _, initiator := range req.AllowedInitiators {
 		if err := validateIQN(initiator); err != nil {
+			log.Debug("iSCSIManager.CreateISCSIGateway: invalid allowed initiator", zap.String("iqn", initiator), zap.Error(err))
 			err = fmt.Errorf("allowed initiator: %w", err)
 			return &v1.CreateISCSIGatewayResponse{
 				Success: false,
@@ -47,6 +57,7 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 		}
 	}
 	if _, err := validateISCSIImplementation(req.Implementation); err != nil {
+		log.Debug("iSCSIManager.CreateISCSIGateway: invalid implementation", zap.String("implementation", req.Implementation), zap.Error(err))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: err.Error(),
@@ -56,6 +67,7 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 	// Parse service IP
 	serviceIP, err := parseServiceIP(req.ServiceIp)
 	if err != nil {
+		log.Debug("iSCSIManager.CreateISCSIGateway: invalid service IP", zap.String("service_ip", req.ServiceIp), zap.Error(err))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("invalid service IP: %v", err),
@@ -67,24 +79,34 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 	// promoter config that silently fails to start.
 	if res, rerr := i.resources.GetResource(ctx, req.Resource); rerr == nil && res != nil {
 		if err := i.checkGatewayPrereqs(ctx, gatewayNodes(res), iscsiPrereqs()); err != nil {
+			log.Debug("iSCSIManager.CreateISCSIGateway: prerequisites missing", zap.String("resource", req.Resource), zap.Error(err))
 			return &v1.CreateISCSIGatewayResponse{Success: false, Message: err.Error()}, err
 		}
+	} else {
+		log.Debug("iSCSIManager.CreateISCSIGateway: resource lookup failed, prerequisite check skipped",
+			zap.String("resource", req.Resource), zap.Error(rerr))
 	}
 
 	// Auto-provision the cluster-private state volume when the resource is one
 	// short, so a single-volume resource can be exported without a manual
 	// add-volume step first.
+	start := time.Now()
 	if err := i.resources.EnsureGatewayVolumes(ctx, req.Resource, 2); err != nil {
+		log.Debug("iSCSIManager.CreateISCSIGateway: state volume provisioning failed",
+			zap.String("resource", req.Resource), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to provision gateway state volume: %v", err),
 		}, err
 	}
+	log.Debug("iSCSIManager.CreateISCSIGateway: gateway volumes ensured",
+		zap.String("resource", req.Resource), zap.Duration("took", time.Since(start)))
 
 	// Get volume info from resource - iSCSI requires at least 2 volumes
 	// Volume 0: cluster-private, Volume 1+: LUNs exposed to initiators
 	resInfo, err := i.resources.GetResource(ctx, req.Resource)
 	if err != nil {
+		log.Debug("iSCSIManager.CreateISCSIGateway: resource lookup failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to get resource info: %v", err),
@@ -92,6 +114,7 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 	}
 
 	if len(resInfo.Volumes) < 2 {
+		log.Debug("iSCSIManager.CreateISCSIGateway: too few volumes", zap.String("resource", req.Resource), zap.Int("count", len(resInfo.Volumes)))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("iSCSI gateway requires at least 2 volumes (got %d): volume 0 for cluster-private, volume 1+ for LUNs", len(resInfo.Volumes)),
@@ -123,6 +146,7 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 	// data volume as gateway scratch; see clusterPrivateAndPayload.
 	clusterPrivateDev, _ := clusterPrivateAndPayload(resInfo.Volumes, drbdDevice)
 	if err := i.ensureGatewayPrerequisites(ctx, req.Resource, resInfo.Nodes, clusterPrivateDev); err != nil {
+		log.Debug("iSCSIManager.CreateISCSIGateway: preparing the resource failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: err.Error(),
@@ -131,6 +155,7 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 
 	config, err := i.generateISCSIGatewayConfig(req, serviceIP, drbdDevice, resInfo.Volumes)
 	if err != nil {
+		log.Debug("iSCSIManager.CreateISCSIGateway: config generation failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to generate config: %v", err),
@@ -140,6 +165,7 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 	// Write configuration to all nodes
 	pluginID := fmt.Sprintf("haify-iscsi-%s", req.Resource)
 	if err := i.writeReactorConfig(ctx, req.Resource, pluginID, config); err != nil {
+		log.Debug("iSCSIManager.CreateISCSIGateway: writing config failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateISCSIGatewayResponse{
 			Success: false,
 			Message: fmt.Sprintf("failed to write config: %v", err),
@@ -147,6 +173,8 @@ func (i *iSCSIManager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISC
 	}
 
 	configPath := filepath.Join(DrbdReactorConfigDir, fmt.Sprintf("%s.toml", pluginID))
+	log.Debug("iSCSIManager.CreateISCSIGateway: done",
+		zap.String("resource", req.Resource), zap.String("path", configPath), zap.Duration("took", time.Since(begin)))
 
 	return &v1.CreateISCSIGatewayResponse{
 		Success:    true,
@@ -225,6 +253,7 @@ func (i *iSCSIManager) generateISCSIGatewayConfig(req *v1.CreateISCSIGatewayRequ
 	luns := make([]LUN, 0, len(payload))
 	for i, vol := range payload {
 		n := i + 1
+		zap.L().Debug("iSCSIManager.generateISCSIGatewayConfig: LUN", zap.Int("lun", n), zap.String("device", vol.Device))
 		luns = append(luns, LUN{
 			Number: n,
 			Device: vol.Device,
@@ -237,6 +266,7 @@ func (i *iSCSIManager) generateISCSIGatewayConfig(req *v1.CreateISCSIGatewayRequ
 	password := req.Password
 	implementation, err := validateISCSIImplementation(req.Implementation)
 	if err != nil {
+		i.log().Debug("iSCSIManager.generateISCSIGatewayConfig: invalid implementation", zap.Error(err))
 		return "", err
 	}
 	allowedInitiators := ocfListValue(req.AllowedInitiators)
@@ -255,6 +285,11 @@ func (i *iSCSIManager) generateISCSIGatewayConfig(req *v1.CreateISCSIGatewayRequ
 	_ = allowedInitiators
 
 	clusterPrivatePath := filepath.Join(DefaultClusterPrivateMountPath, req.Resource)
+	i.log().Debug("iSCSIManager.generateISCSIGatewayConfig: rendering",
+		zap.String("resource", req.Resource), zap.String("portal", portal), zap.Int("prefix", prefix),
+		zap.String("cluster_private", clusterPrivateDev), zap.Int("luns", len(luns)),
+		zap.String("implementation", implementation), zap.Bool("chap", chapArgs != ""),
+		zap.Int("allowed_initiators", len(req.AllowedInitiators)))
 
 	data := struct {
 		Resource           string
@@ -293,6 +328,8 @@ func (i *iSCSIManager) generateISCSIGatewayConfig(req *v1.CreateISCSIGatewayRequ
 
 // GetISCSIGatewayStatus gets the status of an iSCSI gateway
 func (i *iSCSIManager) GetISCSIGatewayStatus(ctx context.Context, resource string) (map[string]interface{}, error) {
+	log := i.log()
+	log.Debug("iSCSIManager.GetISCSIGatewayStatus: start", zap.String("resource", resource))
 	status := map[string]interface{}{
 		"type":     "iscsi",
 		"resource": resource,
@@ -302,6 +339,7 @@ func (i *iSCSIManager) GetISCSIGatewayStatus(ctx context.Context, resource strin
 	// Check if the gateway config exists
 	configPath := filepath.Join(DrbdReactorConfigDir, fmt.Sprintf("haify-iscsi-%s.toml", resource))
 	if _, err := os.Stat(configPath); err != nil {
+		log.Debug("iSCSIManager.GetISCSIGatewayStatus: no local config", zap.String("path", configPath), zap.Error(err))
 		status["status"] = "not_configured"
 		return status, nil
 	}
@@ -314,6 +352,10 @@ func (i *iSCSIManager) GetISCSIGatewayStatus(ctx context.Context, resource strin
 		status["role"] = resInfo.Role
 		status["nodes"] = resInfo.Nodes
 		status["volumes"] = len(resInfo.Volumes)
+		log.Debug("iSCSIManager.GetISCSIGatewayStatus: configured",
+			zap.String("resource", resource), zap.String("role", resInfo.Role), zap.Strings("nodes", resInfo.Nodes))
+	} else {
+		log.Debug("iSCSIManager.GetISCSIGatewayStatus: resource lookup failed", zap.String("resource", resource), zap.Error(err))
 	}
 
 	return status, nil
@@ -321,6 +363,8 @@ func (i *iSCSIManager) GetISCSIGatewayStatus(ctx context.Context, resource strin
 
 // DeleteISCSIGateway deletes an iSCSI gateway
 func (i *iSCSIManager) DeleteISCSIGateway(ctx context.Context, resource string) error {
+	log := i.log()
+	log.Debug("iSCSIManager.DeleteISCSIGateway: start", zap.String("resource", resource), zap.Strings("hosts", i.hosts))
 	i.logger.Info("Deleting iSCSI gateway", zap.String("resource", resource))
 
 	configFile := fmt.Sprintf("haify-iscsi-%s.toml", resource)
@@ -329,7 +373,11 @@ func (i *iSCSIManager) DeleteISCSIGateway(ctx context.Context, resource string) 
 	// Remove config from all nodes
 	for _, host := range i.hosts {
 		rmCmd := fmt.Sprintf("sudo rm -f %s", configPath)
-		if err := i.deployment.Exec(ctx, []string{host}, rmCmd); err != nil {
+		start := time.Now()
+		err := i.deployment.Exec(ctx, []string{host}, rmCmd)
+		log.Debug("iSCSIManager.DeleteISCSIGateway: removed config",
+			zap.String("host", host), zap.String("path", configPath), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			i.logger.Warn("Failed to delete config",
 				zap.String("node", host),
 				zap.Error(err))
@@ -338,6 +386,7 @@ func (i *iSCSIManager) DeleteISCSIGateway(ctx context.Context, resource string) 
 
 	// Reload drbd-reactor
 	if err := i.reloadDrbdReactor(ctx); err != nil {
+		log.Debug("iSCSIManager.DeleteISCSIGateway: reload failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
@@ -357,15 +406,18 @@ func generateIQN(resource string) string {
 func parsePortal(portal string) (string, int, error) {
 	host, portStr, err := net.SplitHostPort(portal)
 	if err != nil {
+		zap.L().Debug("parsePortal: not host:port", zap.String("portal", portal), zap.Error(err))
 		return "", 0, err
 	}
 
 	port := 3260 // default iSCSI port
 	if portStr != "" {
 		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+			zap.L().Debug("parsePortal: invalid port", zap.String("portal", portal), zap.Error(err))
 			return "", 0, fmt.Errorf("invalid port number: %s", portStr)
 		}
 	}
 
+	zap.L().Debug("parsePortal: parsed", zap.String("host", host), zap.Int("port", port))
 	return host, port, nil
 }

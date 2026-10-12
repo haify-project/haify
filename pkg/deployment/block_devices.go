@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // blockDeviceScript prints everything needed to say, for every disk on a node,
@@ -55,6 +57,7 @@ true`
 // ListBlockDevices reports the disks on host, their signatures and who holds
 // them; see blockDeviceScript for the format.
 func (c *Client) ListBlockDevices(ctx context.Context, host string) (*ExecResult, error) {
+	c.log().Debug("ListBlockDevices: probing disks", zap.String("host", host))
 	script := base64.StdEncoding.EncodeToString([]byte(blockDeviceScript))
 	return c.Exec(ctx, []string{host}, fmt.Sprintf("echo %s | base64 -d | sudo /bin/bash", script))
 }
@@ -68,6 +71,8 @@ func (c *Client) ListBlockDevices(ctx context.Context, host string) (*ExecResult
 // zpool labelclear as well, because a pool keeps two of its four labels at the
 // end of the device.
 func (c *Client) WipeDevice(ctx context.Context, host, device string, partitions []string) (*ExecResult, error) {
+	c.log().Debug("WipeDevice: wiping device",
+		zap.String("host", host), zap.String("device", device), zap.Strings("partitions", partitions))
 	d := shellQuote(device)
 	var b strings.Builder
 	b.WriteString("set -e\n")
@@ -91,5 +96,6 @@ udevadm settle 2>/dev/null || true
 // match the pool's existing vdevs, and that refusal is the operator's to
 // overrule, not this function's.
 func (c *Client) ZFSAddVdev(ctx context.Context, host, pool, device string) (*ExecResult, error) {
+	c.log().Debug("ZFSAddVdev: adding vdev", zap.String("host", host), zap.String("pool", pool), zap.String("device", device))
 	return c.Exec(ctx, []string{host}, fmt.Sprintf("sudo zpool add %s %s", shellQuote(pool), shellQuote(device)))
 }

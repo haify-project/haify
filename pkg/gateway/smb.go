@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	v1 "github.com/haify-project/haify/api/proto/v1"
 	"go.uber.org/zap"
@@ -125,9 +126,12 @@ func smbPrereqs() gatewayPrereqs {
 
 // prepareSMBNode installs the smbd unit and the account helper.
 func (m *Manager) prepareSMBNode(ctx context.Context, hosts []string) error {
+	log := m.log()
 	if len(hosts) == 0 {
+		log.Debug("prepareSMBNode: no hosts")
 		return nil
 	}
+	log.Debug("prepareSMBNode: installing the smbd unit and account helper", zap.Strings("hosts", hosts))
 	script := fmt.Sprintf(`set -e
 mkdir -p %[1]s
 echo %[2]s | base64 -d > %[3]s.new && chmod 755 %[3]s.new && mv %[3]s.new %[3]s
@@ -138,6 +142,7 @@ if [ "$(cat %[5]s 2>/dev/null)" != "$want" ]; then
 fi`, filepath.Dir(smbUsersHelper), base64Of(smbUsersHelperContent), smbUsersHelper,
 		base64Of(smbUnitContent), smbUnitPath)
 	if err := m.runScript(ctx, hosts, script); err != nil {
+		log.Debug("prepareSMBNode: install failed", zap.Strings("hosts", hosts), zap.Error(err))
 		return fmt.Errorf("install the SMB gateway unit: %w", err)
 	}
 	return nil
@@ -156,9 +161,15 @@ func NewSMBManager(m *Manager) *SMBManager {
 // CreateSMBGateway creates an SMB gateway on a resource: the Samba state on the
 // state volume, the share root on the data volume, and the promoter.
 func (s *SMBManager) CreateSMBGateway(ctx context.Context, req *v1.CreateSMBGatewayRequest) (*v1.CreateSMBGatewayResponse, error) {
+	log := s.log()
+	begin := time.Now()
 	fail := func(err error) (*v1.CreateSMBGatewayResponse, error) {
+		log.Debug("SMBManager.CreateSMBGateway: failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &v1.CreateSMBGatewayResponse{Success: false, Message: err.Error()}, err
 	}
+	log.Debug("SMBManager.CreateSMBGateway: start",
+		zap.String("resource", req.Resource), zap.String("service_ip", req.ServiceIp), zap.String("workgroup", req.Workgroup),
+		zap.String("share", req.ShareName), zap.Bool("read_only", req.ReadOnly), zap.Strings("valid_users", req.ValidUsers))
 	s.logger.Info("Creating SMB gateway",
 		zap.String("resource", req.Resource), zap.String("service_ip", req.ServiceIp))
 
@@ -172,6 +183,7 @@ func (s *SMBManager) CreateSMBGateway(ctx context.Context, req *v1.CreateSMBGate
 	}
 	share := SMBShare{Name: req.ShareName, ReadOnly: req.ReadOnly, ValidUsers: req.ValidUsers}
 	if share.Name == "" {
+		log.Debug("SMBManager.CreateSMBGateway: no share name, using the resource name", zap.String("share", req.Resource))
 		share.Name = req.Resource
 	}
 	if err := share.validate(); err != nil {
@@ -182,10 +194,16 @@ func (s *SMBManager) CreateSMBGateway(ctx context.Context, req *v1.CreateSMBGate
 		if err := s.checkGatewayPrereqs(ctx, gatewayNodes(res), smbPrereqs()); err != nil {
 			return fail(err)
 		}
+	} else {
+		log.Debug("SMBManager.CreateSMBGateway: resource lookup failed, prerequisite check skipped",
+			zap.String("resource", req.Resource), zap.Error(rerr))
 	}
+	start := time.Now()
 	if err := s.resources.EnsureGatewayVolumes(ctx, req.Resource, 2); err != nil {
 		return fail(fmt.Errorf("failed to provision gateway state volume: %w", err))
 	}
+	log.Debug("SMBManager.CreateSMBGateway: gateway volumes ensured",
+		zap.String("resource", req.Resource), zap.Duration("took", time.Since(start)))
 	resInfo, err := s.resources.GetResource(ctx, req.Resource)
 	if err != nil {
 		return fail(fmt.Errorf("failed to get resource info: %w", err))
@@ -195,10 +213,14 @@ func (s *SMBManager) CreateSMBGateway(ctx context.Context, req *v1.CreateSMBGate
 	}
 	drbdDevice, err := s.getDRBDDevice(ctx, req.Resource)
 	if err != nil {
+		log.Debug("SMBManager.CreateSMBGateway: device lookup failed, using fallback",
+			zap.String("resource", req.Resource), zap.String("device", "/dev/drbd0"), zap.Error(err))
 		drbdDevice = "/dev/drbd0"
 	}
 	stateDev, payload := clusterPrivateAndPayload(resInfo.Volumes, drbdDevice)
 	dataDev := payloadDevice(payload, drbdDevice)
+	log.Debug("SMBManager.CreateSMBGateway: volumes chosen",
+		zap.String("resource", req.Resource), zap.String("state_device", stateDev), zap.String("data_device", dataDev))
 	if err := s.ensureGatewayPrerequisites(ctx, req.Resource, resInfo.Nodes, stateDev, dataDev); err != nil {
 		return fail(err)
 	}
@@ -211,6 +233,8 @@ func (s *SMBManager) CreateSMBGateway(ctx context.Context, req *v1.CreateSMBGate
 	if err != nil {
 		return fail(err)
 	}
+	log.Debug("SMBManager.CreateSMBGateway: seeding Samba state",
+		zap.String("node", resInfo.Nodes[0]), zap.Int("owner_uid", ownerUID), zap.String("share", share.Name))
 	// Seed the state volume on the node ensureGatewayPrerequisites promoted.
 	seed := smbSeedScript(req.Resource, stateDev, dataDev, smbGlobalConfig(req.Resource, workgroup, serviceIP),
 		share, ownerUID)
@@ -226,6 +250,7 @@ func (s *SMBManager) CreateSMBGateway(ctx context.Context, req *v1.CreateSMBGate
 	if err := s.writeReactorConfig(ctx, req.Resource, pluginID, config); err != nil {
 		return fail(fmt.Errorf("failed to write config: %w", err))
 	}
+	log.Debug("SMBManager.CreateSMBGateway: done", zap.String("resource", req.Resource), zap.Duration("took", time.Since(begin)))
 	return &v1.CreateSMBGatewayResponse{
 		Success:    true,
 		Message:    fmt.Sprintf("SMB gateway created: \\\\%s\\%s (add users with `haify gateway smb user set`)", serviceIP.IP, share.Name),
@@ -257,6 +282,9 @@ func generateSMBGatewayConfig(resource, stateDev, dataDev string, ip *ServiceIP)
         "{{ .Unit }}",
       ]
 `
+	zap.L().Debug("generateSMBGatewayConfig: rendering",
+		zap.String("resource", resource), zap.String("state_device", stateDev), zap.String("data_device", dataDev),
+		zap.String("ip", ip.IP.String()), zap.Int("prefix", ip.Prefix))
 	return executeTemplate(tmpl, map[string]any{
 		"Resource":  resource,
 		"StateDev":  stateDev,
@@ -273,6 +301,8 @@ func generateSMBGatewayConfig(resource, stateDev, dataDev string, ip *ServiceIP)
 // service IP, with every piece of state under the state volume.
 func smbGlobalConfig(resource, workgroup string, ip *ServiceIP) string {
 	d := smbDir(resource)
+	zap.L().Debug("smbGlobalConfig: rendering", zap.String("resource", resource), zap.String("workgroup", workgroup),
+		zap.String("ip", ip.IP.String()), zap.Int("prefix", ip.Prefix))
 	lines := []string{
 		"# Haify SMB gateway " + resource + " (generated; shares are in shares.conf)",
 		"[global]",
@@ -307,6 +337,7 @@ func smbGlobalConfig(resource, workgroup string, ip *ServiceIP) string {
 func smbNetbiosName(resource string) string {
 	n := strings.ToUpper(strings.NewReplacer("_", "-", ".", "-").Replace(resource))
 	if len(n) > 15 {
+		zap.L().Debug("smbNetbiosName: name cut to 15 characters", zap.String("resource", resource), zap.String("name", n[:15]))
 		n = n[:15]
 	}
 	return strings.Trim(n, "-")
@@ -318,6 +349,9 @@ func smbNetbiosName(resource string) string {
 // gateway created on this resource before are kept.
 func smbSeedScript(resource, stateDev, dataDev, globalConf string, share SMBShare, ownerUID int) string {
 	d := "$st/smb"
+	zap.L().Debug("smbSeedScript: rendering",
+		zap.String("resource", resource), zap.String("state_device", stateDev), zap.String("data_device", dataDev),
+		zap.String("share", share.Name), zap.String("path", share.Path), zap.Int("owner_uid", ownerUID))
 	return fmt.Sprintf(`set -e
 st=$(mktemp -d) dt=$(mktemp -d)
 trap 'umount "$dt" 2>/dev/null; umount "$st" 2>/dev/null; rmdir "$st" "$dt"' EXIT

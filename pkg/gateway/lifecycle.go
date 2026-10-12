@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -31,6 +32,8 @@ import (
 
 // DeleteGateway deletes a gateway configuration
 func (m *Manager) DeleteGateway(ctx context.Context, id string) error {
+	log := m.log()
+	log.Debug("DeleteGateway: start", zap.String("id", id), zap.Strings("hosts", m.hosts))
 	m.logger.Info("Deleting gateway", zap.String("id", id))
 
 	// Take the gateway out of reactor management FIRST (same disable
@@ -53,13 +56,22 @@ func (m *Manager) DeleteGateway(ctx context.Context, id string) error {
 			// A stopped gateway keeps its config as .toml.disabled; the node
 			// running an edited gateway may hold a .toml.pending.
 			rmCmd := fmt.Sprintf("sudo rm -f %[1]s %[1]s.disabled %[1]s.pending", configPath)
-			if err := m.deployment.Exec(ctx, []string{host}, rmCmd); err != nil {
+			start := time.Now()
+			err := m.deployment.Exec(ctx, []string{host}, rmCmd)
+			log.Debug("DeleteGateway: removed config files",
+				zap.String("host", host), zap.String("type", t), zap.String("file", configPath),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
+			if err != nil {
 				m.logger.Warn("Failed to remove config file", zap.String("host", host), zap.String("file", configPath), zap.Error(err))
 			}
 		}
 
 		// Reload drbd-reactor to pick up changes
-		if err := m.deployment.Exec(ctx, []string{host}, reloadReactorCmd); err != nil {
+		start := time.Now()
+		err := m.deployment.Exec(ctx, []string{host}, reloadReactorCmd)
+		log.Debug("DeleteGateway: reloaded drbd-reactor",
+			zap.String("host", host), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			m.logger.Warn("Failed to reload drbd-reactor", zap.String("host", host), zap.Error(err))
 		}
 	}
@@ -78,7 +90,11 @@ func (m *Manager) DeleteGateway(ctx context.Context, id string) error {
 // time the diskful nodes could not, and ran the whole gateway — filesystems,
 // NFS state, the service IP — on a machine with no copy of the data.
 func (m *Manager) writeReactorConfig(ctx context.Context, resource, pluginID, config string) error {
+	log := m.log()
 	remotePath := filepath.Join(DrbdReactorConfigDir, fmt.Sprintf("%s.toml", pluginID))
+	// The config is never traced: an iSCSI one carries the CHAP password.
+	log.Debug("writeReactorConfig: start",
+		zap.String("resource", resource), zap.String("plugin", pluginID), zap.Int("size_bytes", len(config)))
 	run, rest := m.promoterHosts(ctx, resource)
 
 	m.logger.Debug("Writing reactor config",
@@ -87,14 +103,24 @@ func (m *Manager) writeReactorConfig(ctx context.Context, resource, pluginID, co
 		zap.String("path", remotePath))
 
 	if strings.HasPrefix(pluginID, "haify-nfs-") {
+		log.Debug("writeReactorConfig: NFS gateway, preparing nodes", zap.Strings("hosts", run))
 		m.prepareNFSNode(ctx, run, "")
 	}
+	start := time.Now()
 	if err := m.deployment.DistributeConfig(ctx, run, config, remotePath); err != nil {
+		log.Debug("writeReactorConfig: distribute failed",
+			zap.Strings("hosts", run), zap.String("path", remotePath), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to write config: %w", err)
 	}
+	log.Debug("writeReactorConfig: config distributed",
+		zap.Strings("hosts", run), zap.String("path", remotePath), zap.Duration("took", time.Since(start)))
 
 	reloadCmd := reloadReactorCmd
-	if err := m.deployment.Exec(ctx, run, reloadCmd); err != nil {
+	start = time.Now()
+	err := m.deployment.Exec(ctx, run, reloadCmd)
+	log.Debug("writeReactorConfig: reloaded drbd-reactor",
+		zap.Strings("hosts", run), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		m.logger.Warn("Failed to reload drbd-reactor", zap.Error(err))
 	}
 	m.retirePromoter(ctx, rest, resource)
@@ -106,19 +132,30 @@ func (m *Manager) writeReactorConfig(ctx context.Context, resource, pluginID, co
 // looked up, every host is returned as a runner and none as the rest: retiring
 // a promoter on a guess could take down the only node serving the gateway.
 func (m *Manager) promoterHosts(ctx context.Context, resource string) (run, rest []string) {
+	log := m.log()
 	all := append([]string(nil), m.hosts...)
 	if m.resources == nil {
+		log.Debug("promoterHosts: no resource manager, every host runs it",
+			zap.String("resource", resource), zap.Strings("hosts", all))
 		return all, nil
 	}
+	start := time.Now()
 	res, err := m.resources.GetResource(ctx, resource)
 	if err != nil || res == nil {
+		log.Debug("promoterHosts: resource lookup failed, every host runs it",
+			zap.String("resource", resource), zap.Strings("hosts", all),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return all, nil
 	}
 	run = res.Hosts
 	if len(run) == 0 {
+		log.Debug("promoterHosts: resource has no diskful hosts recorded, using its nodes",
+			zap.String("resource", resource), zap.Strings("nodes", res.Nodes))
 		run = res.Nodes
 	}
 	if len(run) == 0 {
+		log.Debug("promoterHosts: resource has no nodes, every host runs it",
+			zap.String("resource", resource), zap.Strings("hosts", all))
 		return all, nil
 	}
 	in := make(map[string]bool, len(run))
@@ -130,6 +167,9 @@ func (m *Manager) promoterHosts(ctx context.Context, resource string) (run, rest
 			rest = append(rest, h)
 		}
 	}
+	log.Debug("promoterHosts: split",
+		zap.String("resource", resource), zap.Strings("run", run), zap.Strings("rest", rest),
+		zap.Duration("took", time.Since(start)))
 	return append([]string(nil), run...), rest
 }
 
@@ -137,9 +177,12 @@ func (m *Manager) promoterHosts(ctx context.Context, resource string) (run, rest
 // run it, and stops the gateway there if it is running. Stopping the target
 // demotes the resource, which lets a diskful node's promoter take it.
 func (m *Manager) retirePromoter(ctx context.Context, hosts []string, resource string) {
+	log := m.log()
 	if len(hosts) == 0 {
+		log.Debug("retirePromoter: no host to retire it on", zap.String("resource", resource))
 		return
 	}
+	log.Debug("retirePromoter: start", zap.String("resource", resource), zap.Strings("hosts", hosts))
 	script := fmt.Sprintf(`found=
 for b in %[1]s; do
   for f in "$b" "$b.disabled" "$b.pending"; do
@@ -150,7 +193,11 @@ done
 systemctl reload drbd-reactor || systemctl restart drbd-reactor
 systemctl stop '%[2]s' 2>/dev/null
 true`, promoterConfigPaths(resource, ""), fmt.Sprintf("drbd-services@%s.target", strings.ReplaceAll(resource, "-", "\\x2d")))
-	if err := m.runScript(ctx, hosts, script); err != nil {
+	start := time.Now()
+	err := m.runScript(ctx, hosts, script)
+	log.Debug("retirePromoter: done",
+		zap.String("resource", resource), zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		m.logger.Warn("Failed to retire gateway promoter on non-replica nodes",
 			zap.String("resource", resource), zap.Strings("hosts", hosts), zap.Error(err))
 	}
@@ -160,6 +207,9 @@ true`, promoterConfigPaths(resource, ""), fmt.Sprintf("drbd-services@%s.target",
 // (.toml.disabled -> .toml) and reloading drbd-reactor, which then promotes
 // and starts the service chain on the best node.
 func (m *Manager) StartGateway(ctx context.Context, id string) error {
+	log := m.log()
+	begin := time.Now()
+	log.Debug("StartGateway: start", zap.String("id", id))
 	run, rest := m.promoterHosts(ctx, id)
 	// Flush stale portblock DROP rules first (config still readable as
 	// .disabled). The OCF portunblock agent's stop action deliberately
@@ -172,20 +222,36 @@ func (m *Manager) StartGateway(ctx context.Context, id string) error {
 	m.retirePromoter(ctx, rest, id)
 	m.prepareNFSNode(ctx, run, id)
 	if err := m.moveClusterPrivatePath(ctx, run, id); err != nil {
+		log.Debug("StartGateway: moving the state mount failed", zap.String("id", id), zap.Error(err))
 		return err
 	}
+	start := time.Now()
 	if err := m.runScript(ctx, run, serviceIPLastScript(id)); err != nil {
+		log.Debug("StartGateway: reordering the service IP failed",
+			zap.String("id", id), zap.Strings("hosts", run), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("move the service IP to the end of the chain: %w", err)
 	}
+	log.Debug("StartGateway: service IP is last in the chain",
+		zap.String("id", id), zap.Strings("hosts", run), zap.Duration("took", time.Since(start)))
 
 	enableScript := fmt.Sprintf(`for f in %s; do
   [ -f "$f.disabled" ] && mv "$f.disabled" "$f"
 done
 true`, promoterConfigPaths(id, ""))
+	start = time.Now()
 	if err := m.runScript(ctx, run, enableScript); err != nil {
+		log.Debug("StartGateway: re-enabling the config failed",
+			zap.String("id", id), zap.Strings("hosts", run), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to re-enable gateway config: %w", err)
 	}
-	return m.deployment.Exec(ctx, run, reloadReactorCmd)
+	log.Debug("StartGateway: config re-enabled",
+		zap.String("id", id), zap.Strings("hosts", run), zap.Duration("took", time.Since(start)))
+	start = time.Now()
+	err := m.deployment.Exec(ctx, run, reloadReactorCmd)
+	log.Debug("StartGateway: reloaded drbd-reactor",
+		zap.String("id", id), zap.Strings("hosts", run), zap.Duration("took", time.Since(start)),
+		zap.Duration("total", time.Since(begin)), zap.Error(err))
+	return err
 }
 
 // moveClusterPrivatePath moves a stopped gateway's state mount out from under
@@ -201,6 +267,8 @@ true`, promoterConfigPaths(id, ""))
 func (m *Manager) moveClusterPrivatePath(ctx context.Context, hosts []string, id string) error {
 	oldDir := filepath.Join(legacyClusterPrivateMountPath, id)
 	newDir := filepath.Join(DefaultClusterPrivateMountPath, id)
+	m.log().Debug("moveClusterPrivatePath: start",
+		zap.String("id", id), zap.Strings("hosts", hosts), zap.String("old", oldDir), zap.String("new", newDir))
 	script := fmt.Sprintf(`old=%[1]s new=%[2]s
 if awk -v p="$old" '$5 == p {f=1} END {exit !f}' /proc/self/mountinfo; then
   if mountpoint -q "$old"; then
@@ -215,9 +283,13 @@ for f in %[4]s; do
   sed "s#=$old\([/ \"]\)#=$new\1#g" "$f" >"$f.new" && mv "$f.new" "$f"
 done
 true`, oldDir, newDir, legacyClusterPrivateMountPath, promoterConfigPaths(id, ".disabled"))
+	start := time.Now()
 	if err := m.runScript(ctx, hosts, script); err != nil {
+		m.log().Debug("moveClusterPrivatePath: failed",
+			zap.String("id", id), zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("move gateway state mount out of %s: %w", legacyClusterPrivateMountPath, err)
 	}
+	m.log().Debug("moveClusterPrivatePath: done", zap.String("id", id), zap.Duration("took", time.Since(start)))
 	return nil
 }
 
@@ -238,6 +310,9 @@ done
 // reactor config is renamed to .toml.disabled first so reactor drops the
 // resource, then the target is stopped for real.
 func (m *Manager) StopGateway(ctx context.Context, id string) error {
+	log := m.log()
+	begin := time.Now()
+	log.Debug("StopGateway: start", zap.String("id", id), zap.Strings("hosts", m.hosts))
 	// A .toml.pending is the edited config the running node has not loaded
 	// (see live_edit.go): it, not the .toml, is what the gateway starts from.
 	disableScript := fmt.Sprintf(`for f in %s; do
@@ -245,22 +320,32 @@ func (m *Manager) StopGateway(ctx context.Context, id string) error {
   [ -f "$f.pending" ] && mv -f "$f.pending" "$f.disabled"
 done
 true`, promoterConfigPaths(id, ""))
+	start := time.Now()
 	if err := m.runScript(ctx, m.hosts, disableScript); err != nil {
+		log.Debug("StopGateway: disabling the config failed",
+			zap.String("id", id), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to disable gateway config: %w", err)
 	}
+	log.Debug("StopGateway: config disabled", zap.String("id", id), zap.Duration("took", time.Since(start)))
 	if err := m.reloadDrbdReactor(ctx); err != nil {
+		log.Debug("StopGateway: reload failed", zap.String("id", id), zap.Error(err))
 		return err
 	}
 
 	escapedID := strings.ReplaceAll(id, "-", "\\x2d")
 	stopCmd := fmt.Sprintf("systemctl stop drbd-services@%s.target 2>/dev/null || true", escapedID)
+	start = time.Now()
 	if err := m.deployment.Exec(ctx, m.hosts, stopCmd); err != nil {
+		log.Debug("StopGateway: stopping the target failed",
+			zap.String("id", id), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return err
 	}
+	log.Debug("StopGateway: target stopped", zap.String("id", id), zap.Duration("took", time.Since(start)))
 	// With reactor management gone and the target down, any DROP rule left
 	// for the gateway's VIP/port is stale residue from reload/failure
 	// loops; flush it so a later start isn't silently firewalled.
 	m.flushPortblockRules(ctx, m.hosts, id)
+	log.Debug("StopGateway: done", zap.String("id", id), zap.Duration("took", time.Since(begin)))
 	return nil
 }
 
@@ -269,7 +354,13 @@ true`, promoterConfigPaths(id, ""))
 // shell — i.e. silently emptied — before the script runs. Base64-encoding
 // the script makes it immune to that quoting chain.
 func (m *Manager) runScript(ctx context.Context, hosts []string, script string) error {
-	return m.deployment.Exec(ctx, hosts, scriptCmd(script))
+	// The script itself is not traced: some carry credentials (SMB
+	// passwords, CHAP), and the deployment trace shows only that it ran.
+	m.log().Debug("runScript: running script", zap.Strings("hosts", hosts), zap.Int("size_bytes", len(script)))
+	start := time.Now()
+	err := m.deployment.Exec(ctx, hosts, scriptCmd(script))
+	m.log().Debug("runScript: done", zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // flushPortblockRules removes accumulated portblock DROP rules for the
@@ -280,6 +371,7 @@ func (m *Manager) runScript(ctx context.Context, hosts []string, script string) 
 // which must therefore still exist when this is called. Best-effort: a flush
 // failure is logged, never fatal.
 func (m *Manager) flushPortblockRules(ctx context.Context, hosts []string, id string) {
+	m.log().Debug("flushPortblockRules: start", zap.String("id", id), zap.Strings("hosts", hosts))
 	script := fmt.Sprintf(`for b in %s; do
   f=$b; [ -f "$f" ] || f=$b.disabled; [ -f "$f" ] || continue
   ip=$(grep -oE 'ip=[0-9.]+' "$f" | head -1 | cut -d= -f2)
@@ -303,5 +395,8 @@ const reloadReactorCmd = "if systemctl cat drbd-reactor.service >/dev/null 2>&1;
 // reloadDrbdReactor reloads drbd-reactor configuration
 func (m *Manager) reloadDrbdReactor(ctx context.Context) error {
 	reloadCmd := reloadReactorCmd
-	return m.deployment.Exec(ctx, m.hosts, reloadCmd)
+	start := time.Now()
+	err := m.deployment.Exec(ctx, m.hosts, reloadCmd)
+	m.log().Debug("reloadDrbdReactor: done", zap.Strings("hosts", m.hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }

@@ -3,6 +3,8 @@ package gateway
 import (
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // What a changed OCF parameter means for the target that is already running.
@@ -35,12 +37,14 @@ func shq(s string) string {
 // liveParamScript returns the script that applies a changed unit's parameters
 // to the running target, or an error when the change cannot be applied live.
 func liveParamScript(oldU, newU reactorUnit) (string, error) {
+	zap.L().Debug("liveParamScript: start", zap.String("unit", newU.Name), zap.String("agent", newU.Agent))
 	switch newU.Agent {
 	case "heartbeat:iSCSITarget":
 		return iscsiTargetLiveScript(oldU.Params, newU.Params)
 	case "heartbeat:nvmet-subsystem":
 		return nvmeSubsystemLiveScript(oldU.Params, newU.Params)
 	}
+	zap.L().Debug("liveParamScript: agent has no live edit", zap.String("unit", newU.Name), zap.String("agent", newU.Agent))
 	return "", fmt.Errorf("%s cannot be changed on a running gateway; stop and start the gateway to apply it", newU.Name)
 }
 
@@ -75,14 +79,18 @@ func fixedParamsChanged(oldP, newP map[string]string, editable ...string) []stri
 // add_mapped_luns=true, which maps every existing LUN to it the way the LUN
 // agents' targetcli calls would have at start.
 func iscsiTargetLiveScript(oldP, p map[string]string) (string, error) {
+	log := zap.L()
 	if changed := fixedParamsChanged(oldP, p, "allowed_initiators", "incoming_username", "incoming_password"); len(changed) > 0 {
+		log.Debug("iscsiTargetLiveScript: fixed parameters changed", zap.Strings("changed", changed))
 		return "", fmt.Errorf("iSCSI target parameter(s) %s cannot be changed on a running gateway; stop and start the gateway to apply them", strings.Join(changed, ", "))
 	}
 	if impl := p["implementation"]; impl != "" && impl != "lio-t" {
+		log.Debug("iscsiTargetLiveScript: implementation not editable live", zap.String("implementation", impl))
 		return "", fmt.Errorf("iSCSI implementation %q cannot be edited live; only lio-t", impl)
 	}
 	user, pass := p["incoming_username"], p["incoming_password"]
 	if user == "" && oldP["incoming_username"] != "" {
+		log.Debug("iscsiTargetLiveScript: removing CHAP live refused")
 		return "", fmt.Errorf("removing CHAP from a running gateway is not supported; stop and start the gateway to apply it")
 	}
 	// LIO stores node names lower-cased (rtslib normalize_wwn); compare that way.
@@ -91,6 +99,10 @@ func iscsiTargetLiveScript(oldP, p map[string]string) (string, error) {
 		want = append(want, strings.ToLower(i))
 	}
 	iqn := p["iqn"]
+	// The script carries the CHAP password; only whether there is one is traced.
+	log.Debug("iscsiTargetLiveScript: rendering",
+		zap.String("iqn", iqn), zap.Strings("allowed", want), zap.String("username", user),
+		zap.Bool("has_password", pass != ""), zap.Bool("acl_mode", len(want) > 0))
 	var b strings.Builder
 	fmt.Fprintf(&b, `t=%s
 c=%s
@@ -139,9 +151,12 @@ fi
 // removed host keeps a connection it already has until it disconnects.
 func nvmeSubsystemLiveScript(oldP, p map[string]string) (string, error) {
 	if changed := fixedParamsChanged(oldP, p, "allowed_initiators"); len(changed) > 0 {
+		zap.L().Debug("nvmeSubsystemLiveScript: fixed parameters changed", zap.Strings("changed", changed))
 		return "", fmt.Errorf("NVMe subsystem parameter(s) %s cannot be changed on a running gateway; stop and start the gateway to apply them", strings.Join(changed, ", "))
 	}
 	nqn := p["nqn"]
+	zap.L().Debug("nvmeSubsystemLiveScript: rendering",
+		zap.String("nqn", nqn), zap.Strings("allowed", parseAllowedList(p["allowed_initiators"])))
 	var b strings.Builder
 	fmt.Fprintf(&b, `s=%s
 h=%s

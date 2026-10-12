@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -84,30 +85,42 @@ func parseConfigDump(out string) (map[string]string, error) {
 		if len(fields) > 2 {
 			raw, err := base64.StdEncoding.DecodeString(fields[2])
 			if err != nil {
+				zap.L().Debug("parseConfigDump: undecodable file", zap.String("file", fields[1]), zap.Error(err))
 				return nil, fmt.Errorf("decode %s: %w", fields[1], err)
 			}
 			content = string(raw)
 		}
+		// Only the size: a gateway config can hold CHAP credentials.
+		zap.L().Debug("parseConfigDump: file", zap.String("file", fields[1]), zap.Int("size_bytes", len(content)))
 		files[fields[1]] = content
 	}
+	zap.L().Debug("parseConfigDump: done", zap.Int("count", len(files)))
 	return files, nil
 }
 
 // dumpNodeConfigs runs configDumpScript on hosts and returns, per host that
 // answered, the files it holds. Hosts that did not answer are left out.
 func (m *Manager) dumpNodeConfigs(ctx context.Context, hosts []string, patterns ...string) (map[string]map[string]string, error) {
+	log := m.log()
+	log.Debug("dumpNodeConfigs: start", zap.Strings("hosts", hosts), zap.Strings("patterns", patterns))
 	if len(hosts) == 0 {
+		log.Debug("dumpNodeConfigs: no hosts")
 		return nil, fmt.Errorf("no nodes to read gateway configs from")
 	}
 	reader, ok := m.deployment.(HostOutputReader)
 	if !ok {
+		log.Debug("dumpNodeConfigs: deployment client cannot return output")
 		return nil, fmt.Errorf("deployment client cannot read node output")
 	}
+	start := time.Now()
 	outputs, err := reader.ExecOutput(ctx, hosts, scriptCmd(configDumpScript(patterns...)))
 	if err != nil {
+		log.Debug("dumpNodeConfigs: read failed", zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, fmt.Errorf("failed to read gateway configs on %s: %w", strings.Join(hosts, ","), err)
 	}
+	log.Debug("dumpNodeConfigs: nodes answered", zap.Int("count", len(outputs)), zap.Duration("took", time.Since(start)))
 	if len(outputs) == 0 {
+		log.Debug("dumpNodeConfigs: no node answered", zap.Strings("hosts", hosts))
 		return nil, fmt.Errorf("no node answered when reading gateway configs on %s", strings.Join(hosts, ","))
 	}
 	byHost := make(map[string]map[string]string, len(outputs))
@@ -117,6 +130,7 @@ func (m *Manager) dumpNodeConfigs(ctx context.Context, hosts []string, patterns 
 			m.logger.Warn("Unreadable gateway config dump", zap.String("host", host), zap.Error(err))
 			continue
 		}
+		log.Debug("dumpNodeConfigs: host files", zap.String("host", host), zap.Int("count", len(files)))
 		byHost[host] = files
 	}
 	return byHost, nil
@@ -127,10 +141,13 @@ func (m *Manager) dumpNodeConfigs(ctx context.Context, hosts []string, patterns 
 // preferred over a .toml.disabled copy on any node: the gateway is stopped
 // only when no node holds it live.
 func (m *Manager) readGatewayConfig(ctx context.Context, resource, pluginID string) (*gatewayConfig, error) {
+	log := m.log()
 	path := gatewayConfigPath(pluginID)
+	log.Debug("readGatewayConfig: start", zap.String("resource", resource), zap.String("plugin", pluginID), zap.String("path", path))
 	hosts, _ := m.promoterHosts(ctx, resource)
 	byHost, err := m.dumpNodeConfigs(ctx, hosts, path, path+pendingSuffix, path+disabledSuffix)
 	if err != nil {
+		log.Debug("readGatewayConfig: dump failed", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 
@@ -141,20 +158,28 @@ func (m *Manager) readGatewayConfig(ctx context.Context, resource, pluginID stri
 		// A pending copy is the config the node running the gateway was last
 		// edited to (see live_edit.go); its .toml is what drbd-reactor loaded.
 		if content, ok := files[path+pendingSuffix]; ok {
+			log.Debug("readGatewayConfig: host holds a pending copy", zap.String("host", host))
 			copies = append(copies, nodeConfigCopy{host: host, content: content})
 		} else if content, ok := files[path]; ok {
+			log.Debug("readGatewayConfig: host holds a live copy", zap.String("host", host))
 			copies = append(copies, nodeConfigCopy{host: host, content: content})
 		} else if content, ok := files[path+disabledSuffix]; ok {
+			log.Debug("readGatewayConfig: host holds a disabled copy", zap.String("host", host))
 			copies = append(copies, nodeConfigCopy{host: host, disabled: true, content: content})
 		} else {
+			log.Debug("readGatewayConfig: host holds no copy", zap.String("host", host))
 			missing = append(missing, host)
 		}
 	}
 	if len(copies) == 0 {
+		log.Debug("readGatewayConfig: no copy anywhere", zap.String("path", path), zap.Strings("hosts", hosts))
 		return nil, fmt.Errorf("gateway config %s not found on %s", path, strings.Join(hosts, ","))
 	}
 
 	chosen, from, differing := chooseConfigCopy(copies)
+	log.Debug("readGatewayConfig: copy chosen",
+		zap.String("path", path), zap.Strings("from", from), zap.Strings("differing", differing),
+		zap.Strings("missing", missing), zap.Bool("disabled", chosen.disabled), zap.Int("size_bytes", len(chosen.content)))
 	if len(differing) > 0 || len(missing) > 0 {
 		m.logger.Warn("Gateway config differs between nodes; using one copy, the next write makes them identical",
 			zap.String("config", path),
@@ -180,6 +205,8 @@ func chooseConfigCopy(copies []nodeConfigCopy) (chosen nodeConfigCopy, from, dif
 	if len(live) > 0 {
 		candidates = live
 	}
+	zap.L().Debug("chooseConfigCopy: candidates",
+		zap.Int("copies", len(copies)), zap.Int("live", len(live)), zap.Int("count", len(candidates)))
 
 	counts := map[string]int{}
 	for _, c := range candidates {
@@ -207,8 +234,10 @@ func chooseConfigCopy(copies []nodeConfigCopy) (chosen nodeConfigCopy, from, dif
 // pattern on any managed node, de-duplicated by node-identical content. Used
 // by listings that span gateways, where a union across nodes is the answer.
 func (m *Manager) readAllNodeConfigs(ctx context.Context, pattern string) ([]string, error) {
+	m.log().Debug("readAllNodeConfigs: start", zap.String("pattern", pattern), zap.Strings("hosts", m.hosts))
 	byHost, err := m.dumpNodeConfigs(ctx, m.hosts, filepath.Join(DrbdReactorConfigDir, pattern))
 	if err != nil {
+		m.log().Debug("readAllNodeConfigs: dump failed", zap.String("pattern", pattern), zap.Error(err))
 		return nil, err
 	}
 	seen := map[string]bool{}
@@ -222,6 +251,8 @@ func (m *Manager) readAllNodeConfigs(ctx context.Context, pattern string) ([]str
 			}
 		}
 	}
+	m.log().Debug("readAllNodeConfigs: done",
+		zap.String("pattern", pattern), zap.Int("hosts", len(byHost)), zap.Int("count", len(contents)))
 	return contents, nil
 }
 

@@ -3,6 +3,8 @@ package apptemplate
 import (
 	"regexp"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // EvictScript moves the app off the node it runs on, through drbd-reactor:
@@ -11,6 +13,7 @@ import (
 // other node took over — it then re-enables the resource where it was and
 // says so only in its output — so the output is checked.
 func EvictScript(name string) string {
+	zap.L().Debug("EvictScript: rendering evict script", zap.String("app", name), zap.String("promoter", PromoterName(name)))
 	return strings.NewReplacer("@CFG@", PromoterPath(name), "@PROM@", PromoterName(name)).Replace(`#!/bin/bash
 [ -f @CFG@ ] || { echo "$(hostname): no promoter config @CFG@ here" >&2; exit 3; }
 out=$(drbd-reactorctl evict @PROM@ 2>&1); rc=$?
@@ -27,8 +30,10 @@ var tookOverRe = regexp.MustCompile(`Node '([^']+)' took over`)
 // TookOver names the node drbd-reactorctl evict reported taking over.
 func TookOver(out string) string {
 	if m := tookOverRe.FindStringSubmatch(out); m != nil {
+		zap.L().Debug("TookOver: evict named the new node", zap.String("node", m[1]))
 		return m[1]
 	}
+	zap.L().Debug("TookOver: evict output names no node", zap.Int("output_len", len(out)))
 	return ""
 }
 
@@ -43,6 +48,8 @@ func TookOver(out string) string {
 func RemoveScript(s Spec) string {
 	l := LayoutFor(s.Name)
 	target := "drbd-services@" + strings.ReplaceAll(s.Resource, "-", `\x2d`) + ".target"
+	zap.L().Debug("RemoveScript: rendering remove script",
+		zap.String("app", s.Name), zap.String("resource", s.Resource), zap.String("target", target), zap.String("mount", l.Mount))
 	return strings.NewReplacer(
 		"@CFG@", PromoterPath(s.Name),
 		"@UNITFILE@", UnitPath(s.Name),
@@ -89,6 +96,7 @@ true
 // PresenceScript reports whether a node holds the app's promoter config
 // (live or disabled) and its unit: "promoter=yes|no unit=yes|no".
 func PresenceScript(name string) string {
+	zap.L().Debug("PresenceScript: rendering presence probe", zap.String("app", name))
 	return strings.NewReplacer("@CFG@", PromoterPath(name), "@UNITFILE@", UnitPath(name)).Replace(`p=no; u=no
 { [ -f @CFG@ ] || [ -f @CFG@.disabled ]; } && p=yes
 [ -f @UNITFILE@ ] && u=yes

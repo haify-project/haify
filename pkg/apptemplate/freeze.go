@@ -3,6 +3,8 @@ package apptemplate
 import (
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Consistent snapshots.
@@ -37,6 +39,8 @@ func thawFile(name string) string { return RuntimeBase + name + "-thaw.sh" }
 
 // thawSteps undo every freeze step, each tolerating that it was never done.
 func thawSteps(s Spec, b Binaries) string {
+	zap.L().Debug("thawSteps: rendering thaw steps", zap.String("app", s.Name), zap.String("engine", string(s.Engine)),
+		zap.Bool("releases_mysql_lock", s.Engine == MySQL))
 	steps := "fsfreeze -u @MOUNT@ 2>/dev/null\n"
 	if s.Engine == MySQL {
 		steps += `ids=$(@CLIENT@ --defaults-extra-file=@CLIENTCONF@ -N -e "SELECT ID FROM information_schema.PROCESSLIST WHERE TRIM(INFO) = '` + mysqlLockQuery + `'" 2>/dev/null)
@@ -56,6 +60,9 @@ systemctl stop @LOCKUNIT@.service 2>/dev/null
 const mysqlLockQuery = "SELECT SLEEP(@HOLD@) AS haify_app_freeze"
 
 func freezeSteps(s Spec, b Binaries) string {
+	// The engine decides how the app is quiesced before fsfreeze: a
+	// checkpoint, a held read lock, or a fresh RDB. Others only fsfreeze.
+	zap.L().Debug("freezeSteps: rendering freeze steps", zap.String("app", s.Name), zap.String("engine", string(s.Engine)))
 	var steps string
 	switch s.Engine {
 	case Postgres:
@@ -98,6 +105,9 @@ func FreezeForSnapshot(s Spec, b Binaries) string {
 	l := LayoutFor(s.Name)
 	unit := ThawUnit(s.Name)
 	tf := thawFile(s.Name)
+	zap.L().Debug("FreezeForSnapshot: rendering freeze script",
+		zap.String("app", s.Name), zap.String("engine", string(s.Engine)), zap.String("mount", l.Mount),
+		zap.String("thaw_unit", unit), zap.Duration("watchdog", FreezeWatchdog))
 	return strings.NewReplacer(
 		"@MOUNT@", l.Mount,
 		"@THAWFILE@", tf,
@@ -130,6 +140,7 @@ systemd-run --unit=@THAWUNIT@ $(systemd-run --help 2>/dev/null | grep -q -e --co
 // watchdog. Safe to run when nothing is frozen.
 func ThawAfterSnapshot(s Spec, b Binaries) string {
 	tf := thawFile(s.Name)
+	zap.L().Debug("ThawAfterSnapshot: rendering thaw script", zap.String("app", s.Name), zap.String("engine", string(s.Engine)))
 	return strings.NewReplacer("@THAWFILE@", tf, "@THAWUNIT@", ThawUnit(s.Name), "@THAW@", thawSteps(s, b)).
 		Replace(`#!/bin/bash
 cd /
@@ -142,6 +153,7 @@ true
 // StatusScript reports, on one node, whether the app's unit is active there
 // and whether the database answers: "active=<state>" and "health=ok|fail".
 func StatusScript(s Spec, b Binaries) string {
+	zap.L().Debug("StatusScript: rendering status script", zap.String("app", s.Name), zap.String("engine", string(s.Engine)))
 	return "#!/bin/bash\ncd /\necho \"active=$(systemctl is-active " + UnitName(s.Name) + " 2>/dev/null)\"\n" +
 		"if " + HealthCommand(s, b) + "; then echo health=ok; else echo health=fail; fi\n"
 }

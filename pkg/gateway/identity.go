@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Identifiers that get baked into a promoter config and then have to stay put.
@@ -30,6 +32,7 @@ func generateUUID() string {
 	// Generate 16 random bytes
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
+		zap.L().Debug("generateUUID: crypto/rand failed, deriving from the clock", zap.Error(err))
 		// Fallback to MD5-based UUID if rand.Read fails
 		hash := md5.Sum([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
 		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",

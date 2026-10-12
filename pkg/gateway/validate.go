@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -84,27 +85,33 @@ var (
 // validateIQN validates an iSCSI target or initiator name against the rules
 // LIO applies (see above).
 func validateIQN(name string) error {
+	log := zap.L()
 	if strings.ContainsAny(name, "\"'\\$`") {
+		log.Debug("validateIQN: shell-unsafe characters", zap.String("iqn", name))
 		return fmt.Errorf("invalid iSCSI name %q: quotes, backslashes, \"$\" and \"`\" are not allowed", name)
 	}
 	lower := strings.ToLower(name)
 	switch {
 	case strings.HasPrefix(name, iqnPrefix):
 		if !lioIQNRE.MatchString(lower) || strings.ContainsAny(lower, " \t_") {
+			log.Debug("validateIQN: iqn name LIO refuses", zap.String("iqn", name))
 			return fmt.Errorf("invalid iSCSI name %q: LIO (targetcli) refuses it — an %q name needs a year-month "+
 				"date, a reversed domain of at least two labels, and no spaces or \"_\"; %s", name, iqnPrefix, iscsiNameFormats)
 		}
 	case strings.HasPrefix(name, euiPrefix):
 		if !lioEUIRE.MatchString(lower) {
+			log.Debug("validateIQN: malformed eui name", zap.String("iqn", name))
 			return fmt.Errorf("invalid iSCSI name %q: %q must be followed by exactly 16 hexadecimal digits; %s",
 				name, euiPrefix, iscsiNameFormats)
 		}
 	case strings.HasPrefix(name, naaPrefix):
 		if !lioNAARE.MatchString(lower) {
+			log.Debug("validateIQN: malformed naa name", zap.String("iqn", name))
 			return fmt.Errorf("invalid iSCSI name %q: %q must be followed by 16 hexadecimal digits, the first "+
 				"1, 2 or 5; %s", name, naaPrefix, iscsiNameFormats)
 		}
 	default:
+		log.Debug("validateIQN: unknown name format", zap.String("iqn", name))
 		return fmt.Errorf("invalid iSCSI name %q: %s", name, iscsiNameFormats)
 	}
 	return nil
@@ -129,16 +136,21 @@ var (
 func validateHostNQN(nqn string) error {
 	const formats = `expected nqn.<yyyy-mm>.<reversed domain>[:<name>] (nqn.2024-01.com.example:host1) ` +
 		`or nqn.2014-08.org.nvmexpress:uuid:<uuid>`
+	log := zap.L()
 	switch {
 	case len(nqn) > maxNQNLength:
+		log.Debug("validateHostNQN: too long", zap.Int("length", len(nqn)))
 		return fmt.Errorf("invalid host NQN %q: longer than %d bytes", nqn, maxNQNLength)
 	case strings.ContainsAny(nqn, "/\"'\\$`"):
+		log.Debug("validateHostNQN: unsafe characters", zap.String("host_nqn", nqn))
 		return fmt.Errorf("invalid host NQN %q: \"/\", quotes, backslashes, \"$\" and \"`\" are not allowed", nqn)
 	case strings.HasPrefix(nqn, uuidNQNPrefix):
 		if !uuidRE.MatchString(strings.TrimPrefix(nqn, uuidNQNPrefix)) {
+			log.Debug("validateHostNQN: UUID form without a UUID", zap.String("host_nqn", nqn))
 			return fmt.Errorf("invalid host NQN %q: what follows %q must be a UUID", nqn, uuidNQNPrefix)
 		}
 	case !hostNQNRE.MatchString(nqn):
+		log.Debug("validateHostNQN: malformed", zap.String("host_nqn", nqn))
 		return fmt.Errorf("invalid host NQN %q: %s", nqn, formats)
 	}
 	return nil
@@ -147,11 +159,13 @@ func validateHostNQN(nqn string) error {
 // validateNQN validates an NQN format
 func validateNQN(nqn string) error {
 	if !strings.HasPrefix(nqn, "nqn.") {
+		zap.L().Debug("validateNQN: missing nqn. prefix", zap.String("nqn", nqn))
 		return fmt.Errorf("invalid NQN format: must start with 'nqn.'")
 	}
 
 	parts := strings.Split(nqn, ":")
 	if len(parts) < 2 {
+		zap.L().Debug("validateNQN: missing colon", zap.String("nqn", nqn))
 		return fmt.Errorf("invalid NQN format: missing colon separator")
 	}
 
@@ -168,6 +182,7 @@ func parseTransportType(transport string) error {
 			return nil
 		}
 	}
+	zap.L().Debug("parseTransportType: unknown transport", zap.String("transport", transport))
 	return fmt.Errorf("invalid transport type: %s (valid: %v)", transport, validTypes)
 }
 
@@ -182,6 +197,7 @@ func parseTransportType(transport string) error {
 // packaged by current distributions. The stop order the chain relies on
 // (service IP first, then LUNs, then target) has only been verified on LIO.
 func validateISCSIImplementation(implementation string) (string, error) {
+	zap.L().Debug("validateISCSIImplementation: checking", zap.String("implementation", implementation))
 	switch implementation {
 	case "", "lio", "lio-t":
 		return "lio-t", nil

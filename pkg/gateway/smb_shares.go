@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"path"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -19,6 +18,7 @@ import (
 // serving the gateway has mounted, so every change here is made there and
 // applied with `smbcontrol reload-config` — smbd re-reads its shares without
 // dropping a session. A stopped gateway cannot be changed: start it first.
+// Users are in smb_users.go.
 
 // SMBShare is one share of an SMB gateway.
 type SMBShare struct {
@@ -39,12 +39,15 @@ var (
 )
 
 func (sh *SMBShare) validate() error {
+	log := zap.L()
 	if !smbShareNameRE.MatchString(sh.Name) || smbReserved[strings.ToLower(sh.Name)] {
+		log.Debug("SMBShare.validate: invalid name", zap.String("share", sh.Name))
 		return fmt.Errorf("invalid share name %q: letters, digits, '_', '.', '-', up to 64, not a Samba reserved name", sh.Name)
 	}
 	if sh.Path != "" {
 		clean := path.Clean(sh.Path)
 		if !smbPathRE.MatchString(sh.Path) || clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(sh.Path, "/") {
+			log.Debug("SMBShare.validate: invalid path", zap.String("share", sh.Name), zap.String("path", sh.Path))
 			return fmt.Errorf("invalid share path %q: a directory under the gateway's volume, like \"projects/a\"", sh.Path)
 		}
 		sh.Path = clean
@@ -54,14 +57,18 @@ func (sh *SMBShare) validate() error {
 	}
 	for _, u := range sh.ValidUsers {
 		if err := validateSMBUser(u); err != nil {
+			log.Debug("SMBShare.validate: invalid valid user", zap.String("share", sh.Name), zap.String("user", u))
 			return err
 		}
 	}
+	log.Debug("SMBShare.validate: valid",
+		zap.String("share", sh.Name), zap.String("path", sh.Path), zap.Bool("read_only", sh.ReadOnly), zap.Strings("valid_users", sh.ValidUsers))
 	return nil
 }
 
 func validateSMBUser(u string) error {
 	if !smbUserRE.MatchString(u) || u == smbOwner || u == "root" {
+		zap.L().Debug("validateSMBUser: invalid", zap.String("user", u))
 		return fmt.Errorf("invalid SMB user %q: lower-case letters, digits, '_' and '-', up to 32, starting with a letter", u)
 	}
 	return nil
@@ -69,9 +76,11 @@ func validateSMBUser(u string) error {
 
 func validateSMBWorkgroup(w string) (string, error) {
 	if w == "" {
+		zap.L().Debug("validateSMBWorkgroup: none given, using WORKGROUP")
 		return "WORKGROUP", nil
 	}
 	if !smbWorkgroupRE.MatchString(w) {
+		zap.L().Debug("validateSMBWorkgroup: invalid", zap.String("workgroup", w))
 		return "", fmt.Errorf("invalid workgroup %q: up to 15 letters, digits, '_' or '-'", w)
 	}
 	return strings.ToUpper(w), nil
@@ -100,6 +109,7 @@ func (sh SMBShare) section(resource string) string {
 
 // renderSMBShares renders a whole shares.conf.
 func renderSMBShares(resource string, shares []SMBShare) string {
+	zap.L().Debug("renderSMBShares: rendering", zap.String("resource", resource), zap.Int("count", len(shares)))
 	var b strings.Builder
 	b.WriteString("# Haify SMB gateway shares (managed by haify gateway smb share)\n")
 	for _, sh := range shares {
@@ -137,56 +147,74 @@ func parseSMBShares(resource, content string) []SMBShare {
 			}
 		}
 	}
+	zap.L().Debug("parseSMBShares: parsed", zap.String("resource", resource), zap.Int("count", len(out)))
 	return out
 }
 
 // servingNode returns the node serving resource's gateway, and every node
 // that may serve it.
 func (s *SMBManager) servingNode(ctx context.Context, resource string) (string, []string, error) {
+	log := s.log()
+	log.Debug("SMBManager.servingNode: start", zap.String("resource", resource))
 	res, err := s.resources.GetResource(ctx, resource)
 	if err != nil || res == nil {
+		log.Debug("SMBManager.servingNode: resource lookup failed", zap.String("resource", resource), zap.Error(err))
 		return "", nil, fmt.Errorf("look up %s: %v", resource, err)
 	}
 	hosts := gatewayNodes(res)
 	states, err := s.gatewayTargetStates(ctx, hosts, resource)
 	if err != nil {
+		log.Debug("SMBManager.servingNode: target states unknown", zap.String("resource", resource), zap.Error(err))
 		return "", nil, err
 	}
 	host, err := runningGatewayHost(hosts, states, resource)
 	if err != nil {
+		log.Debug("SMBManager.servingNode: serving node unclear", zap.String("resource", resource), zap.Error(err))
 		return "", nil, err
 	}
 	if host == "" {
+		log.Debug("SMBManager.servingNode: gateway not running", zap.String("resource", resource))
 		return "", nil, fmt.Errorf("SMB gateway %s is not running; start it first: its shares and users live on its state volume, which only the serving node has mounted", resource)
 	}
+	log.Debug("SMBManager.servingNode: found", zap.String("resource", resource), zap.String("host", host), zap.Strings("hosts", hosts))
 	return host, hosts, nil
 }
 
 // readOn returns what cmd prints on host.
 func (s *SMBManager) readOn(ctx context.Context, host, cmd string) (string, error) {
+	log := s.log()
 	reader, ok := s.deployment.(HostOutputReader)
 	if !ok {
+		log.Debug("SMBManager.readOn: deployment client cannot return output")
 		return "", fmt.Errorf("deployment client cannot read node output")
 	}
+	start := time.Now()
 	out, err := reader.ExecOutput(ctx, []string{host}, scriptCmd(cmd))
 	if err != nil {
+		log.Debug("SMBManager.readOn: exec failed", zap.String("host", host), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return "", err
 	}
 	text, ok := out[host]
 	if !ok {
+		log.Debug("SMBManager.readOn: host did not answer", zap.String("host", host), zap.Duration("took", time.Since(start)))
 		return "", fmt.Errorf("%s did not answer", host)
 	}
+	log.Debug("SMBManager.readOn: read", zap.String("host", host), zap.Int("output_len", len(text)), zap.Duration("took", time.Since(start)))
 	return text, nil
 }
 
 // ListSMBShares lists the shares of a running SMB gateway.
 func (s *SMBManager) ListSMBShares(ctx context.Context, resource string) ([]SMBShare, error) {
+	log := s.log()
+	log.Debug("SMBManager.ListSMBShares: start", zap.String("resource", resource))
 	host, _, err := s.servingNode(ctx, resource)
 	if err != nil {
+		log.Debug("SMBManager.ListSMBShares: no serving node", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 	content, err := s.readOn(ctx, host, "cat "+smbSharesPath(resource))
 	if err != nil {
+		log.Debug("SMBManager.ListSMBShares: reading shares failed", zap.String("host", host), zap.Error(err))
 		return nil, err
 	}
 	return parseSMBShares(resource, content), nil
@@ -195,11 +223,15 @@ func (s *SMBManager) ListSMBShares(ctx context.Context, resource string) ([]SMBS
 // writeShares replaces shares.conf on host, creates the directory of share
 // (when given) and has smbd re-read its shares.
 func (s *SMBManager) writeShares(ctx context.Context, host, resource string, shares []SMBShare, created *SMBShare) error {
+	log := s.log()
 	mk := ""
 	if created != nil {
 		dir := path.Join(smbShareRoot(resource), created.Path)
+		log.Debug("SMBManager.writeShares: creating share directory", zap.String("host", host), zap.String("dir", dir))
 		mk = fmt.Sprintf("mkdir -p %[1]s && chown %[2]s:%[2]s %[1]s\n", shq(dir), smbOwner)
 	}
+	log.Debug("SMBManager.writeShares: writing shares and reloading smbd",
+		zap.String("host", host), zap.String("resource", resource), zap.Int("count", len(shares)))
 	script := fmt.Sprintf(`set -e
 %[1]secho %[2]s | base64 -d > %[3]s.new && mv %[3]s.new %[3]s
 smbcontrol -s %[4]s smbd reload-config
@@ -209,24 +241,31 @@ smbcontrol -s %[4]s smbd reload-config
 
 // AddSMBShare adds a share to a running SMB gateway.
 func (s *SMBManager) AddSMBShare(ctx context.Context, resource string, share SMBShare) error {
+	log := s.log()
+	log.Debug("SMBManager.AddSMBShare: start",
+		zap.String("resource", resource), zap.String("share", share.Name), zap.String("path", share.Path))
 	if err := share.validate(); err != nil {
 		return invalidArgument(err)
 	}
 	host, _, err := s.servingNode(ctx, resource)
 	if err != nil {
+		log.Debug("SMBManager.AddSMBShare: no serving node", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	content, err := s.readOn(ctx, host, "cat "+smbSharesPath(resource))
 	if err != nil {
+		log.Debug("SMBManager.AddSMBShare: reading shares failed", zap.String("host", host), zap.Error(err))
 		return err
 	}
 	shares := parseSMBShares(resource, content)
 	for _, sh := range shares {
 		if strings.EqualFold(sh.Name, share.Name) {
+			log.Debug("SMBManager.AddSMBShare: share exists", zap.String("resource", resource), zap.String("share", share.Name))
 			return fmt.Errorf("share %s already exists on %s", share.Name, resource)
 		}
 	}
 	if err := smbNestedExposure(shares, share); err != nil {
+		log.Debug("SMBManager.AddSMBShare: nesting would widen access", zap.String("share", share.Name), zap.Error(err))
 		return invalidArgument(err)
 	}
 	shares = append(shares, share)
@@ -250,8 +289,12 @@ func smbNestedExposure(existing []SMBShare, added SMBShare) error {
 		}
 		extra := smbUsersBeyond(outer.ValidUsers, inner.ValidUsers)
 		if extra == "" {
+			zap.L().Debug("smbNestedExposure: nested shares, no wider access",
+				zap.String("outer", outer.Name), zap.String("inner", inner.Name))
 			continue
 		}
+		zap.L().Debug("smbNestedExposure: outer share lets in more users",
+			zap.String("outer", outer.Name), zap.String("inner", inner.Name), zap.String("extra", extra))
 		return fmt.Errorf("share %s (/%s) lies inside share %s (/%s), which lets in %s: they would reach %s's files "+
 			"through %s. Give %s --valid-users that %s also has (remove and re-add it), or put %s outside it",
 			inner.Name, inner.Path, outer.Name, outer.Path, extra, inner.Name, outer.Name, outer.Name, inner.Name, inner.Name)
@@ -288,12 +331,16 @@ func smbUsersBeyond(outer, inner []string) string {
 
 // RemoveSMBShare removes a share; its directory and data are left in place.
 func (s *SMBManager) RemoveSMBShare(ctx context.Context, resource, name string) error {
+	log := s.log()
+	log.Debug("SMBManager.RemoveSMBShare: start", zap.String("resource", resource), zap.String("share", name))
 	host, _, err := s.servingNode(ctx, resource)
 	if err != nil {
+		log.Debug("SMBManager.RemoveSMBShare: no serving node", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	content, err := s.readOn(ctx, host, "cat "+smbSharesPath(resource))
 	if err != nil {
+		log.Debug("SMBManager.RemoveSMBShare: reading shares failed", zap.String("host", host), zap.Error(err))
 		return err
 	}
 	shares := parseSMBShares(resource, content)
@@ -304,167 +351,9 @@ func (s *SMBManager) RemoveSMBShare(ctx context.Context, resource, name string) 
 		}
 	}
 	if len(kept) == len(shares) {
+		log.Debug("SMBManager.RemoveSMBShare: share not found", zap.String("resource", resource), zap.String("share", name))
 		return fmt.Errorf("share %s not found on %s", name, resource)
 	}
 	s.logger.Info("Removing SMB share", zap.String("resource", resource), zap.String("share", name))
 	return s.writeShares(ctx, host, resource, kept, nil)
-}
-
-// SetSMBUser adds an SMB user, or changes its password.
-func (s *SMBManager) SetSMBUser(ctx context.Context, resource, user, password string) error {
-	if err := validateSMBUser(user); err != nil {
-		return invalidArgument(err)
-	}
-	if password == "" || strings.ContainsAny(password, "\n\r\x00") {
-		return invalidArgument(fmt.Errorf("a password is required, on one line"))
-	}
-	host, hosts, err := s.servingNode(ctx, resource)
-	if err != nil {
-		return err
-	}
-	recorded, err := s.recordedUIDs(ctx, host, resource)
-	if err != nil {
-		return err
-	}
-	uid, err := s.allocateUID(ctx, hosts, user, recorded)
-	if err != nil {
-		return err
-	}
-	conf, users := smbConfPath(resource), smbUsersPath(resource)
-	script := fmt.Sprintf(`set -e
-grep -q '^%[1]s:' %[2]s || echo '%[1]s:%[3]d' >> %[2]s
-%[4]s %[2]s
-pw=$(echo %[5]s | base64 -d)
-printf '%%s\n%%s\n' "$pw" "$pw" | smbpasswd -c %[6]s -s -a %[1]s >/dev/null
-smbpasswd -c %[6]s -e %[1]s >/dev/null
-`, user, users, uid, smbUsersHelper, base64Of(password), conf)
-	s.logger.Info("Setting SMB user", zap.String("resource", resource), zap.String("user", user))
-	return s.runScript(ctx, []string{host}, script)
-}
-
-// RemoveSMBUser removes an SMB user. Its local account stays, unused.
-func (s *SMBManager) RemoveSMBUser(ctx context.Context, resource, user string) error {
-	if err := validateSMBUser(user); err != nil {
-		return invalidArgument(err)
-	}
-	host, _, err := s.servingNode(ctx, resource)
-	if err != nil {
-		return err
-	}
-	script := fmt.Sprintf(`set -e
-pdbedit -s %[1]s -L | grep -q '^%[2]s:' || { echo "no SMB user %[2]s" >&2; exit 1; }
-smbpasswd -c %[1]s -x %[2]s >/dev/null
-grep -v '^%[2]s:' %[3]s > %[3]s.new || true
-mv %[3]s.new %[3]s
-`, smbConfPath(resource), user, smbUsersPath(resource))
-	return s.runScript(ctx, []string{host}, script)
-}
-
-// ListSMBUsers lists the SMB users of a running gateway.
-func (s *SMBManager) ListSMBUsers(ctx context.Context, resource string) ([]string, error) {
-	host, _, err := s.servingNode(ctx, resource)
-	if err != nil {
-		return nil, err
-	}
-	out, err := s.readOn(ctx, host, "pdbedit -s "+smbConfPath(resource)+" -L")
-	if err != nil {
-		return nil, err
-	}
-	var users []string
-	for _, line := range strings.Split(out, "\n") {
-		if name, _, ok := strings.Cut(strings.TrimSpace(line), ":"); ok && name != "" {
-			users = append(users, name)
-		}
-	}
-	sort.Strings(users)
-	return users, nil
-}
-
-// recordedUIDs reads the gateway's users file.
-func (s *SMBManager) recordedUIDs(ctx context.Context, host, resource string) (map[string]int, error) {
-	out, err := s.readOn(ctx, host, "cat "+smbUsersPath(resource)+" 2>/dev/null; true")
-	if err != nil {
-		return nil, err
-	}
-	return parseNameIDs(out, 1), nil
-}
-
-// parseNameIDs reads "name:...:id" lines, the id being field idField.
-func parseNameIDs(out string, idField int) map[string]int {
-	m := map[string]int{}
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Split(strings.TrimSpace(line), ":")
-		if len(f) <= idField || f[0] == "" {
-			continue
-		}
-		if id, err := strconv.Atoi(f[idField]); err == nil {
-			m[f[0]] = id
-		}
-	}
-	return m
-}
-
-// allocateUID returns the uid name has, or gets, on every host: the one it
-// was recorded with, the one it already has on the hosts (which must agree),
-// or the lowest id from smbFirstUID that is free as a uid and a gid on all.
-func (s *SMBManager) allocateUID(ctx context.Context, hosts []string, name string, recorded map[string]int) (int, error) {
-	if uid, ok := recorded[name]; ok {
-		return uid, nil
-	}
-	reader, ok := s.deployment.(HostOutputReader)
-	if !ok {
-		return 0, fmt.Errorf("deployment client cannot read node output")
-	}
-	out, err := reader.ExecOutput(ctx, hosts, scriptCmd("getent passwd; echo ---; getent group"))
-	if err != nil {
-		return 0, fmt.Errorf("read accounts: %w", err)
-	}
-	if len(out) < len(hosts) {
-		return 0, fmt.Errorf("cannot read the accounts on every node of the gateway; retry when they all answer")
-	}
-	return pickUID(name, out, recorded)
-}
-
-// pickUID is allocateUID's decision over each host's getent output.
-func pickUID(name string, outputs map[string]string, recorded map[string]int) (int, error) {
-	used := map[int]bool{}
-	for _, id := range recorded {
-		used[id] = true
-	}
-	have := map[int][]string{}
-	takenBy := map[int]string{} // uid -> another account's name holding it somewhere
-	for host, out := range outputs {
-		passwd, group, _ := strings.Cut(out, "---")
-		users := parseNameIDs(passwd, 2)
-		if uid, ok := users[name]; ok {
-			have[uid] = append(have[uid], host)
-		}
-		for n, id := range users {
-			used[id] = true
-			if n != name {
-				takenBy[id] = n + " on " + host
-			}
-		}
-		for _, id := range parseNameIDs(group, 2) {
-			used[id] = true
-		}
-	}
-	switch len(have) {
-	case 0:
-	case 1:
-		for uid := range have {
-			if other, ok := takenBy[uid]; ok {
-				return 0, fmt.Errorf("%s has uid %d, which is %s; the gateway could not start there", name, uid, other)
-			}
-			return uid, nil
-		}
-	default:
-		return 0, fmt.Errorf("%s has different uids on the gateway's nodes (%v); make them agree first", name, have)
-	}
-	for uid := smbFirstUID; uid < smbFirstUID+4000; uid++ {
-		if !used[uid] {
-			return uid, nil
-		}
-	}
-	return 0, fmt.Errorf("no free uid from %d on every node", smbFirstUID)
 }

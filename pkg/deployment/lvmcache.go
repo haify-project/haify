@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // lvmcache — putting an SSD in front of a slow LVM pool.
@@ -36,6 +38,8 @@ const LVMCacheFields = "vg_name,lv_name,lv_attr,segtype,lv_size,cache_mode," +
 // plain integers already and are empty for an LV that is not currently active,
 // which the parser treats as zero.
 func (c *Client) LVSCacheReport(ctx context.Context, hosts []string, vgName string) (*ExecResult, error) {
+	c.log().Debug("LVSCacheReport: reading cache state",
+		zap.Strings("hosts", hosts), zap.String("vg", vgName), zap.Bool("all_groups", vgName == ""))
 	cmd := fmt.Sprintf("sudo lvs -a --noheadings --nosuffix --units b --separator '|' -o %s", LVMCacheFields)
 	if vgName != "" {
 		cmd += " " + vgName
@@ -54,6 +58,7 @@ func (c *Client) LVSCacheReport(ctx context.Context, hosts []string, vgName stri
 // simply free still exits zero — "not a PV" must not read as "the probe
 // failed".
 func (c *Client) ProbeBlockDevice(ctx context.Context, host, device string) (*ExecResult, error) {
+	c.log().Debug("ProbeBlockDevice: probing device", zap.String("host", host), zap.String("device", device))
 	d := shellQuote(device)
 	cmd := strings.Join([]string{
 		fmt.Sprintf("if [ -b %s ]; then echo block=yes; else echo block=no; fi", d),
@@ -70,6 +75,8 @@ func (c *Client) ProbeBlockDevice(ctx context.Context, host, device string) (*Ex
 
 // VGExtend adds a physical volume to an existing volume group.
 func (c *Client) VGExtend(ctx context.Context, hosts []string, vgName, device string) (*ExecResult, error) {
+	c.log().Debug("VGExtend: adding device to volume group",
+		zap.Strings("hosts", hosts), zap.String("vg", vgName), zap.String("device", device))
 	return c.Exec(ctx, hosts, fmt.Sprintf("sudo vgextend %s %s", vgName, shellQuote(device)))
 }
 
@@ -82,6 +89,8 @@ func (c *Client) VGExtend(ctx context.Context, hosts []string, vgName, device st
 // pool does here — would quietly move pool data onto it. vgreduce refuses while
 // anything still allocates from the device, so this cannot strand data.
 func (c *Client) VGReduceAndRemovePV(ctx context.Context, hosts []string, vgName, device string) (*ExecResult, error) {
+	c.log().Debug("VGReduceAndRemovePV: taking device out of volume group",
+		zap.Strings("hosts", hosts), zap.String("vg", vgName), zap.String("device", device))
 	d := shellQuote(device)
 	return c.Exec(ctx, hosts, fmt.Sprintf("sudo vgreduce %s %s && sudo pvremove -y %s", vgName, d, d))
 }
@@ -93,6 +102,8 @@ func (c *Client) VGReduceAndRemovePV(ctx context.Context, hosts []string, vgName
 // it LVM is free to satisfy the request from the slow disks, producing a
 // "cache" on the same spindles as the origin.
 func (c *Client) LVCreateCacheVol(ctx context.Context, hosts []string, vgName, lvName, device string) (*ExecResult, error) {
+	c.log().Debug("LVCreateCacheVol: creating cache volume",
+		zap.Strings("hosts", hosts), zap.String("vg", vgName), zap.String("lv", lvName), zap.String("device", device))
 	return c.Exec(ctx, hosts, fmt.Sprintf("sudo lvcreate -y -n %s -l 100%%PVS %s %s",
 		lvName, vgName, shellQuote(device)))
 }
@@ -104,6 +115,9 @@ func (c *Client) LVCreateCacheVol(ctx context.Context, hosts []string, vgName, l
 // changing under a running cluster, and the difference between the two modes
 // here is whether an acknowledged write exists anywhere but one node's SSD.
 func (c *Client) LVConvertToCache(ctx context.Context, hosts []string, vgName, lvName, cacheVol, mode string) (*ExecResult, error) {
+	c.log().Debug("LVConvertToCache: attaching cache",
+		zap.Strings("hosts", hosts), zap.String("vg", vgName), zap.String("lv", lvName),
+		zap.String("cache_vol", cacheVol), zap.String("mode", mode))
 	return c.Exec(ctx, hosts, fmt.Sprintf("sudo lvconvert -y --type cache --cachevol %s --cachemode %s %s/%s",
 		cacheVol, mode, vgName, lvName))
 }
@@ -115,6 +129,8 @@ func (c *Client) LVConvertToCache(ctx context.Context, hosts []string, vgName, l
 // flush this" into "I discarded it" — which is precisely the outcome the caller
 // must be told about rather than have chosen for it.
 func (c *Client) LVUncache(ctx context.Context, hosts []string, vgName, lvName string) (*ExecResult, error) {
+	c.log().Debug("LVUncache: flushing and detaching cache",
+		zap.Strings("hosts", hosts), zap.String("vg", vgName), zap.String("lv", lvName))
 	return c.Exec(ctx, hosts, fmt.Sprintf("sudo lvconvert -y --uncache %s/%s", vgName, lvName))
 }
 

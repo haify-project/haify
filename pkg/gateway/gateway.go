@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"time"
 
 	v1 "github.com/haify-project/haify/api/proto/v1"
 	"go.uber.org/zap"
@@ -112,7 +113,17 @@ func New(resources ResourceManager, deployment DeploymentClient, logger *zap.Log
 	}
 }
 
+// log returns the manager's logger, or the process-wide one for a manager
+// built without one.
+func (m *Manager) log() *zap.Logger {
+	if m != nil && m.logger != nil {
+		return m.logger
+	}
+	return zap.L()
+}
+
 func (m *Manager) SetHosts(hosts []string) {
+	m.log().Debug("Manager.SetHosts: managed hosts replaced", zap.Strings("hosts", hosts))
 	m.hosts = append([]string(nil), hosts...)
 }
 
@@ -190,28 +201,39 @@ func promoterConfigPaths(resource, suffix string) string {
 // them. A gateway is reactor-managed when any node holds its live .toml, and
 // stopped when the nodes hold only the .toml.disabled copy.
 func (m *Manager) ListGateways(ctx context.Context) ([]*GatewayInfo, error) {
+	log := m.log()
+	log.Debug("ListGateways: listing gateway configs on nodes", zap.Strings("hosts", m.hosts))
 	if len(m.hosts) == 0 {
+		log.Debug("ListGateways: no managed hosts")
 		return nil, fmt.Errorf("no managed nodes to read gateway configs from")
 	}
 	reader, ok := m.deployment.(HostOutputReader)
 	if !ok {
+		log.Debug("ListGateways: deployment client cannot return output")
 		return nil, fmt.Errorf("deployment client cannot read node output")
 	}
+	start := time.Now()
 	outputs, err := reader.ExecOutput(ctx, m.hosts, fmt.Sprintf("ls -1 %s 2>/dev/null; true", DrbdReactorConfigDir))
 	if err != nil {
+		log.Debug("ListGateways: listing failed", zap.Strings("hosts", m.hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, fmt.Errorf("failed to list %s on nodes: %w", DrbdReactorConfigDir, err)
 	}
+	log.Debug("ListGateways: nodes answered", zap.Int("count", len(outputs)), zap.Duration("took", time.Since(start)))
 	if len(outputs) == 0 {
+		log.Debug("ListGateways: no node answered")
 		return nil, fmt.Errorf("no managed node answered when listing %s", DrbdReactorConfigDir)
 	}
 
 	byKey := map[string]*GatewayInfo{}
-	for _, out := range outputs {
+	for host, out := range outputs {
 		for _, name := range strings.Fields(out) {
 			gw, live := parseGatewayConfigName(name)
 			if gw == nil {
 				continue
 			}
+			log.Debug("ListGateways: gateway config found",
+				zap.String("host", host), zap.String("file", name), zap.String("type", gw.Type),
+				zap.String("resource", gw.Resource), zap.Bool("live", live))
 			key := gw.Type + "/" + gw.Resource
 			if prev, seen := byKey[key]; seen {
 				if live {
@@ -233,6 +255,7 @@ func (m *Manager) ListGateways(ctx context.Context) ([]*GatewayInfo, error) {
 		}
 		return gateways[i].Type < gateways[j].Type
 	})
+	log.Debug("ListGateways: done", zap.Int("count", len(gateways)))
 	return gateways, nil
 }
 
@@ -268,17 +291,22 @@ func parseGatewayConfigName(name string) (gw *GatewayInfo, live bool) {
 
 // GetGateway retrieves gateway information
 func (m *Manager) GetGateway(ctx context.Context, id string) (*GatewayInfo, error) {
+	log := m.log()
+	log.Debug("GetGateway: looking up gateway", zap.String("id", id))
 	gateways, err := m.ListGateways(ctx)
 	if err != nil {
+		log.Debug("GetGateway: listing failed", zap.String("id", id), zap.Error(err))
 		return nil, err
 	}
 
 	for _, gw := range gateways {
 		if gw.ID == id {
+			log.Debug("GetGateway: found", zap.String("id", id), zap.String("type", gw.Type), zap.String("state", gw.State))
 			return gw, nil
 		}
 	}
 
+	log.Debug("GetGateway: not found", zap.String("id", id), zap.Int("count", len(gateways)))
 	return nil, fmt.Errorf("gateway not found: %s", id)
 }
 
@@ -288,10 +316,12 @@ func (m *Manager) GetGateway(ctx context.Context, id string) (*GatewayInfo, erro
 func parseServiceIP(serviceIP string) (*ServiceIP, error) {
 	ip, ipNet, err := net.ParseCIDR(serviceIP)
 	if err != nil {
+		zap.L().Debug("parseServiceIP: not CIDR notation", zap.String("service_ip", serviceIP), zap.Error(err))
 		return nil, fmt.Errorf("failed to parse service IP %s: %w", serviceIP, err)
 	}
 
 	prefix, _ := ipNet.Mask.Size()
+	zap.L().Debug("parseServiceIP: parsed", zap.String("ip", ip.String()), zap.Int("prefix", prefix))
 
 	return &ServiceIP{
 		IP:     ip,
@@ -312,13 +342,16 @@ func extractNodeName(endpoint string) string {
 func executeTemplate(tmplStr string, data interface{}) (string, error) {
 	t, err := template.New("gateway").Parse(tmplStr)
 	if err != nil {
+		zap.L().Debug("executeTemplate: parse failed", zap.Error(err))
 		return "", err
 	}
 
 	var result strings.Builder
 	if err := t.Execute(&result, data); err != nil {
+		zap.L().Debug("executeTemplate: execute failed", zap.Error(err))
 		return "", err
 	}
+	zap.L().Debug("executeTemplate: rendered", zap.Int("size_bytes", result.Len()))
 
 	return result.String(), nil
 }
@@ -327,6 +360,7 @@ func executeTemplate(tmplStr string, data interface{}) (string, error) {
 
 // CreateNFSGateway creates an NFS gateway
 func (m *Manager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGatewayRequest) (*v1.CreateNFSGatewayResponse, error) {
+	m.log().Debug("Manager.CreateNFSGateway: refused, NFSManager creates NFS gateways", zap.String("resource", req.GetResource()))
 	return &v1.CreateNFSGatewayResponse{
 		Success: false,
 		Message: "Use gateway/nfs package directly",
@@ -335,6 +369,7 @@ func (m *Manager) CreateNFSGateway(ctx context.Context, req *v1.CreateNFSGateway
 
 // CreateISCSIGateway creates an iSCSI gateway
 func (m *Manager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISCSIGatewayRequest) (*v1.CreateISCSIGatewayResponse, error) {
+	m.log().Debug("Manager.CreateISCSIGateway: refused, iSCSIManager creates iSCSI gateways", zap.String("resource", req.GetResource()))
 	return &v1.CreateISCSIGatewayResponse{
 		Success: false,
 		Message: "Use gateway/iscsi package directly",
@@ -343,6 +378,7 @@ func (m *Manager) CreateISCSIGateway(ctx context.Context, req *v1.CreateISCSIGat
 
 // CreateNVMeGateway creates an NVMe-oF gateway
 func (m *Manager) CreateNVMeGateway(ctx context.Context, req *v1.CreateNVMeGatewayRequest) (*v1.CreateNVMeGatewayResponse, error) {
+	m.log().Debug("Manager.CreateNVMeGateway: refused, NVMeManager creates NVMe-oF gateways", zap.String("resource", req.GetResource()))
 	return &v1.CreateNVMeGatewayResponse{
 		Success: false,
 		Message: "Use gateway/nvmeof package directly",

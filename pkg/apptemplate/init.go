@@ -3,6 +3,8 @@ package apptemplate
 import (
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // The initialization script runs once, as root, on the node chosen as the
@@ -65,6 +67,10 @@ func InitScript(s Spec, b Binaries, device, staged string) string {
 	case RustFS:
 		body, stop, selinuxType = rustfsInit, rustfsStop, "var_lib_t"
 	}
+	// The script carries the staged password file's path, never the password.
+	zap.L().Debug("InitScript: rendering init script",
+		zap.String("app", s.Name), zap.String("engine", string(s.Engine)), zap.String("device", device),
+		zap.String("staged", staged), zap.String("selinux_type", selinuxType), zap.Bool("vector", s.Vector))
 	r := scriptVars(s, b, "@DEV@", device, "@STAGED@", staged, "@SETYPE@", selinuxType)
 	return r.Replace(strings.NewReplacer("@ENGINE_INIT@", body, "@STOP_TEMP@", stop).Replace(initFrame))
 }
@@ -165,6 +171,7 @@ echo "state=initialized"
 // postgresql.conf, so they win), and starts the server once with no TCP
 // listener to prove it runs — creating pgvector while it is up.
 func postgresInit(s Spec) string {
+	zap.L().Debug("postgresInit: rendering postgres init", zap.String("app", s.Name), zap.Bool("vector", s.Vector))
 	vector := ""
 	if s.Vector {
 		vector = `for db in template1 postgres; do
@@ -220,6 +227,9 @@ const postgresStop = `  runuser -u "$u" -- @PGCTL@ -D "$M/data" -m fast -w -t 12
 func mysqlInit(b Binaries) string {
 	initdb := `@INIT@ --defaults-file="$M/conf/my.cnf" --user="$u" >"$run/init.log" 2>&1 \
   || fail "mariadb-install-db failed: $(tail -n 5 "$run/init.log")"`
+	// MariaDB has its own install-db tool; MySQL initializes through the server.
+	zap.L().Debug("mysqlInit: rendering mysql init", zap.String("flavor", b.Flavor),
+		zap.Bool("initialize_through_server", b.Flavor != "mariadb"))
 	if b.Flavor != "mariadb" {
 		initdb = `@SERVER@ --defaults-file="$M/conf/my.cnf" --initialize-insecure --user="$u" >"$run/init.log" 2>&1 \
   || fail "mysqld --initialize-insecure failed: $(tail -n 5 "$run/init.log")"`

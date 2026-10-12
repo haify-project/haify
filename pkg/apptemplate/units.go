@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // HealthCommand is a shell command that exits 0 when the database answers on
@@ -17,6 +19,7 @@ import (
 //	rustfs    /health/ready on loopback, which answers once the store can serve
 func HealthCommand(s Spec, b Binaries) string {
 	l := LayoutFor(s.Name)
+	zap.L().Debug("HealthCommand: building health probe", zap.String("app", s.Name), zap.String("engine", string(s.Engine)))
 	switch s.Engine {
 	case Postgres:
 		return fmt.Sprintf("%s -q -h %s -p %d", b.Admin, l.Runtime, s.Port)
@@ -60,6 +63,8 @@ func waitReady(s Spec, b Binaries) string {
 func Unit(s Spec, b Binaries) string {
 	l := LayoutFor(s.Name)
 	user := OSUser(s.Engine)
+	zap.L().Debug("Unit: rendering unit", zap.String("app", s.Name), zap.String("engine", string(s.Engine)),
+		zap.String("resource", s.Resource), zap.String("user", user), zap.String("server", b.Server), zap.Int("port", s.Port))
 	var exec, extra string
 	switch s.Engine {
 	case Postgres:
@@ -110,9 +115,13 @@ LimitNOFILE=65536
 func PromoterConfig(s Spec, device string) (string, error) {
 	ip, prefix, err := ParseServiceIP(s.ServiceIP)
 	if err != nil {
+		zap.L().Debug("PromoterConfig: invalid service IP", zap.String("app", s.Name), zap.String("service_ip", s.ServiceIP), zap.Error(err))
 		return "", err
 	}
 	l := LayoutFor(s.Name)
+	zap.L().Debug("PromoterConfig: rendering promoter config",
+		zap.String("app", s.Name), zap.String("resource", s.Resource), zap.String("device", device),
+		zap.String("mount", l.Mount), zap.String("ip", ip), zap.Int("prefix", prefix))
 	return fmt.Sprintf(`# drbd-reactor promoter for the Haify app %[1]s (%[2]s).
 # Written by haify-controller (haify app create); remove it with haify app delete.
 
@@ -134,8 +143,10 @@ start = [
 func ConnectionHint(s Spec) string {
 	ip, _, err := ParseServiceIP(s.ServiceIP)
 	if err != nil {
+		zap.L().Debug("ConnectionHint: no usable service IP", zap.String("app", s.Name), zap.Error(err))
 		return ""
 	}
+	zap.L().Debug("ConnectionHint: building hint", zap.String("app", s.Name), zap.String("engine", string(s.Engine)), zap.String("ip", ip))
 	switch s.Engine {
 	case Postgres:
 		return fmt.Sprintf("postgresql://%s@%s:%d/postgres", AdminUser(s.Engine), ip, s.Port)
@@ -147,5 +158,6 @@ func ConnectionHint(s Spec) string {
 		return fmt.Sprintf("http://%s:%d (path-style S3; console http://%s:%d/rustfs/console/)",
 			ip, s.Port, ip, ConsolePort(s))
 	}
+	zap.L().Debug("ConnectionHint: no hint for engine", zap.String("engine", string(s.Engine)))
 	return ""
 }

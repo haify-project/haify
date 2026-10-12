@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 func gatewayConfigPath(pluginID string) string {
@@ -22,14 +25,24 @@ func gatewayConfigPath(pluginID string) string {
 // .toml.disabled copy and nothing is reloaded or applied: writing the live
 // .toml would start the gateway as a side effect of the edit.
 func (m *Manager) persistGatewayConfig(ctx context.Context, resource, pluginID string, cfg *gatewayConfig, content string) error {
+	log := m.log()
+	log.Debug("persistGatewayConfig: start",
+		zap.String("resource", resource), zap.String("plugin", pluginID),
+		zap.Bool("disabled", cfg.disabled), zap.Int("size_bytes", len(content)))
 	if !cfg.disabled {
+		log.Debug("persistGatewayConfig: gateway not stopped, editing it live", zap.String("resource", resource))
 		return m.editRunningGateway(ctx, resource, pluginID, cfg.content, content)
 	}
 	run, _ := m.promoterHosts(ctx, resource)
 	path := gatewayConfigPath(pluginID) + disabledSuffix
+	start := time.Now()
 	if err := m.deployment.DistributeConfig(ctx, run, content, path); err != nil {
+		log.Debug("persistGatewayConfig: writing the disabled copy failed",
+			zap.Strings("hosts", run), zap.String("path", path), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to write config: %w", err)
 	}
+	log.Debug("persistGatewayConfig: disabled copy written",
+		zap.Strings("hosts", run), zap.String("path", path), zap.Duration("took", time.Since(start)))
 	return nil
 }
 
@@ -69,6 +82,7 @@ func findLineIndex(lines []string, match func(string) bool) int {
 func insertLineBefore(lines []string, newLine string, match func(string) bool) ([]string, error) {
 	idx := findLineIndex(lines, match)
 	if idx < 0 {
+		zap.L().Debug("insertLineBefore: no line matches the insertion point", zap.Int("count", len(lines)))
 		return nil, fmt.Errorf("failed to find insertion point")
 	}
 
@@ -314,6 +328,7 @@ func formatAllowedList(values []string) []string {
 func parseIntParam(params map[string]string, key string) (int, error) {
 	value, ok := params[key]
 	if !ok || strings.TrimSpace(value) == "" {
+		zap.L().Debug("parseIntParam: parameter missing", zap.String("key", key))
 		return 0, fmt.Errorf("missing %s", key)
 	}
 	return strconv.Atoi(strings.TrimSpace(value))
@@ -343,6 +358,7 @@ func nextExportID(lines []string) int {
 		}
 	}
 
+	zap.L().Debug("nextExportID: chosen", zap.Int("export_id", maxID+1))
 	return maxID + 1
 }
 
@@ -353,16 +369,21 @@ func nextExportID(lines []string) int {
 // Relative or empty paths land under DefaultExportBasePath/<resource> so
 // quick setups stay grouped and collision-free.
 func ResolveNFSExportPath(resource, exportPath string) (string, error) {
+	log := zap.L()
 	exportPath = strings.TrimSpace(exportPath)
 	if exportPath == "" {
+		log.Debug("ResolveNFSExportPath: no path given, using the default", zap.String("resource", resource))
 		return filepath.Join(DefaultExportBasePath, resource), nil
 	}
 	if !strings.HasPrefix(exportPath, "/") {
+		log.Debug("ResolveNFSExportPath: relative path, placed under the default",
+			zap.String("resource", resource), zap.String("export_path", exportPath))
 		return filepath.Join(DefaultExportBasePath, resource, exportPath), nil
 	}
 
 	cleaned := filepath.Clean(exportPath)
 	if cleaned == "/" {
+		log.Debug("ResolveNFSExportPath: refusing the filesystem root", zap.String("resource", resource))
 		return "", fmt.Errorf("export path must not be the filesystem root")
 	}
 	// The export directory becomes a mount point owned by the gateway;
@@ -370,8 +391,11 @@ func ResolveNFSExportPath(resource, exportPath string) (string, error) {
 	forbidden := []string{"/bin", "/boot", "/dev", "/etc", "/lib", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var/lib/haify", DefaultClusterPrivateMountPath}
 	for _, prefix := range forbidden {
 		if cleaned == prefix || strings.HasPrefix(cleaned, prefix+"/") {
+			log.Debug("ResolveNFSExportPath: path would shadow a system directory",
+				zap.String("export_path", cleaned), zap.String("shadowed", prefix))
 			return "", fmt.Errorf("export path %s would shadow %s; choose a dedicated directory (e.g. /srv/...)", cleaned, prefix)
 		}
 	}
+	log.Debug("ResolveNFSExportPath: absolute path accepted", zap.String("resource", resource), zap.String("export_path", cleaned))
 	return cleaned, nil
 }
