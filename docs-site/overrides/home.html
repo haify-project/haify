@@ -44,18 +44,23 @@
         <article>
           {{ cases.vm() }}
           <h3>Virtual machines that outlive their host</h3>
-          <p>VM disks kept on two servers, so you can move a running VM between them and restart it on the other one if its host dies. On Proxmox VE, plain KVM or OpenStack.</p>
+          <p>VM disks kept on two servers, so you can move a running VM between them and restart it on the other one if its host dies. On Proxmox VE, XCP&#8209;ng, plain KVM or OpenStack.</p>
           <span class="haify-case-links">
             <a href="{{ 'proxmox/' | url }}">Proxmox VE</a>
+            <a href="{{ 'xcp-ng/' | url }}">XCP-ng</a>
             <a href="{{ 'libvirt/' | url }}">KVM</a>
             <a href="{{ 'openstack/' | url }}">OpenStack</a>
           </span>
         </article>
         <article>
           {{ cases.k8s() }}
-          <h3>Databases and apps on Kubernetes</h3>
-          <p>Persistent volumes that outlive the node they started on. A pod rescheduled elsewhere comes back with its data.</p>
-          <a href="{{ 'kubernetes/' | url }}">Use with Kubernetes</a>
+          <h3>Databases and apps in containers</h3>
+          <p>Persistent volumes that outlive the node they started on. A pod or container rescheduled elsewhere comes back with its data.</p>
+          <span class="haify-case-links">
+            <a href="{{ 'kubernetes/' | url }}">Kubernetes</a>
+            <a href="{{ 'helm/' | url }}">Helm chart</a>
+            <a href="{{ 'docker/' | url }}">Docker</a>
+          </span>
         </article>
         <article>
           {{ cases.db() }}
@@ -122,8 +127,10 @@ haify node register <span>--name node2</span> <span>--address 192.0.2.12</span><
         <a href="{{ 'deployment-guide/' | url }}"><strong>Getting started</strong><span>Install Haify and set up a cluster.</span></a>
         <a href="{{ 'user-guide/' | url }}"><strong>User guide</strong><span>Everyday tasks, step by step.</span></a>
         <a href="{{ 'node-prerequisites/' | url }}"><strong>Server requirements</strong><span>What each server needs.</span></a>
-        <a href="{{ 'kubernetes/' | url }}"><strong>Kubernetes</strong><span>Volumes for containers.</span></a>
+        <a href="{{ 'kubernetes/' | url }}"><strong>Kubernetes</strong><span>Volumes for containers, also as a Helm chart.</span></a>
+        <a href="{{ 'docker/' | url }}"><strong>Docker</strong><span>Volumes that follow containers between hosts.</span></a>
         <a href="{{ 'proxmox/' | url }}"><strong>Proxmox VE</strong><span>Volumes for virtual machines.</span></a>
+        <a href="{{ 'xcp-ng/' | url }}"><strong>XCP-ng</strong><span>A storage repository whose every disk is replicated.</span></a>
         <a href="{{ 'libvirt/' | url }}"><strong>KVM</strong><span>VM disks under libvirt, with failover.</span></a>
         <a href="{{ 'openstack/' | url }}"><strong>OpenStack</strong><span>Cinder volumes, and a panel in Horizon.</span></a>
         <a href="{{ 'vsan-evacuation/' | url }}"><strong>Leaving vSAN</strong><span>Move VMware VMs to Proxmox VE.</span></a>
