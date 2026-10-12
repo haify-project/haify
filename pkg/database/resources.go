@@ -1,6 +1,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -279,8 +280,11 @@ func (db *DB) ListVolumes(ctx context.Context, resourceName string) ([]*Volume, 
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(volumesBucket))
 		c := b.Cursor()
-		prefix := []byte(resourceName)
-		for k, v := c.Seek(prefix); k != nil && len(k) >= len(prefix) && string(k[:len(prefix)]) == resourceName; k, v = c.Next() {
+		// Keys are "<resource>:<volume>". The separator belongs in the
+		// prefix: without it, the volumes of "db" included those of "db2",
+		// which sort first, so a lookup of db's volume 0 returned db2's.
+		prefix := []byte(resourceName + ":")
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
 			var volume Volume
 			if err := json.Unmarshal(v, &volume); err != nil {
 				return err

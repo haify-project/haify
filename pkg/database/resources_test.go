@@ -217,3 +217,20 @@ func TestListVolumesByResource(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, volumes3)
 }
+
+// A resource whose name starts with another's must not lend it its volumes:
+// "db2:..." sorts before "db:...", so a prefix without the separator returned
+// db2's volume 0 for a lookup of db's.
+func TestListVolumesDoesNotMatchLongerNames(t *testing.T) {
+	db, cleanup := newTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for _, r := range []string{"db", "db2", "db_x"} {
+		require.NoError(t, db.SaveVolume(ctx, &Volume{ResourceName: r, VolumeName: r + "_data", Pool: "vg0"}))
+	}
+	vols, err := db.ListVolumes(ctx, "db")
+	require.NoError(t, err)
+	require.Len(t, vols, 1)
+	assert.Equal(t, "db_data", vols[0].VolumeName)
+}
