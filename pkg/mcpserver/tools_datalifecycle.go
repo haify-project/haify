@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
@@ -120,10 +121,16 @@ func (s *Server) registerDataLifecycleTools(srv *mcp.Server) {
 			"write once it reaches the SSD, so a node that dies with a dirty cache takes acknowledged writes with "+
 			"it. Requires a thin pool — a thick pool has no single LV every volume passes through."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolCacheAddIn) (*mcp.CallToolResult, poolCacheAddOut, error) {
+			s.logger.Debug("haify_pool_add_cache: attaching cache", zap.String("node", in.Node), zap.String("pool", in.Pool),
+				zap.String("device", in.Device), zap.String("mode", in.Mode))
 			mode, size, err := s.client.AddPoolCache(ctx, in.Node, in.Pool, in.Device, in.Mode)
 			if err != nil {
+				s.logger.Debug("haify_pool_add_cache: attach failed", zap.String("node", in.Node), zap.String("pool", in.Pool),
+					zap.Error(err))
 				return nil, poolCacheAddOut{}, err
 			}
+			s.logger.Debug("haify_pool_add_cache: attached", zap.String("pool", in.Pool), zap.String("mode", mode),
+				zap.Uint64("size_bytes", size))
 			return nil, poolCacheAddOut{
 				Status:    "ok",
 				Detail:    fmt.Sprintf("cache attached to %s on %s in %s mode", in.Pool, in.Node, mode),
@@ -136,9 +143,13 @@ func (s *Server) registerDataLifecycleTools(srv *mcp.Server) {
 		"Detach the cache from a pool and release the device. A writeback cache is flushed first; if the flush "+
 			"cannot be confirmed this reports failure rather than letting the SSD be pulled with data still on it."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolCacheRemoveIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_pool_remove_cache: removing cache", zap.String("node", in.Node), zap.String("pool", in.Pool))
 			if err := s.client.RemovePoolCache(ctx, in.Node, in.Pool); err != nil {
+				s.logger.Debug("haify_pool_remove_cache: remove failed", zap.String("node", in.Node), zap.String("pool", in.Pool),
+					zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_pool_remove_cache: removed", zap.String("node", in.Node), zap.String("pool", in.Pool))
 			return nil, ok("cache removed from " + in.Pool + " on " + in.Node), nil
 		})
 
@@ -146,16 +157,21 @@ func (s *Server) registerDataLifecycleTools(srv *mcp.Server) {
 		"List the configured off-cluster destinations backups can be shipped to (S3, SMB, WebDAV). Credentials "+
 			"are never returned."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, backupTargetListOut, error) {
+			s.logger.Debug("haify_backup_target_list: listing backup targets")
 			ts, err := s.client.ListBackupTargets(ctx)
 			if err != nil {
+				s.logger.Debug("haify_backup_target_list: list failed", zap.Error(err))
 				return nil, backupTargetListOut{}, err
 			}
 			out := backupTargetListOut{Targets: make([]backupTargetOut, 0, len(ts))}
 			for _, t := range ts {
+				s.logger.Debug("haify_backup_target_list: target", zap.String("name", t.Name), zap.String("kind", t.Kind),
+					zap.String("prefix", t.Prefix))
 				out.Targets = append(out.Targets, backupTargetOut{
 					Name: t.Name, Kind: t.Kind, Description: t.Description, Prefix: t.Prefix,
 				})
 			}
+			s.logger.Debug("haify_backup_target_list: listed", zap.Int("count", len(out.Targets)))
 			return nil, out, nil
 		})
 
@@ -165,9 +181,12 @@ func (s *Server) registerDataLifecycleTools(srv *mcp.Server) {
 			Name  string `json:"name"`
 			Force bool   `json:"force,omitempty"`
 		}) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_backup_target_delete: deleting target", zap.String("name", in.Name), zap.Bool("force", in.Force))
 			if err := s.client.DeleteBackupTarget(ctx, in.Name, in.Force); err != nil {
+				s.logger.Debug("haify_backup_target_delete: delete failed", zap.String("name", in.Name), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_backup_target_delete: deleted", zap.String("name", in.Name))
 			return nil, ok("backup target " + in.Name + " deleted"), nil
 		})
 
@@ -175,14 +194,19 @@ func (s *Server) registerDataLifecycleTools(srv *mcp.Server) {
 		"List backups shipped off the cluster, with their state. Only a backup in state 'completed' can be "+
 			"restored; 'running' means it is still uploading and 'failed' means it is not a usable copy."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in backupListIn) (*mcp.CallToolResult, backupListOut, error) {
+			s.logger.Debug("haify_backup_list: listing backups", zap.String("resource", in.Resource), zap.String("target", in.Target))
 			bs, err := s.client.ListBackups(ctx, in.Resource, in.Target)
 			if err != nil {
+				s.logger.Debug("haify_backup_list: list failed", zap.Error(err))
 				return nil, backupListOut{}, err
 			}
 			out := backupListOut{Backups: make([]backupOut, 0, len(bs))}
 			for _, b := range bs {
+				s.logger.Debug("haify_backup_list: backup", zap.String("id", b.Id), zap.String("resource", b.Resource),
+					zap.String("target", b.Target), zap.String("state", b.State), zap.String("kind", b.Kind))
 				out.Backups = append(out.Backups, backupToOut(b))
 			}
+			s.logger.Debug("haify_backup_list: listed", zap.Int("count", len(out.Backups)))
 			return nil, out, nil
 		})
 
@@ -193,10 +217,16 @@ func (s *Server) registerDataLifecycleTools(srv *mcp.Server) {
 			"are sent, read from thin-pool metadata. Set full to start a new chain. An incremental cannot be deleted "+
 			"while a later one is built on it."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in backupCreateIn) (*mcp.CallToolResult, backupOut, error) {
+			s.logger.Debug("haify_backup_create: backing up", zap.String("resource", in.Resource), zap.String("target", in.Target),
+				zap.String("node", in.Node), zap.Bool("full", in.Full))
 			b, err := s.client.CreateBackup(ctx, in.Resource, in.Target, in.Node, in.Full)
 			if err != nil {
+				s.logger.Debug("haify_backup_create: backup failed", zap.String("resource", in.Resource),
+					zap.String("target", in.Target), zap.Error(err))
 				return nil, backupOut{}, err
 			}
+			s.logger.Debug("haify_backup_create: started", zap.String("id", b.GetId()), zap.String("state", b.GetState()),
+				zap.String("kind", b.GetKind()), zap.String("parent", b.GetParent()))
 			return nil, backupToOut(b), nil
 		})
 
@@ -205,19 +235,27 @@ func (s *Server) registerDataLifecycleTools(srv *mcp.Server) {
 			"Primary anywhere, when a gateway exports it, or when the destination is smaller than the image. "+
 			"Confirm with the operator before calling: this destroys whatever the resource currently holds."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in backupRestoreIn) (*mcp.CallToolResult, backupOut, error) {
+			s.logger.Debug("haify_backup_restore: restoring", zap.String("id", in.ID), zap.String("resource", in.Resource),
+				zap.String("node", in.Node))
 			b, err := s.client.RestoreBackup(ctx, in.ID, in.Resource, in.Node)
 			if err != nil {
+				s.logger.Debug("haify_backup_restore: restore failed", zap.String("id", in.ID), zap.Error(err))
 				return nil, backupOut{}, err
 			}
+			s.logger.Debug("haify_backup_restore: done", zap.String("id", b.GetId()), zap.String("state", b.GetState()))
 			return nil, backupToOut(b), nil
 		})
 
 	addWrite(s, srv, destructiveTool("haify_backup_delete", "Delete a backup",
 		"Remove a backup and its objects from the target. Irreversible."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in backupDeleteIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_backup_delete: deleting backup", zap.String("id", in.ID), zap.String("node", in.Node),
+				zap.Bool("force", in.Force))
 			if err := s.client.DeleteBackup(ctx, in.ID, in.Node, in.Force); err != nil {
+				s.logger.Debug("haify_backup_delete: delete failed", zap.String("id", in.ID), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_backup_delete: deleted", zap.String("id", in.ID))
 			return nil, ok("backup " + in.ID + " deleted"), nil
 		})
 }

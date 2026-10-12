@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // ── 1. a peer slot nobody forgot ────────────────────────────────────────
@@ -26,6 +28,8 @@ import (
 // peer it does not name is a leftover slot. When no node reported its
 // configuration, the finding says it could not tell rather than guessing.
 func matchPhantomPeer(in Input) []Finding {
+	log := zap.L()
+	log.Debug("matchPhantomPeer: looking for peer slots of unregistered nodes", zap.Int("nodes", len(in.Nodes)))
 	known := map[string]bool{}
 	for _, n := range in.Nodes {
 		known[strings.ToLower(n.Node)] = true
@@ -34,6 +38,7 @@ func matchPhantomPeer(in Input) []Finding {
 		}
 	}
 	if len(known) == 0 {
+		log.Debug("matchPhantomPeer: no registered nodes, nothing to compare against")
 		return nil // without a registry there is nothing to be a phantom against
 	}
 
@@ -48,8 +53,10 @@ func matchPhantomPeer(in Input) []Finding {
 	for _, n := range in.Nodes {
 		out, ok := n.Collector("drbd_status")
 		if !ok || !out.Ok {
+			log.Debug("matchPhantomPeer: no drbd status from node, skipping", zap.String("node", n.Node), zap.Bool("ran", ok))
 			continue
 		}
+		log.Debug("matchPhantomPeer: reading drbd status", zap.String("node", n.Node), zap.Int("lines", len(out.Lines)))
 		resource := ""
 		for _, line := range out.Lines {
 			if r, isRes := drbdResourceLine(line); isRes {
@@ -68,6 +75,8 @@ func matchPhantomPeer(in Input) []Finding {
 			key := resource + "/" + peer
 			p := seen[key]
 			if p == nil {
+				log.Debug("matchPhantomPeer: unregistered peer stuck connecting", zap.String("node", n.Node),
+					zap.String("resource", resource), zap.String("peer", peer))
 				p = &phantom{peer: peer, resource: resource, nodes: map[string]bool{}}
 				seen[key] = p
 			}
@@ -87,6 +96,8 @@ func matchPhantomPeer(in Input) []Finding {
 			res = "<resource>"
 		}
 		if configured[p.resource+"/"+strings.ToLower(p.peer)] {
+			log.Debug("matchPhantomPeer: peer is in the resource configuration, a replica that is down",
+				zap.String("resource", p.resource), zap.String("peer", p.peer), zap.Int("count", len(p.lines)))
 			out = append(out, Finding{
 				ID:       "peer-down",
 				Title:    fmt.Sprintf("%s cannot reach its replica on %q", res, p.peer),
@@ -113,6 +124,8 @@ func matchPhantomPeer(in Input) []Finding {
 			fmt.Sprintf("On every surviving node, clear it: drbdadm forget-peer %s:%s", res, p.peer),
 			fmt.Sprintf("Check the majority is now reachable: drbdsetup status %s", res),
 		}
+		log.Debug("matchPhantomPeer: peer is not configured, a leftover slot", zap.String("resource", p.resource),
+			zap.String("peer", p.peer), zap.Bool("have_config", haveConfig), zap.Int("count", len(p.lines)))
 		if !haveConfig {
 			advice = append([]string{fmt.Sprintf(
 				"No node reported its DRBD configuration, so this could also be a replica that is only down: check /etc/drbd.d/%s.res for an `on %s` stanza before touching it", res, p.peer)}, advice...)
@@ -136,6 +149,7 @@ func matchPhantomPeer(in Input) []Finding {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Title < out[j].Title })
+	log.Debug("matchPhantomPeer: verdict", zap.Int("findings", len(out)))
 	return out
 }
 
@@ -143,13 +157,16 @@ func matchPhantomPeer(in Input) []Finding {
 // "<resource>/<host>" for every host a resource's configuration names. The
 // second result is false when no node reported its configuration.
 func configuredPeers(in Input) (map[string]bool, bool) {
+	log := zap.L()
 	set := map[string]bool{}
 	have := false
 	for _, n := range in.Nodes {
 		out, ok := n.Collector("drbd_config_peers")
 		if !ok || !out.Ok {
+			log.Debug("configuredPeers: no drbd configuration from node", zap.String("node", n.Node), zap.Bool("ran", ok))
 			continue
 		}
+		log.Debug("configuredPeers: reading drbd configuration", zap.String("node", n.Node), zap.Int("lines", len(out.Lines)))
 		have = true
 		for _, line := range out.Lines {
 			// /etc/drbd.d/<resource>.res:    on <host> {
@@ -166,6 +183,7 @@ func configuredPeers(in Input) (map[string]bool, bool) {
 			set[res+"/"+strings.ToLower(strings.TrimSuffix(f[1], "{"))] = true
 		}
 	}
+	log.Debug("configuredPeers: done", zap.Int("count", len(set)), zap.Bool("have_config", have))
 	return set, have
 }
 
@@ -232,8 +250,10 @@ func isSplitBrainReport(l string) bool {
 func matchSplitBrain(in Input) []Finding {
 	ev, nodes := nodeLinesMatching(in, isSplitBrainReport, "drbd_kernel", "kernel_errors", "reactor_journal")
 	if len(ev) == 0 {
+		zap.L().Debug("matchSplitBrain: verdict, no split brain reported")
 		return nil
 	}
+	zap.L().Debug("matchSplitBrain: verdict, split brain reported", zap.Int("count", len(ev)), zap.Strings("nodes", nodes))
 	return []Finding{{
 		ID:       "split-brain",
 		Title:    "DRBD reported split brain",
@@ -268,8 +288,10 @@ func matchDRBDModuleMissing(in Input) []Finding {
 			(strings.Contains(ll, "modprobe") && strings.Contains(ll, "drbd") && strings.Contains(ll, "fatal"))
 	}, "drbd_kernel", "kernel_errors", "reactor_journal", "promoter_journal", "haify_journal")
 	if len(ev) == 0 {
+		zap.L().Debug("matchDRBDModuleMissing: verdict, no node reported the module missing")
 		return nil
 	}
+	zap.L().Debug("matchDRBDModuleMissing: verdict, module missing", zap.Int("count", len(ev)), zap.Strings("nodes", nodes))
 	return []Finding{{
 		ID:       "drbd-module-missing",
 		Title:    "the DRBD kernel module is not loadable on this node",

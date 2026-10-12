@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // ── 3. thin pool ────────────────────────────────────────────────────────
@@ -16,6 +18,8 @@ import (
 // pool with 40% of its data space free stops accepting writes when its much
 // smaller metadata volume fills.
 func matchThinPool(in Input) []Finding {
+	log := zap.L()
+	log.Debug("matchThinPool: looking for thin pools at 90% or more")
 	type hit struct {
 		lv, vg string
 		pct    float64
@@ -67,6 +71,8 @@ func matchThinPool(in Input) []Finding {
 			} else if h.pct >= 95 {
 				sev = SeverityError
 			}
+			log.Debug("matchThinPool: pool over threshold", zap.String("pool", k), zap.String("dimension", dimension),
+				zap.Float64("percent", h.pct), zap.String("severity", string(sev)), zap.Strings("nodes", sortedKeys(h.nodes)))
 			cause := "A thin pool that runs out of data space stops accepting writes, and every " +
 				"volume in it stops at once — including ones that are themselves nearly empty."
 			advice := []string{
@@ -103,6 +109,8 @@ func matchThinPool(in Input) []Finding {
 	}
 	emit(data, "data")
 	emit(meta, "metadata")
+	log.Debug("matchThinPool: verdict", zap.Int("data_full", len(data)), zap.Int("metadata_full", len(meta)),
+		zap.Int("findings", len(out)))
 	return out
 }
 
@@ -138,8 +146,10 @@ func matchFilesystemAborted(in Input) []Finding {
 			(strings.Contains(ll, "xfs") && strings.Contains(ll, "corruption"))
 	}, "kernel_errors", "drbd_kernel")
 	if len(ev) == 0 {
+		zap.L().Debug("matchFilesystemAborted: verdict, no filesystem went read-only")
 		return nil
 	}
+	zap.L().Debug("matchFilesystemAborted: verdict, filesystem aborted", zap.Int("count", len(ev)), zap.Strings("nodes", nodes))
 	return []Finding{{
 		ID:       "filesystem-aborted",
 		Title:    "a filesystem hit an error and went read-only",
@@ -165,6 +175,8 @@ func matchFilesystemAborted(in Input) []Finding {
 // ── 10. the mount itself is full ────────────────────────────────────────
 
 func matchMountFull(in Input) []Finding {
+	log := zap.L()
+	log.Debug("matchMountFull: looking for mounts at 90% or more")
 	type hit struct {
 		mount string
 		pct   int
@@ -207,6 +219,8 @@ func matchMountFull(in Input) []Finding {
 		} else if h.pct >= 95 {
 			sev = SeverityError
 		}
+		log.Debug("matchMountFull: mount over threshold", zap.String("mount", h.mount), zap.Int("percent", h.pct),
+			zap.String("severity", string(sev)), zap.Strings("nodes", sortedKeys(h.nodes)))
 		out = append(out, Finding{
 			ID:       "mount-full",
 			Title:    fmt.Sprintf("%s is %d%% full", h.mount, h.pct),
@@ -224,5 +238,6 @@ func matchMountFull(in Input) []Finding {
 			Evidence: h.ev,
 		})
 	}
+	log.Debug("matchMountFull: verdict", zap.Int("findings", len(out)))
 	return out
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
@@ -113,6 +114,9 @@ func (s *Server) registerObservabilityTools(srv *mcp.Server) {
 			"the current percentages, since an outstanding event says a threshold was crossed, not where the pool "+
 			"is now. Requires [alert] enabled in controller.toml."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in eventListIn) (*mcp.CallToolResult, eventListOut, error) {
+			s.logger.Debug("haify_event_list: listing events", zap.Int32("limit", in.Limit),
+				zap.String("min_severity", in.MinSeverity), zap.Strings("types", in.Types),
+				zap.String("resource", in.Resource), zap.Uint64("since_id", in.SinceID))
 			resp, err := s.client.ListEvents(ctx, &haifypb.ListEventsRequest{
 				Limit:       in.Limit,
 				MinSeverity: in.MinSeverity,
@@ -121,6 +125,7 @@ func (s *Server) registerObservabilityTools(srv *mcp.Server) {
 				SinceId:     in.SinceID,
 			})
 			if err != nil {
+				s.logger.Debug("haify_event_list: list failed", zap.Error(err))
 				return nil, eventListOut{}, err
 			}
 			out := eventListOut{
@@ -141,6 +146,8 @@ func (s *Server) registerObservabilityTools(srv *mcp.Server) {
 					Timestamp: rfc3339(e.TimestampUnixMs),
 				})
 			}
+			s.logger.Debug("haify_event_list: listed", zap.Int("count", len(out.Events)),
+				zap.Uint64("published", resp.Published), zap.Uint64("dropped", resp.Dropped))
 			return nil, out, nil
 		})
 
@@ -149,6 +156,9 @@ func (s *Server) registerObservabilityTools(srv *mcp.Server) {
 			"controller's replicated volume, so the history follows the controller across a failover. Use "+
 			"failures_only to find rejected or errored calls."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in auditListIn) (*mcp.CallToolResult, auditListOut, error) {
+			s.logger.Debug("haify_audit_list: listing audit events", zap.Int32("limit", in.Limit),
+				zap.String("method", in.Method), zap.String("target", in.Target), zap.String("user", in.User),
+				zap.Bool("failures_only", in.FailuresOnly), zap.Int64("since_unix_ms", in.SinceUnixMs))
 			resp, err := s.client.ListAuditEvents(ctx, &haifypb.ListAuditEventsRequest{
 				Limit:        in.Limit,
 				Method:       in.Method,
@@ -158,6 +168,7 @@ func (s *Server) registerObservabilityTools(srv *mcp.Server) {
 				SinceUnixMs:  in.SinceUnixMs,
 			})
 			if err != nil {
+				s.logger.Debug("haify_audit_list: list failed", zap.Error(err))
 				return nil, auditListOut{}, err
 			}
 			out := auditListOut{Events: make([]auditOut, 0, len(resp.Events)), Total: resp.Total}
@@ -175,6 +186,7 @@ func (s *Server) registerObservabilityTools(srv *mcp.Server) {
 					Error:     e.Error,
 				})
 			}
+			s.logger.Debug("haify_audit_list: listed", zap.Int("count", len(out.Events)), zap.Int64("total", resp.Total))
 			return nil, out, nil
 		})
 
@@ -183,12 +195,15 @@ func (s *Server) registerObservabilityTools(srv *mcp.Server) {
 			"a running controller is doing right now, and once the controller has relocated its old node's output "+
 			"belongs to a different process. For durable history use haify_audit_list."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in logListIn) (*mcp.CallToolResult, logListOut, error) {
+			s.logger.Debug("haify_log_list: reading controller log", zap.Int32("limit", in.Limit),
+				zap.String("min_level", in.MinLevel), zap.String("contains", in.Contains))
 			resp, err := s.client.ListControllerLogs(ctx, &haifypb.ListControllerLogsRequest{
 				Limit:    in.Limit,
 				Level:    in.MinLevel,
 				Contains: in.Contains,
 			})
 			if err != nil {
+				s.logger.Debug("haify_log_list: read failed", zap.Error(err))
 				return nil, logListOut{}, err
 			}
 			out := logListOut{
@@ -205,6 +220,8 @@ func (s *Server) registerObservabilityTools(srv *mcp.Server) {
 					Message:   e.Message,
 				})
 			}
+			s.logger.Debug("haify_log_list: read", zap.Int("count", len(out.Entries)), zap.String("node", resp.Node),
+				zap.Bool("truncated", resp.Truncated))
 			return nil, out, nil
 		})
 }
@@ -237,17 +254,25 @@ func (s *Server) registerNotifyTools(srv *mcp.Server) {
 			"and no enabled channel raises events that nobody receives. Bot URLs are returned; signing secrets "+
 			"never are."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, notifyChannelListOut, error) {
+			s.logger.Debug("haify_notify_channel_list: listing channels")
 			channels, kinds, err := s.client.ListNotifyChannels(ctx)
 			if err != nil {
+				s.logger.Debug("haify_notify_channel_list: list failed", zap.Error(err))
 				return nil, notifyChannelListOut{}, err
 			}
 			out := notifyChannelListOut{Channels: make([]notifyChannelOut, 0, len(channels)), Kinds: kinds}
 			for _, c := range channels {
+				// The bot URL is a bearer credential: it is returned to the
+				// caller, as documented, but never written to the log.
+				s.logger.Debug("haify_notify_channel_list: channel", zap.String("name", c.Name), zap.String("kind", c.Kind),
+					zap.String("min_severity", c.MinSeverity), zap.Bool("enabled", c.Enabled),
+					zap.Bool("has_url", c.Url != ""), zap.Bool("has_secret", c.HasSecret))
 				out.Channels = append(out.Channels, notifyChannelOut{
 					Name: c.Name, Kind: c.Kind, URL: c.Url,
 					MinSeverity: c.MinSeverity, Enabled: c.Enabled, HasSecret: c.HasSecret,
 				})
 			}
+			s.logger.Debug("haify_notify_channel_list: listed", zap.Int("count", len(out.Channels)), zap.Strings("kinds", kinds))
 			return nil, out, nil
 		})
 
@@ -260,10 +285,15 @@ func (s *Server) registerNotifyTools(srv *mcp.Server) {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 			Name string `json:"name" jsonschema:"channel to test"`
 		}) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_notify_channel_test: sending test message", zap.String("name", in.Name))
 			msg, err := s.client.TestNotifyChannel(ctx, in.Name)
 			if err != nil {
+				s.logger.Debug("haify_notify_channel_test: test failed", zap.String("name", in.Name), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			// A failed delivery's reply can quote the bot URL (a Go HTTP error
+			// names it), so only its size is traced.
+			s.logger.Debug("haify_notify_channel_test: answered", zap.String("name", in.Name), zap.Int("reply_bytes", len(msg)))
 			return nil, ok(msg), nil
 		})
 }

@@ -18,12 +18,16 @@ import (
 const defaultTokenStore = "/var/lib/haify/mcp/tokens.json"
 
 func tokenStorePath(flag string) string {
+	log := zap.L()
 	if flag != "" {
+		log.Debug("tokenStorePath: using --tokens", zap.String("path", flag))
 		return flag
 	}
 	if env := os.Getenv("HAIFY_MCP_TOKENS"); env != "" {
+		log.Debug("tokenStorePath: using HAIFY_MCP_TOKENS", zap.String("path", env))
 		return env
 	}
+	log.Debug("tokenStorePath: using the default store", zap.String("path", defaultTokenStore))
 	return defaultTokenStore
 }
 
@@ -65,17 +69,25 @@ func serveCmd() *cobra.Command {
 				return fmt.Errorf("init logger: %w", err)
 			}
 			defer func() { _ = logger.Sync() }()
+			logger.Debug("serveCmd: starting remote server", zap.String("listen", listen),
+				zap.String("admin_listen", adminListen), zap.String("public_url", publicURL),
+				zap.String("max_role", string(role)), zap.Bool("tls", tlsCert != ""), zap.Bool("trust_proxy", trustProxy),
+				zap.String("controller", conn.addr))
 
 			store, err := mcpauth.Open(tokenStorePath(tokens))
 			if err != nil {
+				logger.Debug("serveCmd: opening the token store failed", zap.Error(err))
 				return err
 			}
 			if list, _ := store.List(); len(list) == 0 {
 				logger.Warn("no tokens exist yet; every request will be refused until one is made with `haify-mcp token create`",
 					zap.String("store", tokenStorePath(tokens)))
+			} else {
+				logger.Debug("serveCmd: token store has tokens", zap.Int("count", len(list)))
 			}
 			haifyClient, err := conn.dial()
 			if err != nil {
+				logger.Debug("serveCmd: dialing the controller failed", zap.Error(err))
 				return err
 			}
 			defer func() { _ = haifyClient.Close() }()
@@ -119,22 +131,30 @@ func tokenCmd() *cobra.Command {
 		Short: "Make a token; it is shown once",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
+			log.Debug("tokenCmd create: creating token", zap.String("name", name), zap.String("role", role),
+				zap.Duration("expires", expires))
 			r, err := mcpauth.ParseRole(role)
 			if err != nil {
+				log.Debug("tokenCmd create: bad role", zap.Error(err))
 				return err
 			}
 			store, err := mcpauth.Open(tokenStorePath(tokens))
 			if err != nil {
+				log.Debug("tokenCmd create: opening the token store failed", zap.Error(err))
 				return err
 			}
 			secret, t, err := store.Create(name, r, expires)
 			if err != nil {
+				log.Debug("tokenCmd create: create failed", zap.Error(err))
 				return err
 			}
 			until := "never expires"
 			if !t.Expires.IsZero() {
 				until = "expires " + t.Expires.Local().Format("2006-01-02 15:04")
 			}
+			log.Debug("tokenCmd create: token created", zap.String("token_id", t.ID), zap.String("role", string(t.Role)),
+				zap.Time("expires", t.Expires))
 			fmt.Printf("Token %q (%s), %s. It is not stored and cannot be shown again:\n\n  %s\n\n", t.Name, t.Role, until, secret)
 			fmt.Printf("Claude Code:\n  claude mcp add --transport http haify %s --header \"Authorization: Bearer %s\"\n\n", url, secret)
 			fmt.Printf("ChatGPT and claude.ai add the server by URL (%s) and ask for this token when they send you to the authorization page.\n", url)
@@ -152,14 +172,18 @@ func tokenCmd() *cobra.Command {
 		Short: "List tokens",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
 			store, err := mcpauth.Open(tokenStorePath(tokens))
 			if err != nil {
+				log.Debug("tokenCmd list: opening the token store failed", zap.Error(err))
 				return err
 			}
 			all, err := store.List()
 			if err != nil {
+				log.Debug("tokenCmd list: listing failed", zap.Error(err))
 				return err
 			}
+			log.Debug("tokenCmd list: printing tokens", zap.Int("count", len(all)))
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "ID\tNAME\tROLE\tCREATED\tEXPIRES")
 			for _, t := range all {
@@ -178,14 +202,18 @@ func tokenCmd() *cobra.Command {
 		Short: "Revoke a token and everything OAuth issued under it",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			log := zap.L()
 			store, err := mcpauth.Open(tokenStorePath(tokens))
 			if err != nil {
+				log.Debug("tokenCmd revoke: opening the token store failed", zap.Error(err))
 				return err
 			}
 			n, err := store.Revoke(args[0])
 			if err != nil {
+				log.Debug("tokenCmd revoke: revoke failed", zap.Error(err))
 				return err
 			}
+			log.Debug("tokenCmd revoke: revoked", zap.Int("removed", n))
 			fmt.Printf("revoked %q (%d record(s), including anything ChatGPT or claude.ai was given through it)\n", args[0], n)
 			return nil
 		},

@@ -6,6 +6,7 @@ import (
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/util"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 )
 
 type nodeDisksIn struct {
@@ -35,16 +36,21 @@ func (s *Server) registerNodeDiskTools(srv *mcp.Server) {
 			"adding or replacing a disk. Probes the nodes over SSH, so it takes a few seconds."),
 		poolDisksTimeout,
 		func(ctx context.Context, _ *mcp.CallToolRequest, in nodeDisksIn) (*mcp.CallToolResult, nodeDisksOut, error) {
+			s.logger.Debug("haify_node_disks: listing node disks", zap.String("node", in.Node))
 			disks, err := s.client.ListNodeDisks(ctx, in.Node)
 			if err != nil {
+				s.logger.Debug("haify_node_disks: list failed", zap.String("node", in.Node), zap.Error(err))
 				return nil, nodeDisksOut{}, err
 			}
 			out := nodeDisksOut{Disks: make([]nodeDiskOut, 0, len(disks))}
 			for _, d := range disks {
+				s.logger.Debug("haify_node_disks: disk", zap.String("node", d.Node), zap.String("device", d.Device),
+					zap.String("state", d.State), zap.String("pool", d.Pool), zap.Uint64("size_bytes", d.SizeBytes))
 				out.Disks = append(out.Disks, nodeDiskOut{Node: d.Node, Device: d.Device, ByID: d.ById,
 					Size: util.FormatBytes(d.SizeBytes), Model: d.Model, Serial: d.Serial, State: d.State,
 					Pool: d.Pool, Detail: d.Detail})
 			}
+			s.logger.Debug("haify_node_disks: listed", zap.Int("count", len(out.Disks)))
 			return nil, out, nil
 		})
 }
@@ -61,6 +67,7 @@ func (s *Server) registerNodePathTools(srv *mcp.Server) {
 		SetNodeReplicationPaths(context.Context, string, []string) (*haifypb.SetNodeAddressResponse, error)
 	})
 	if !supported {
+		s.logger.Debug("Server.registerNodePathTools: client cannot set replication paths, skipping")
 		return
 	}
 	addWrite(s, srv, writeTool("haify_node_set_replication_paths", "Give a node more replication networks",
@@ -68,10 +75,15 @@ func (s *Server) registerNodePathTools(srv *mcp.Server) {
 			"gets a DRBD path per network both are on, and a connection survives losing one link: DRBD reconnects "+
 			"over another within about half a minute. The node's resources are rewritten and adjusted in place."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in nodePathsIn) (*mcp.CallToolResult, nodeAddressOut, error) {
+			s.logger.Debug("haify_node_set_replication_paths: setting paths", zap.String("node", in.Node),
+				zap.Strings("addresses", in.Addresses))
 			resp, err := c.SetNodeReplicationPaths(ctx, in.Node, in.Addresses)
 			if err != nil {
+				s.logger.Debug("haify_node_set_replication_paths: set failed", zap.String("node", in.Node), zap.Error(err))
 				return nil, nodeAddressOut{}, err
 			}
+			s.logger.Debug("haify_node_set_replication_paths: done", zap.String("node", in.Node),
+				zap.Bool("success", resp.Success), zap.Int("resources", len(resp.Resources)), zap.Int("failed", len(resp.Failed)))
 			return nil, nodeAddressOut{OK: resp.Success, Message: resp.Message, Resources: resp.Resources, Failed: resp.Failed}, nil
 		})
 }

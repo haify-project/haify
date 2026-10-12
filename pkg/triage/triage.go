@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Severity orders findings. Three levels, because a fourth would be a
@@ -204,7 +206,13 @@ const (
 
 // Analyze reads everything and returns the ranked problems.
 func Analyze(in Input) Report {
+	log := zap.L()
+	start := time.Now()
+	log.Debug("Analyze: analyzing cluster records", zap.Duration("window", in.Window),
+		zap.Int("events", len(in.Events)), zap.Int("audit_entries", len(in.Audit)),
+		zap.Int("controller_logs", len(in.Logs)), zap.Int("nodes", len(in.Nodes)))
 	if in.Now.IsZero() {
+		log.Debug("Analyze: no reference time given, using now")
 		in.Now = time.Now()
 	}
 	rep := Report{
@@ -222,6 +230,7 @@ func Analyze(in Input) Report {
 			claimed[e.Line] = true
 		}
 	}
+	log.Debug("Analyze: known failure modes matched", zap.Int("count", len(found)), zap.Int("claimed_lines", len(claimed)))
 	found = append(found, groupedFindings(in, claimed)...)
 
 	sort.SliceStable(found, func(i, j int) bool {
@@ -237,6 +246,7 @@ func Analyze(in Input) Report {
 		return a.Count > b.Count
 	})
 	if len(found) > maxFindings {
+		log.Debug("Analyze: truncating findings", zap.Int("count", len(found)), zap.Int("max", maxFindings))
 		found = found[:maxFindings]
 	}
 	for i := range found {
@@ -252,10 +262,21 @@ func Analyze(in Input) Report {
 	read := rep.Scanned.Events + rep.Scanned.AuditEntries +
 		rep.Scanned.ControllerLogs + rep.Scanned.NodeLines
 	rep.Healthy = len(found) == 0 && read > 0
+	if ce := log.Check(zap.DebugLevel, "Analyze: findings"); ce != nil {
+		for _, f := range found {
+			log.Debug("Analyze: finding", zap.String("id", f.ID), zap.String("severity", string(f.Severity)),
+				zap.Bool("known", f.Known), zap.Int("count", f.Count), zap.Strings("nodes", f.Nodes),
+				zap.String("resource", f.Resource))
+		}
+		ce.Write(zap.Int("count", len(found)))
+	}
+	log.Debug("Analyze: done", zap.Int("findings", len(found)), zap.Int("lines_read", read),
+		zap.Bool("healthy", rep.Healthy), zap.Duration("took", time.Since(start)))
 	return rep
 }
 
 func scan(in Input) Scanned {
+	log := zap.L()
 	s := Scanned{
 		Events:         len(in.Events),
 		AuditEntries:   len(in.Audit),
@@ -266,12 +287,16 @@ func scan(in Input) Scanned {
 	ran, seen := map[string]bool{}, map[string]bool{}
 	for _, n := range in.Nodes {
 		s.Nodes = append(s.Nodes, n.Node)
+		log.Debug("scan: node", zap.String("node", n.Node), zap.Bool("reachable", n.Reachable),
+			zap.Int("collectors", len(n.Collectors)))
 		if !n.Reachable {
 			s.Unreachable = append(s.Unreachable, n.Node)
 		}
 		for _, c := range n.Collectors {
 			seen[c.Collector] = true
 			s.NodeLines += len(c.Lines)
+			log.Debug("scan: collector", zap.String("node", n.Node), zap.String("collector", c.Collector),
+				zap.Bool("ok", c.Ok), zap.Int("lines", len(c.Lines)), zap.Bool("truncated", c.Truncated))
 			if c.Ok {
 				ran[c.Collector] = true
 			}
@@ -279,10 +304,14 @@ func scan(in Input) Scanned {
 	}
 	for c := range seen {
 		if !ran[c] {
+			log.Debug("scan: collector ran on no node", zap.String("collector", c))
 			s.FailedCollectors = append(s.FailedCollectors, c)
 		}
 	}
 	sort.Strings(s.FailedCollectors)
+	log.Debug("scan: done", zap.Int("events", s.Events), zap.Int("audit_entries", s.AuditEntries),
+		zap.Int("controller_logs", s.ControllerLogs), zap.Int("node_lines", s.NodeLines),
+		zap.Strings("unreachable", s.Unreachable), zap.Strings("failed_collectors", s.FailedCollectors))
 	return s
 }
 
@@ -326,14 +355,22 @@ func groupedFindings(in Input, claimed map[string]bool) []Finding {
 		}
 	}
 
+	log := zap.L()
+	log.Debug("groupedFindings: grouping unclaimed lines", zap.Int("claimed_lines", len(claimed)))
+	resolved, eventsAdded := 0, 0
 	for _, e := range in.Events {
 		if resolvedLater(e, in.Events) {
+			resolved++
 			continue
 		}
 		if sev, ok := eventSeverity(e); ok {
+			eventsAdded++
 			add(sev, "event", e.Node, stamp(e.At), e.Type+": "+e.Message)
 		}
 	}
+	log.Debug("groupedFindings: events grouped", zap.Int("events", len(in.Events)),
+		zap.Int("resolved_later", resolved), zap.Int("added", eventsAdded))
+	auditAdded := 0
 	for _, a := range in.Audit {
 		if a.Result == "" || strings.EqualFold(a.Result, "OK") {
 			continue
@@ -342,23 +379,34 @@ func groupedFindings(in Input, claimed map[string]bool) []Finding {
 		if a.Error != "" {
 			msg += ": " + a.Error
 		}
+		auditAdded++
 		add(SeverityWarning, "audit", a.Node, stamp(a.At), msg)
 	}
+	log.Debug("groupedFindings: audit grouped", zap.Int("audit_entries", len(in.Audit)), zap.Int("failed", auditAdded))
+	logsAdded := 0
 	for _, l := range in.Logs {
 		switch strings.ToLower(l.Level) {
 		case "error", "fatal", "panic", "dpanic":
+			logsAdded++
 			add(SeverityError, "controller-log", "", stamp(l.At), l.Message)
 		case "warn", "warning":
+			logsAdded++
 			add(SeverityWarning, "controller-log", "", stamp(l.At), l.Message)
 		}
 	}
+	log.Debug("groupedFindings: controller log grouped", zap.Int("controller_logs", len(in.Logs)),
+		zap.Int("warn_or_worse", logsAdded))
 	for _, n := range in.Nodes {
 		for _, c := range n.Collectors {
+			flagged := 0
 			for _, line := range c.Lines {
 				if sev, ok := lineSeverity(line); ok {
+					flagged++
 					add(sev, n.Node+"/"+c.Collector, n.Node, "", line)
 				}
 			}
+			log.Debug("groupedFindings: node collector grouped", zap.String("node", n.Node),
+				zap.String("collector", c.Collector), zap.Int("lines", len(c.Lines)), zap.Int("flagged", flagged))
 		}
 	}
 
@@ -383,6 +431,7 @@ func groupedFindings(in Input, claimed map[string]bool) []Finding {
 		}
 		return out[i].Signature < out[j].Signature
 	})
+	log.Debug("groupedFindings: done", zap.Int("groups", len(out)))
 	return out
 }
 

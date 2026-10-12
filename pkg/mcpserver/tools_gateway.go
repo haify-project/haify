@@ -6,6 +6,7 @@ import (
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 )
 
 // ---- output types ----
@@ -153,11 +154,13 @@ type nvmeHostsIn struct {
 }
 
 func badAction(action string, allowed string) error {
+	zap.L().Debug("badAction: refusing unknown action", zap.String("action", action), zap.String("allowed", allowed))
 	return fmt.Errorf("invalid action %q (use %s)", action, allowed)
 }
 
 // registerGatewayTools adds gateway lifecycle and per-protocol config tools.
 func (s *Server) registerGatewayTools(srv *mcp.Server) {
+	s.logger.Debug("Server.registerGatewayTools: registering gateway lifecycle and protocol tools")
 	s.registerGatewayLifecycle(srv)
 	s.registerGatewayConfigReads(srv)
 	s.registerNFSConfig(srv)
@@ -170,24 +173,35 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 	addRead(s, srv, readOnlyTool("haify_gateway_list", "List gateways",
 		"List all storage gateways (NFS, iSCSI, NVMe-oF, SMB) with their type, state, and serving node."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, gatewayListOut, error) {
+			s.logger.Debug("haify_gateway_list: listing gateways")
 			gws, err := s.client.ListGateways(ctx)
 			if err != nil {
+				s.logger.Debug("haify_gateway_list: list failed", zap.Error(err))
 				return nil, gatewayListOut{}, err
 			}
 			out := gatewayListOut{Gateways: make([]gatewayOut, 0, len(gws))}
 			for _, g := range gws {
+				// Options can carry protocol settings; their keys are enough to
+				// follow what was set.
+				s.logger.Debug("haify_gateway_list: gateway", zap.String("resource", g.Resource), zap.String("type", g.Type),
+					zap.String("state", g.State), zap.String("node", g.Node), zap.Array("option_keys", keysOf(g.Options)))
 				out.Gateways = append(out.Gateways, gatewayInfoOut(g))
 			}
+			s.logger.Debug("haify_gateway_list: listed", zap.Int("count", len(out.Gateways)))
 			return nil, out, nil
 		})
 
 	addRead(s, srv, readOnlyTool("haify_gateway_get", "Gateway details",
 		"Get full details and live status of one gateway: state, serving node, service IP, exports/targets."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in gatewayResourceIn) (*mcp.CallToolResult, gatewayOut, error) {
+			s.logger.Debug("haify_gateway_get: reading gateway", zap.String("resource", in.Resource))
 			g, err := s.client.GetGateway(ctx, in.Resource)
 			if err != nil {
+				s.logger.Debug("haify_gateway_get: read failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, gatewayOut{}, err
 			}
+			s.logger.Debug("haify_gateway_get: read", zap.String("resource", g.Resource), zap.String("type", g.Type),
+				zap.String("state", g.State), zap.String("node", g.Node), zap.Array("option_keys", keysOf(g.Options)))
 			return nil, gatewayInfoOut(g), nil
 		})
 
@@ -195,8 +209,12 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 		"Export a DRBD resource over NFS with automatic failover. Creates a drbd-reactor promoter config "+
 			"with filesystem mount, floating IP, NFS server, and exports. The resource must already exist."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in nfsGatewayCreateIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_gateway_create_nfs: creating NFS gateway", zap.String("resource", in.Resource),
+				zap.String("service_ip", in.ServiceIP), zap.String("export_path", in.ExportPath),
+				zap.Strings("allowed_ips", in.AllowedIPs), zap.String("fs_type", in.FsType))
 			fsType := in.FsType
 			if fsType == "" {
+				s.logger.Debug("haify_gateway_create_nfs: no filesystem type given, using ext4")
 				fsType = "ext4"
 			}
 			resp, err := s.client.CreateNFSGateway(ctx, &haifypb.CreateNFSGatewayRequest{
@@ -207,11 +225,16 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 				FsType:     fsType,
 			})
 			if err != nil {
+				s.logger.Debug("haify_gateway_create_nfs: create failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
 			if !resp.Success {
+				s.logger.Debug("haify_gateway_create_nfs: controller reported failure", zap.String("resource", in.Resource),
+					zap.String("message", resp.Message))
 				return nil, opResult{}, fmt.Errorf("create NFS gateway: %s", resp.Message)
 			}
+			s.logger.Debug("haify_gateway_create_nfs: created", zap.String("resource", in.Resource),
+				zap.String("config_path", resp.ConfigPath))
 			return nil, ok(fmt.Sprintf("NFS gateway for %s created at %s exporting %s (config %s)",
 				in.Resource, in.ServiceIP, in.ExportPath, resp.ConfigPath)), nil
 		})
@@ -219,8 +242,13 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 	addWrite(s, srv, writeTool("haify_gateway_create_iscsi", "Create iSCSI gateway",
 		"Export a DRBD resource as an iSCSI target with automatic failover. The resource must already exist."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in iscsiGatewayCreateIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_gateway_create_iscsi: creating iSCSI gateway", zap.String("resource", in.Resource),
+				zap.String("service_ip", in.ServiceIP), zap.String("iqn", in.IQN),
+				zap.Strings("allowed_initiators", in.AllowedInitiators), zap.Bool("has_username", in.Username != ""),
+				zap.Bool("has_password", in.Password != ""), zap.String("implementation", in.Implementation))
 			impl := in.Implementation
 			if impl == "" {
+				s.logger.Debug("haify_gateway_create_iscsi: no implementation given, using lio")
 				impl = "lio"
 			}
 			resp, err := s.client.CreateISCSIGateway(ctx, &haifypb.CreateISCSIGatewayRequest{
@@ -233,11 +261,15 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 				Implementation:    impl,
 			})
 			if err != nil {
+				s.logger.Debug("haify_gateway_create_iscsi: create failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
 			if !resp.Success {
+				s.logger.Debug("haify_gateway_create_iscsi: controller reported failure", zap.String("resource", in.Resource),
+					zap.String("message", resp.Message))
 				return nil, opResult{}, fmt.Errorf("create iSCSI gateway: %s", resp.Message)
 			}
+			s.logger.Debug("haify_gateway_create_iscsi: created", zap.String("resource", in.Resource), zap.String("iqn", in.IQN))
 			return nil, ok(fmt.Sprintf("iSCSI gateway for %s created at %s with IQN %s",
 				in.Resource, in.ServiceIP, in.IQN)), nil
 		})
@@ -245,8 +277,11 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 	addWrite(s, srv, writeTool("haify_gateway_create_nvme", "Create NVMe-oF gateway",
 		"Export a DRBD resource as an NVMe-oF subsystem with automatic failover. The resource must already exist."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in nvmeGatewayCreateIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_gateway_create_nvme: creating NVMe-oF gateway", zap.String("resource", in.Resource),
+				zap.String("service_ip", in.ServiceIP), zap.String("nqn", in.NQN), zap.String("transport", in.Transport))
 			transport := in.Transport
 			if transport == "" {
+				s.logger.Debug("haify_gateway_create_nvme: no transport given, using tcp")
 				transport = "tcp"
 			}
 			resp, err := s.client.CreateNVMeGateway(ctx, &haifypb.CreateNVMeGatewayRequest{
@@ -256,11 +291,15 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 				TransportType: transport,
 			})
 			if err != nil {
+				s.logger.Debug("haify_gateway_create_nvme: create failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
 			if !resp.Success {
+				s.logger.Debug("haify_gateway_create_nvme: controller reported failure", zap.String("resource", in.Resource),
+					zap.String("message", resp.Message))
 				return nil, opResult{}, fmt.Errorf("create NVMe-oF gateway: %s", resp.Message)
 			}
+			s.logger.Debug("haify_gateway_create_nvme: created", zap.String("resource", in.Resource), zap.String("nqn", in.NQN))
 			return nil, ok(fmt.Sprintf("NVMe-oF gateway for %s created at %s with NQN %s",
 				in.Resource, in.ServiceIP, in.NQN)), nil
 		})
@@ -268,18 +307,24 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 	addWrite(s, srv, writeTool("haify_gateway_start", "Start gateway",
 		"Start a stopped gateway: enables its drbd-reactor config and brings services up."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in gatewayResourceIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_gateway_start: starting gateway", zap.String("resource", in.Resource))
 			if err := s.client.StartGateway(ctx, in.Resource); err != nil {
+				s.logger.Debug("haify_gateway_start: failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_gateway_start: done", zap.String("resource", in.Resource))
 			return nil, ok(fmt.Sprintf("gateway %s started", in.Resource)), nil
 		})
 
 	addWrite(s, srv, destructiveTool("haify_gateway_stop", "Stop gateway",
 		"Stop a running gateway: clients are disconnected until it is started again."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in gatewayResourceIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_gateway_stop: stopping gateway", zap.String("resource", in.Resource))
 			if err := s.client.StopGateway(ctx, in.Resource); err != nil {
+				s.logger.Debug("haify_gateway_stop: failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_gateway_stop: done", zap.String("resource", in.Resource))
 			return nil, ok(fmt.Sprintf("gateway %s stopped", in.Resource)), nil
 		})
 
@@ -287,9 +332,12 @@ func (s *Server) registerGatewayLifecycle(srv *mcp.Server) {
 		"Delete a gateway: removes the drbd-reactor config and stops the export. "+
 			"The underlying DRBD resource and its data are kept."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in gatewayResourceIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_gateway_delete: deleting gateway", zap.String("resource", in.Resource))
 			if err := s.client.DeleteGateway(ctx, in.Resource); err != nil {
+				s.logger.Debug("haify_gateway_delete: failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_gateway_delete: done", zap.String("resource", in.Resource))
 			return nil, ok(fmt.Sprintf("gateway %s deleted", in.Resource)), nil
 		})
 }

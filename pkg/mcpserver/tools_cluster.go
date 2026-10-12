@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 )
 
 // ---- output types ----
@@ -114,12 +116,16 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 	addRead(s, srv, readOnlyTool("haify_node_list", "List nodes",
 		"List all storage nodes registered with the Haify controller, including their state and version."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, nodeListOut, error) {
+			s.logger.Debug("haify_node_list: listing nodes")
 			nodes, err := s.client.ListNodes(ctx)
 			if err != nil {
+				s.logger.Debug("haify_node_list: list failed", zap.Error(err))
 				return nil, nodeListOut{}, err
 			}
 			out := nodeListOut{Nodes: make([]nodeOut, 0, len(nodes))}
 			for _, n := range nodes {
+				s.logger.Debug("haify_node_list: node", zap.String("node", n.Name), zap.String("address", n.Address),
+					zap.String("state", n.State), zap.String("version", n.Version))
 				out.Nodes = append(out.Nodes, nodeOut{
 					Name:     n.Name,
 					Address:  n.Address,
@@ -128,6 +134,7 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 					Version:  n.Version,
 				})
 			}
+			s.logger.Debug("haify_node_list: listed", zap.Int("count", len(out.Nodes)))
 			return nil, out, nil
 		})
 
@@ -135,10 +142,13 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 		"Check DRBD, drbd-reactor, and resource-agents availability on storage nodes. "+
 			"Use this to diagnose why resources or gateways fail to start."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in healthCheckIn) (*mcp.CallToolResult, healthCheckOut, error) {
+			s.logger.Debug("haify_node_health_check: checking nodes", zap.Strings("nodes", in.Nodes))
 			targets := in.Nodes
 			if len(targets) == 0 {
+				s.logger.Debug("haify_node_health_check: no nodes given, checking every registered node")
 				nodes, err := s.client.ListNodes(ctx)
 				if err != nil {
+					s.logger.Debug("haify_node_health_check: list nodes failed", zap.Error(err))
 					return nil, healthCheckOut{}, fmt.Errorf("list nodes: %w", err)
 				}
 				for _, n := range nodes {
@@ -147,11 +157,18 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 			}
 			out := healthCheckOut{Results: make([]nodeHealthOut, 0, len(targets))}
 			for _, node := range targets {
+				start := time.Now()
 				h, err := s.client.HealthCheck(ctx, node)
 				if err != nil {
+					s.logger.Debug("haify_node_health_check: check failed, reporting it for the node", zap.String("node", node),
+						zap.Duration("took", time.Since(start)), zap.Error(err))
 					out.Results = append(out.Results, nodeHealthOut{Node: node, Error: err.Error()})
 					continue
 				}
+				s.logger.Debug("haify_node_health_check: node checked", zap.String("node", node),
+					zap.Bool("drbd_installed", h.DrbdInstalled), zap.String("drbd_version", h.DrbdVersion),
+					zap.Bool("drbd_reactor_running", h.DrbdReactorRunning),
+					zap.Bool("resource_agents_installed", h.ResourceAgentsInstalled), zap.Duration("took", time.Since(start)))
 				out.Results = append(out.Results, nodeHealthOut{
 					Node:                    node,
 					DrbdInstalled:           h.DrbdInstalled,
@@ -163,37 +180,49 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 					AvailableAgents:         h.AvailableAgents,
 				})
 			}
+			s.logger.Debug("haify_node_health_check: done", zap.Int("count", len(out.Results)))
 			return nil, out, nil
 		})
 
 	addWrite(s, srv, writeTool("haify_node_register", "Register node",
 		"Register a storage node with the Haify controller. The controller must reach the node over SSH."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in nodeRegisterIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_node_register: registering node", zap.String("node", in.Name), zap.String("address", in.Address))
 			node, err := s.client.RegisterNode(ctx, in.Name, in.Address)
 			if err != nil {
+				s.logger.Debug("haify_node_register: register failed", zap.String("node", in.Name), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_node_register: registered", zap.String("node", node.Name), zap.String("state", node.State))
 			return nil, ok(fmt.Sprintf("node %s (%s) registered, state %s", node.Name, node.Address, node.State)), nil
 		})
 
 	addWrite(s, srv, destructiveTool("haify_node_unregister", "Unregister node",
 		"Unregister a storage node from the Haify controller. Resources on the node are not touched."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in nodeUnregisterIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_node_unregister: unregistering node", zap.String("address", in.Address))
 			if err := s.client.UnregisterNode(ctx, in.Address); err != nil {
+				s.logger.Debug("haify_node_unregister: unregister failed", zap.String("address", in.Address), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_node_unregister: unregistered", zap.String("address", in.Address))
 			return nil, ok(fmt.Sprintf("node %s unregistered", in.Address)), nil
 		})
 
 	addRead(s, srv, readOnlyTool("haify_pool_list", "List storage pools",
 		"List all storage pools (LVM volume groups, thin pools, ZFS pools) across all nodes with capacity info."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, poolListOut, error) {
+			s.logger.Debug("haify_pool_list: listing pools")
 			pools, err := s.client.ListPools(ctx)
 			if err != nil {
+				s.logger.Debug("haify_pool_list: list failed", zap.Error(err))
 				return nil, poolListOut{}, err
 			}
 			out := poolListOut{Pools: make([]poolOut, 0, len(pools))}
 			for _, p := range pools {
+				s.logger.Debug("haify_pool_list: pool", zap.String("pool", p.Name), zap.String("node", p.Node),
+					zap.String("type", p.Type), zap.Bool("thin", p.Thin), zap.Uint64("available_bytes", p.AvailableBytes),
+					zap.Float64("thin_data_percent", p.ThinDataPercent), zap.Bool("thin_out_of_space", p.ThinOutOfSpace))
 				out.Pools = append(out.Pools, poolOut{
 					Name:            p.Name,
 					Type:            p.Type,
@@ -213,6 +242,7 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 					ThinOutOfSpace:  p.ThinOutOfSpace,
 				})
 			}
+			s.logger.Debug("haify_pool_list: listed", zap.Int("count", len(out.Pools)))
 			return nil, out, nil
 		})
 
@@ -220,11 +250,17 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 		"Create a storage pool on one or more nodes. Types: lvm (plain VG), lvm-thin (VG + thin pool), lvm-thin-vdo (thin pool on VDO), zfs. "+
 			"Find usable devices with haify_node_disks first."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolCreateIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_pool_create: creating pool", zap.String("pool", in.Name), zap.String("type", in.Type),
+				zap.Strings("nodes", in.Nodes), zap.Strings("devices", in.Devices), zap.Uint64("size_gb", in.SizeGB),
+				zap.Bool("wipe", in.Wipe))
 			if len(in.Nodes) == 0 || len(in.Devices) == 0 {
+				s.logger.Debug("haify_pool_create: refusing, nodes or devices missing")
 				return nil, opResult{}, fmt.Errorf("nodes and devices are required")
 			}
 			var created, failed []string
 			for _, node := range in.Nodes {
+				s.logger.Debug("haify_pool_create: creating on node", zap.String("pool", in.Name), zap.String("node", node))
+				start := time.Now()
 				var err error
 				switch in.Type {
 				case "zfs":
@@ -236,17 +272,25 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 				case "lvm-thin-vdo", "thin_vdo":
 					err = s.client.CreatePool(ctx, in.Name, "thin_vdo", node, in.Devices, in.SizeGB, in.Wipe)
 				default:
+					s.logger.Debug("haify_pool_create: refusing unsupported pool type", zap.String("type", in.Type))
 					return nil, opResult{}, fmt.Errorf("unsupported pool type %q (use lvm, lvm-thin, lvm-thin-vdo, or zfs)", in.Type)
 				}
 				if err != nil {
+					s.logger.Debug("haify_pool_create: node failed, continuing", zap.String("pool", in.Name), zap.String("node", node),
+						zap.Duration("took", time.Since(start)), zap.Error(err))
 					failed = append(failed, fmt.Sprintf("%s: %v", node, err))
 					continue
 				}
+				s.logger.Debug("haify_pool_create: created on node", zap.String("pool", in.Name), zap.String("node", node),
+					zap.Duration("took", time.Since(start)))
 				created = append(created, node)
 			}
 			if len(created) == 0 {
+				s.logger.Debug("haify_pool_create: failed on every node", zap.String("pool", in.Name), zap.Int("failed", len(failed)))
 				return nil, opResult{}, fmt.Errorf("pool creation failed on all nodes: %s", strings.Join(failed, "; "))
 			}
+			s.logger.Debug("haify_pool_create: done", zap.String("pool", in.Name), zap.Strings("created", created),
+				zap.Int("failed", len(failed)))
 			detail := fmt.Sprintf("pool %s (%s) created on %s", in.Name, in.Type, strings.Join(created, ", "))
 			if len(failed) > 0 {
 				detail += "; failed on " + strings.Join(failed, "; ")
@@ -257,9 +301,12 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 	addWrite(s, srv, destructiveTool("haify_pool_delete", "Delete storage pool",
 		"Delete a storage pool from a node. Fails if the pool still backs DRBD resources."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolDeleteIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_pool_delete: deleting pool", zap.String("pool", in.Name), zap.String("node", in.Node))
 			if err := s.client.DeletePool(ctx, in.Name, in.Node); err != nil {
+				s.logger.Debug("haify_pool_delete: delete failed", zap.String("pool", in.Name), zap.String("node", in.Node), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_pool_delete: deleted", zap.String("pool", in.Name), zap.String("node", in.Node))
 			return nil, ok(fmt.Sprintf("pool %s deleted on %s", in.Name, in.Node)), nil
 		})
 
@@ -268,23 +315,34 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 			"Find usable devices with haify_node_disks first. Existing volumes do not grow by themselves, and a replicated "+
 			"volume can only grow as far as the fullest of its nodes allows, so add disks on every node that holds a replica."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolAddDiskIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_pool_add_disk: adding disks", zap.String("pool", in.Pool), zap.Strings("nodes", in.Nodes),
+				zap.Strings("devices", in.Devices), zap.Bool("wipe", in.Wipe))
 			if len(in.Nodes) == 0 || len(in.Devices) == 0 {
+				s.logger.Debug("haify_pool_add_disk: refusing, nodes or devices missing")
 				return nil, opResult{}, fmt.Errorf("nodes and devices are required")
 			}
 			var failed []string
 			added := 0
 			for _, node := range in.Nodes {
 				for _, dev := range in.Devices {
+					start := time.Now()
 					if err := s.client.AddDiskToPool(ctx, in.Pool, dev, node, in.Wipe); err != nil {
+						s.logger.Debug("haify_pool_add_disk: device failed, continuing", zap.String("pool", in.Pool),
+							zap.String("node", node), zap.String("device", dev), zap.Duration("took", time.Since(start)), zap.Error(err))
 						failed = append(failed, fmt.Sprintf("%s %s: %v", node, dev, err))
 						continue
 					}
+					s.logger.Debug("haify_pool_add_disk: device added", zap.String("pool", in.Pool), zap.String("node", node),
+						zap.String("device", dev), zap.Duration("took", time.Since(start)))
 					added++
 				}
 			}
 			if added == 0 {
+				s.logger.Debug("haify_pool_add_disk: failed everywhere", zap.String("pool", in.Pool), zap.Int("failed", len(failed)))
 				return nil, opResult{}, fmt.Errorf("adding disks failed everywhere: %s", strings.Join(failed, "; "))
 			}
+			s.logger.Debug("haify_pool_add_disk: done", zap.String("pool", in.Pool), zap.Int("added", added),
+				zap.Int("failed", len(failed)))
 			detail := fmt.Sprintf("%d device(s) added to pool %s", added, in.Pool)
 			if len(failed) > 0 {
 				detail += "; failures: " + strings.Join(failed, "; ")

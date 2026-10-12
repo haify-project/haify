@@ -16,6 +16,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 const (
@@ -87,11 +89,19 @@ func New(c ControllerClient, logger *zap.Logger, opts Options) *Server {
 	if version == "" {
 		version = "dev"
 	}
+	logger.Debug("New: building MCP server", zap.Bool("read_only", opts.ReadOnly),
+		zap.Bool("no_destructive", opts.NoDestructive), zap.Strings("allow_write", opts.AllowWrite),
+		zap.String("version", version))
 	allow := make(map[string]bool, len(opts.AllowWrite))
 	for _, name := range opts.AllowWrite {
 		if name = strings.TrimSpace(name); name != "" {
 			allow[name] = true
+		} else {
+			logger.Debug("New: skipping empty allowlist entry")
 		}
+	}
+	if !opts.ReadOnly && len(allow) > 0 {
+		logger.Debug("New: allowlist given, forcing read-only", zap.Int("allowed", len(allow)))
 	}
 	return &Server{
 		client:        c,
@@ -115,18 +125,24 @@ func (s *Server) UnmatchedAllowed() []string {
 	var missing []string
 	for name := range s.allow {
 		if !s.writeToolNames[name] {
+			s.logger.Debug("Server.UnmatchedAllowed: allowlist entry matches no write tool", zap.String("tool", name))
 			missing = append(missing, name)
 		}
 	}
 	sort.Strings(missing)
+	s.logger.Debug("Server.UnmatchedAllowed: checked allowlist", zap.Int("allowed", len(s.allow)),
+		zap.Int("unmatched", len(missing)))
 	return missing
 }
 
 // MCPServer builds the underlying MCP server with all tools registered.
 func (s *Server) MCPServer() *mcp.Server {
 	if s.k8s {
+		s.logger.Debug("Server.MCPServer: building the haify-k8s tool set")
 		return s.k8sMCPServer()
 	}
+	s.logger.Debug("Server.MCPServer: registering controller tools", zap.Bool("read_only", s.readOnly),
+		zap.Bool("no_destructive", s.noDestructive), zap.Int("allowed", len(s.allow)))
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "haify",
 		Title:   "Haify Software Defined Storage",
@@ -152,6 +168,7 @@ func (s *Server) MCPServer() *mcp.Server {
 	s.registerBackupScheduleTools(srv)
 	s.registerReplicationTLSTools(srv)
 	s.registerRunbooks(srv)
+	s.logger.Debug("Server.MCPServer: tools registered", zap.Int("write_tools_known", len(s.writeToolNames)))
 	return srv
 }
 
@@ -162,8 +179,10 @@ func (s *Server) MCPServer() *mcp.Server {
 // nothing about it, and the gap would surface at the moment the tool was
 // needed.
 func (s *Server) Run(ctx context.Context) error {
+	s.logger.Debug("Server.Run: starting stdio server")
 	srv := s.MCPServer()
 	if missing := s.UnmatchedAllowed(); len(missing) > 0 {
+		s.logger.Debug("Server.Run: refusing to start, allowlist names unknown tools", zap.Strings("missing", missing))
 		return fmt.Errorf("allow: no such tool: %s", strings.Join(missing, ", "))
 	}
 	allowed := make([]string, 0, len(s.allow))
@@ -176,7 +195,9 @@ func (s *Server) Run(ctx context.Context) error {
 		zap.Strings("allowed_write_tools", allowed),
 		zap.String("version", s.version),
 	)
-	return srv.Run(ctx, &mcp.StdioTransport{})
+	err := srv.Run(ctx, &mcp.StdioTransport{})
+	s.logger.Debug("Server.Run: stdio server stopped", zap.Error(err))
+	return err
 }
 
 // opResult is the structured output for mutating tools that return no data.
@@ -235,6 +256,7 @@ func destructiveTool(name, title, description string) *mcp.Tool {
 
 // addRead registers a read-only tool (available in every mode).
 func addRead[In, Out any](s *Server, srv *mcp.Server, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	s.logger.Debug("addRead: registering read tool", zap.String("tool", t.Name))
 	mcp.AddTool(srv, t, instrument(s, t.Name, readTimeout, h))
 }
 
@@ -246,6 +268,7 @@ func addRead[In, Out any](s *Server, srv *mcp.Server, t *mcp.Tool, h mcp.ToolHan
 // throw away the answers from every node that did reply, which is exactly the
 // case the tool exists for.
 func addReadWithin[In, Out any](s *Server, srv *mcp.Server, t *mcp.Tool, d time.Duration, h mcp.ToolHandlerFor[In, Out]) {
+	s.logger.Debug("addReadWithin: registering read tool", zap.String("tool", t.Name), zap.Duration("timeout", d))
 	mcp.AddTool(srv, t, instrument(s, t.Name, d, h))
 }
 
@@ -258,11 +281,14 @@ func addWrite[In, Out any](s *Server, srv *mcp.Server, t *mcp.Tool, h mcp.ToolHa
 	s.writeToolNames[t.Name] = true
 
 	if s.readOnly && !s.allow[t.Name] {
+		s.logger.Debug("addWrite: skipping write tool, server is read-only", zap.String("tool", t.Name))
 		return
 	}
 	if s.noDestructive && t.Annotations != nil && t.Annotations.DestructiveHint != nil && *t.Annotations.DestructiveHint {
+		s.logger.Debug("addWrite: skipping destructive tool", zap.String("tool", t.Name))
 		return
 	}
+	s.logger.Debug("addWrite: registering write tool", zap.String("tool", t.Name), zap.Bool("allowlisted", s.allow[t.Name]))
 	mcp.AddTool(srv, t, instrument(s, t.Name, writeTimeout, h))
 }
 
@@ -271,8 +297,13 @@ func instrument[In, Out any](s *Server, name string, timeout time.Duration, h mc
 	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
+		// Arguments are traced by each tool, field by field: only the tool
+		// knows which of its inputs are safe to write down.
+		s.logger.Debug("instrument: tool call start", zap.String("tool", name), zap.Duration("timeout", timeout),
+			zap.Bool("authenticated", req != nil && req.Extra != nil && req.Extra.TokenInfo != nil))
 		start := time.Now()
 		res, out, err := h(ctx, req, in)
+		traceResult(s.logger, name, time.Since(start), res, out, err)
 		fields := []zap.Field{zap.String("tool", name), zap.Duration("duration", time.Since(start))}
 		// Over HTTP the caller is known: log who, so a change to the cluster
 		// can be traced to a token. Arguments are not logged; some tools take
@@ -288,4 +319,42 @@ func instrument[In, Out any](s *Server, name string, timeout time.Duration, h mc
 		}
 		return res, out, err
 	}
+}
+
+// traceResult writes the size of what a tool returns. Measuring it means
+// encoding the result a second time, so it is only done when Debug is on.
+func traceResult[Out any](log *zap.Logger, name string, took time.Duration, res *mcp.CallToolResult, out Out, err error) {
+	ce := log.Check(zap.DebugLevel, "instrument: tool call done")
+	if ce == nil {
+		return
+	}
+	size := -1
+	if b, mErr := json.Marshal(out); mErr == nil {
+		size = len(b)
+	}
+	contents := 0
+	isError := false
+	if res != nil {
+		contents = len(res.Content)
+		isError = res.IsError
+	}
+	ce.Write(zap.String("tool", name), zap.Duration("took", took), zap.Int("result_bytes", size),
+		zap.Int("content_items", contents), zap.Bool("is_error", isError), zap.Error(err))
+}
+
+// keysOf writes the keys of a string map to a log line, sorted, and never the
+// values: DRBD options include net/shared-secret, and labels and parameters
+// are free-form. It is encoded only when the line is written.
+type keysOf map[string]string
+
+func (m keysOf) MarshalLogArray(enc zapcore.ArrayEncoder) error {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		enc.AppendString(k)
+	}
+	return nil
 }

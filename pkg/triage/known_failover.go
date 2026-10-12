@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // ── 6. the promoter could not start its target ──────────────────────────
@@ -20,8 +22,10 @@ func matchPromoterStartFailed(in Input) []Finding {
 			strings.Contains(ll, "start request repeated too quickly")
 	}, "promoter_journal", "reactor_journal", "failed_units")
 	if len(ev) == 0 {
+		zap.L().Debug("matchPromoterStartFailed: verdict, no promoter start failures")
 		return nil
 	}
+	zap.L().Debug("matchPromoterStartFailed: verdict, promoter start failed", zap.Int("count", len(ev)), zap.Strings("nodes", nodes))
 	return []Finding{{
 		ID:       "promoter-start-failed",
 		Title:    "a drbd-reactor promoter could not start its target",
@@ -58,6 +62,7 @@ func matchPromoterStartFailed(in Input) []Finding {
 // halves are present within the window. Without the journal line it stays a
 // plain failover event, reported by the generic grouping.
 func matchUnplannedFailover(in Input) []Finding {
+	log := zap.L()
 	var failovers []Event
 	for _, e := range in.Events {
 		if strings.EqualFold(e.Type, "resource.failover") {
@@ -65,8 +70,10 @@ func matchUnplannedFailover(in Input) []Finding {
 		}
 	}
 	if len(failovers) == 0 {
+		log.Debug("matchUnplannedFailover: verdict, no failover events")
 		return nil
 	}
+	log.Debug("matchUnplannedFailover: pairing failovers with restarts", zap.Int("failovers", len(failovers)))
 
 	const near = 3 * time.Minute
 	var out []Finding
@@ -93,8 +100,13 @@ func matchUnplannedFailover(in Input) []Finding {
 			}
 		}
 		if len(ev) == 0 {
+			log.Debug("matchUnplannedFailover: no restart near this failover", zap.String("resource", fo.Resource),
+				zap.String("node", fo.Node), zap.Time("at", fo.At))
 			continue
 		}
+		log.Debug("matchUnplannedFailover: failover follows a managed-service restart", zap.String("resource", fo.Resource),
+			zap.String("node", fo.Node), zap.Time("at", fo.At), zap.Int("restart_lines", len(ev)),
+			zap.Strings("nodes", sortedKeys(nodes)))
 		ev = append([]Evidence{{
 			Source: "event", Node: fo.Node, At: stamp(fo.At),
 			Line: fo.Type + ": " + fo.Message,
@@ -119,6 +131,7 @@ func matchUnplannedFailover(in Input) []Finding {
 			Evidence: ev,
 		})
 	}
+	log.Debug("matchUnplannedFailover: verdict", zap.Int("findings", len(out)))
 	return out
 }
 
@@ -163,8 +176,11 @@ func matchNoPrimary(in Input) []Finding {
 		ev = append(ev, Evidence{Source: "event", Node: e.Node, At: stamp(e.At), Line: e.Type + ": " + e.Message})
 	}
 	if len(ev) == 0 {
+		zap.L().Debug("matchNoPrimary: verdict, no open no-primary events")
 		return nil
 	}
+	zap.L().Debug("matchNoPrimary: verdict, resource has no primary", zap.String("resource", resource),
+		zap.Int("count", len(ev)), zap.Strings("nodes", sortedKeys(nodes)))
 	return []Finding{{
 		ID:       "no-primary",
 		Title:    fmt.Sprintf("%s has no Primary — nothing can use it right now", orDefault(resource, "a resource")),
@@ -195,6 +211,8 @@ func matchNodeUnreachable(in Input) []Finding {
 		if n.Reachable {
 			continue
 		}
+		zap.L().Debug("matchNodeUnreachable: node did not answer", zap.String("node", n.Node),
+			zap.Bool("has_error", n.Error != ""))
 		nodes[n.Node] = true
 		line := n.Node + " did not answer the controller"
 		if n.Error != "" {
@@ -211,8 +229,11 @@ func matchNodeUnreachable(in Input) []Finding {
 		}
 	}
 	if len(ev) == 0 {
+		zap.L().Debug("matchNodeUnreachable: verdict, every node answered")
 		return nil
 	}
+	zap.L().Debug("matchNodeUnreachable: verdict, nodes unreachable", zap.Strings("nodes", sortedKeys(nodes)),
+		zap.Int("count", len(ev)))
 	return []Finding{{
 		ID:       "node-unreachable",
 		Title:    "the controller cannot reach " + strings.Join(sortedKeys(nodes), ", "),
