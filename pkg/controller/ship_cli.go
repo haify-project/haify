@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -68,6 +70,26 @@ func firstExecutable(paths []string) string {
 	return ""
 }
 
+// localCanShip reports whether the haify at p, on the controller's host, has
+// the ship command. A variable so tests need no real binary.
+var localCanShip = func(p string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, p, "ship", "--help").Run() == nil
+}
+
+// firstShipCapable returns the first executable in paths that can ship. An
+// older haify left next to the controller, say from an install before ship
+// existed, would otherwise be picked ahead of a current one further down.
+func firstShipCapable(paths []string) string {
+	for _, p := range paths {
+		if isExecutableFile(p) && localCanShip(p) {
+			return p
+		}
+	}
+	return ""
+}
+
 // parseHaifyCLIProbe splits the probe's answer into the path found, or the
 // node's machine when none was.
 func parseHaifyCLIProbe(out string) (path, machine string, err error) {
@@ -115,7 +137,12 @@ func (rm *ResourceManager) ensureHaifyCLI(ctx context.Context, host string) (str
 	}
 	goarch := goarchFromMachine(machine)
 	candidates := haifyCLISources(filepath.Dir(exe), goarch)
+	// A build for the controller's own architecture can be tried here; one
+	// for another architecture cannot, and is checked on the node instead.
 	src := firstExecutable(candidates)
+	if goarch == runtime.GOARCH {
+		src = firstShipCapable(candidates)
+	}
 	if src == "" {
 		return "", fmt.Errorf("no haify that can ship is installed on %s (%s), and this controller has none built for it "+
 			"(looked in %s); install a current haify at /usr/local/bin/haify on %s, or place a %s build at %s",

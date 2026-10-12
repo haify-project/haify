@@ -25,7 +25,9 @@ func haifyCLITestNode(t *testing.T, files []string, answers ...string) (*Control
 	}
 	orig := controllerExecutable
 	controllerExecutable = func() (string, error) { return exe, nil }
-	t.Cleanup(func() { controllerExecutable = orig })
+	origCanShip := localCanShip
+	localCanShip = func(string) bool { return true }
+	t.Cleanup(func() { controllerExecutable = orig; localCanShip = origCanShip })
 
 	probe := base64Std(haifyCLIProbe())
 	dep := &fakeDeploymentClient{}
@@ -125,4 +127,15 @@ func TestEnsureHaifyCLIRejectsACopyThatCannotShip(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot ship")
 	assert.Len(t, dep.installedFiles, 1)
+}
+
+// An older haify next to the controller, from before ship existed, is passed
+// over rather than installed only to fail the check on the node.
+func TestEnsureHaifyCLISkipsALocalCopyThatCannotShip(t *testing.T) {
+	ctrl, dep, _ := haifyCLITestNode(t, []string{"haify"}, "missing "+unameMachine(runtime.GOARCH))
+	localCanShip = func(string) bool { return false }
+	_, err := ctrl.resources.ensureHaifyCLI(context.Background(), "10.0.0.1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no haify that can ship")
+	assert.Empty(t, dep.installedFiles)
 }
