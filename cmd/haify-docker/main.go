@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/haify-project/haify/pkg/logging"
+
 	"github.com/haify-project/haify/pkg/client"
 	"github.com/haify-project/haify/pkg/csi"
 	"github.com/haify-project/haify/pkg/dockervol"
@@ -32,7 +34,7 @@ func main() {
 	fs := flag.String("fs", "ext4", "filesystem of volumes created without -o fs (ext4, xfs)")
 	flag.Parse()
 
-	log, _ := zap.NewProduction()
+	log := logging.Production()
 	defer func() { _ = log.Sync() }()
 
 	sizeBytes, err := util.ParseSize(*size)

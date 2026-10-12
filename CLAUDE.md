@@ -377,6 +377,34 @@ pvs
 - Return errors with context using `fmt.Errorf("operation: %w", err)`
 - For multi-node operations, check `result.AllSuccess()` and `result.FailedHosts()`
 
+## Tracing
+
+Every step is traced at Debug, so a problem can be followed through the code
+by lowering the level: `[log] level = "debug"` for the controller,
+`HAIFY_LOG_LEVEL=debug` for csi-controller, csi-node and haify-docker,
+`--debug` (or the same variable) for `haify`, `--debug` for `haify-mcp`. At
+the default level a trace costs one level check.
+
+- **Which logger.** The one the type already holds (`m.logger`,
+  `c.logger`, `rm.controller.logger`). A package that is handed none uses
+  `zap.L()` at the call, never cached in a package variable: `pkg/logging`
+  installs each binary's logger as the global one at start-up.
+- **Where.** On entry to every function that does something, with its
+  inputs; on every branch that decides something, saying which way and why;
+  around every outside call (a command over dispatch, a database read or
+  write, an HTTP or gRPC call) with its target, result and `took`; per item
+  in loops over nodes, volumes and resources; before every error return.
+  RPCs are traced once by the interceptors (`trace_interceptor.go`,
+  `pkg/client/trace.go`); handlers trace their own steps.
+- **How.** `log.Debug("funcName: what is happening", zap.String("resource", name), ...)`:
+  the function name first so a grep finds it, structured fields in
+  snake_case, never values formatted into the message.
+- **Never** a token, password, key, CHAP secret, LUKS passphrase, backup
+  credential, OAuth code or a request body that can hold one: log that it is
+  set (`zap.Bool("has_token", t != "")`) instead.
+- **Cheap.** No marshalling or extra commands just to log; per-sample loops
+  log a summary, not every sample.
+
 ## File size
 
 **Every hand-written source file in the repo — Go, tests included, TypeScript,

@@ -13,6 +13,7 @@ import (
 	"github.com/haify-project/haify/pkg/config"
 	"github.com/haify-project/haify/pkg/controller"
 	"github.com/haify-project/haify/pkg/logbuf"
+	"github.com/haify-project/haify/pkg/logging"
 )
 
 var (
@@ -79,24 +80,16 @@ func initLogger(cfg *config.Config, ring *logbuf.Ring) (*zap.Logger, error) {
 		zapConfig = zap.NewDevelopmentConfig()
 	}
 
-	// Set log level
-	switch cfg.Log.Level {
-	case "debug":
-		zapConfig.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
-	case "info":
-		zapConfig.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
-	case "warn":
-		zapConfig.Level = zap.NewAtomicLevelAt(zapcore.WarnLevel)
-	case "error":
-		zapConfig.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
-	default:
-		zapConfig.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
-	}
+	zapConfig.Level = zap.NewAtomicLevelAt(logging.ParseLevel(cfg.Log.Level, zapcore.InfoLevel))
 
 	// Tee into the ring so the API can serve recent lines, without changing
 	// where the log actually goes: stderr, and thus the journal, stays the
 	// system of record.
-	return zapConfig.Build(zap.WrapCore(func(c zapcore.Core) zapcore.Core {
+	logger, err := zapConfig.Build(zap.WrapCore(func(c zapcore.Core) zapcore.Core {
 		return zapcore.NewTee(c, ring.Core(zapConfig.Level))
 	}))
+	if err != nil {
+		return nil, err
+	}
+	return logging.Install(logger), nil
 }

@@ -32,8 +32,8 @@ func (c *Controller) startGRPCServer() error {
 	// Create gRPC server. Interceptor order matters: metrics first so even
 	// rejected requests are counted, then audit (so denied attempts are still
 	// recorded), then authentication.
-	var unaryInterceptors []grpc.UnaryServerInterceptor
-	var streamInterceptors []grpc.StreamServerInterceptor
+	unaryInterceptors := []grpc.UnaryServerInterceptor{traceUnaryInterceptor(c.logger)}
+	streamInterceptors := []grpc.StreamServerInterceptor{traceStreamInterceptor(c.logger)}
 	if c.metrics != nil {
 		unaryInterceptors = append(unaryInterceptors, c.metrics.UnaryServerInterceptor())
 	}

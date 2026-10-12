@@ -6,13 +6,17 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/haify-project/haify/pkg/client"
+	"github.com/haify-project/haify/pkg/logging"
 )
 
 var (
 	controllerAddr string
 	tokenFlag      string
+	debugFlag      bool
 	tlsFlags       client.TLSOptions
 )
 
@@ -26,10 +30,14 @@ func main() {
 		// its error comes from the cluster, and forty lines of flags printed
 		// after it bury the one line that matters. Cobra validates arguments
 		// before this hook and required flags after it; main covers those.
-		PersistentPreRun: func(cmd *cobra.Command, _ []string) { cmd.SilenceUsage = true },
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			cmd.SilenceUsage = true
+			setupLogging()
+		},
 	}
 
 	rootCmd.PersistentFlags().StringVarP(&controllerAddr, "controller", "c", "127.0.0.1:3374", "Controller address")
+	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Trace every step and controller call on stderr (env HAIFY_LOG_LEVEL=debug)")
 	rootCmd.PersistentFlags().StringVar(&tokenFlag, "token", "", "API token (default: HAIFY_TOKEN env, ~/.haify/token, /etc/haify/token)")
 
 	// Transport security, matching the controller's [tls] section. Any of the
@@ -68,4 +76,42 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+// setupLogging installs the process-wide logger the CLI's traces go to:
+// stderr at debug with --debug, at HAIFY_LOG_LEVEL when that is set, and
+// nowhere otherwise, so normal output stays clean.
+func setupLogging() {
+	level := logging.ParseLevel(os.Getenv(logging.EnvLevel), zapcore.InvalidLevel)
+	if debugFlag {
+		level = zapcore.DebugLevel
+	}
+	if level == zapcore.InvalidLevel {
+		logging.Install(zap.NewNop())
+		return
+	}
+	logging.Console(level).Debug("haify cli start", zap.Strings("args", redactArgs(os.Args[1:])), zap.String("controller", controllerAddr))
+}
+
+// redactArgs hides the value of every flag that can carry a secret.
+func redactArgs(args []string) []string {
+	secret := func(flag string) bool {
+		f := strings.ToLower(strings.TrimLeft(flag, "-"))
+		for _, word := range []string{"token", "password", "secret", "key", "passphrase", "credential"} {
+			if strings.Contains(f, word) {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = a
+		if name, _, ok := strings.Cut(a, "="); ok && strings.HasPrefix(a, "-") && secret(name) {
+			out[i] = name + "=<redacted>"
+		} else if i > 0 && strings.HasPrefix(args[i-1], "-") && !strings.Contains(args[i-1], "=") && secret(args[i-1]) {
+			out[i] = "<redacted>"
+		}
+	}
+	return out
 }

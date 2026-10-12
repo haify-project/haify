@@ -73,6 +73,8 @@ func NewHaifyClient(addr string, opts ...Option) (*HaifyClient, error) {
 
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(transport),
+		grpc.WithChainUnaryInterceptor(TraceUnaryInterceptor()),
+		grpc.WithChainStreamInterceptor(TraceStreamInterceptor()),
 	}
 	if options.token != "" {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(tokenCredentials{token: options.token}))

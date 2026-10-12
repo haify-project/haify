@@ -294,9 +294,13 @@ func newResourceGRPCClient() (haifypb.HaifyControllerClient, *grpc.ClientConn, e
 		}
 		transport = creds
 	}
-	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(transport)}
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(transport),
+		grpc.WithChainUnaryInterceptor(client.TraceUnaryInterceptor()),
+		grpc.WithChainStreamInterceptor(client.TraceStreamInterceptor()),
+	}
 	if token := client.ResolveToken(tokenFlag); token != "" {
-		dialOpts = append(dialOpts, grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		dialOpts = append(dialOpts, grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 			ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
 			return invoker(ctx, method, req, reply, cc, opts...)
 		}))

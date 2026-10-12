@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/haify-project/haify/pkg/logging"
+
 	"github.com/haify-project/haify/pkg/client"
 	"github.com/haify-project/haify/pkg/csi"
 	"go.uber.org/zap"
@@ -19,7 +21,7 @@ func main() {
 	nodeIP := flag.String("node-ip", os.Getenv("NODE_IP"), "this node's storage IP, registered with the controller at startup")
 	flag.Parse()
 
-	log, _ := zap.NewProduction()
+	log := logging.Production()
 	defer func() { _ = log.Sync() }()
 
 	if *nodeName == "" || *nodeIP == "" {

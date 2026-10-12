@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/haify-project/haify/pkg/logging"
+
 	"github.com/haify-project/haify/pkg/client"
 	"github.com/haify-project/haify/pkg/csi"
 	"go.uber.org/zap"
@@ -30,7 +32,7 @@ func main() {
 		"namespace of the Lease (default: the pod's own namespace)")
 	flag.Parse()
 
-	log, _ := zap.NewProduction()
+	log := logging.Production()
 	defer func() { _ = log.Sync() }()
 
 	// With [auth] or [rbac] on the controller, every call needs a token:

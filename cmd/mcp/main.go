@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/haify-project/haify/pkg/logging"
+
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -88,7 +90,11 @@ func newStderrLogger(debug bool) (*zap.Logger, error) {
 	if debug {
 		cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 	}
-	return cfg.Build()
+	logger, err := cfg.Build()
+	if err != nil {
+		return nil, err
+	}
+	return logging.Install(logger), nil
 }
 
 // k8sCmd serves the Kubernetes (CSI) tools as their own MCP server, haify-k8s.
