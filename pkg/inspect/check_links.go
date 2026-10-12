@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // disconnectedPeers reports each peer of r that some node cannot reach, once
@@ -14,14 +16,18 @@ import (
 // StandAlone connections are judged per side by replicaChecks: there the side
 // matters, because only that node can reconnect.
 func disconnectedPeers(in *Input, r Resource) []Check {
+	log := zap.L()
+	log.Debug("disconnectedPeers: start", zap.String("resource", r.Name))
 	from := map[string][]string{}
 	for _, n := range participants(r) {
 		p, ok := in.probe(n)
 		if !ok || !p.DRBDOK {
+			log.Debug("disconnectedPeers: node view unavailable", zap.String("resource", r.Name), zap.String("node", n), zap.Bool("probed", ok))
 			continue
 		}
 		v := p.Resource(r.Name)
 		if v == nil {
+			log.Debug("disconnectedPeers: resource not up on node", zap.String("resource", r.Name), zap.String("node", n))
 			continue
 		}
 		for _, c := range v.Connections {
@@ -29,6 +35,8 @@ func disconnectedPeers(in *Input, r Resource) []Check {
 				continue
 			}
 			peer := in.nodeName(c.Name)
+			log.Debug("disconnectedPeers: peer not connected", zap.String("resource", r.Name), zap.String("node", n),
+				zap.String("peer", peer), zap.String("connection_state", c.ConnectionState))
 			from[peer] = append(from[peer], fmt.Sprintf("%s: %s", in.nodeName(n), c.ConnectionState))
 		}
 	}
@@ -42,6 +50,9 @@ func disconnectedPeers(in *Input, r Resource) []Check {
 		}
 		c := Check{ID: "resource.disconnected", Area: AreaResources, Subject: r.Name + "->" + peer,
 			Evidence: append([]string{"cannot reach " + peer + ":"}, ev...)}
+		log.Debug("disconnectedPeers: judging peer", zap.String("resource", r.Name), zap.String("peer", peer),
+			zap.Bool("diskful", contains(r.Diskful, peer)), zap.Bool("tiebreaker", contains(r.Tiebreakers, peer)),
+			zap.Strings("from", who))
 		switch {
 		case contains(r.Diskful, peer):
 			c.Status = StatusFail
@@ -77,9 +88,11 @@ func faultDomains(in *Input) []Check {
 	by := map[string][]string{}
 	for _, r := range sortedResources(in) {
 		if r.FaultDomainRisk != "" {
+			zap.L().Debug("faultDomains: resource depends on one domain", zap.String("resource", r.Name), zap.String("domain", r.FaultDomainRisk))
 			by[r.FaultDomainRisk] = append(by[r.FaultDomainRisk], r.Name)
 		}
 	}
+	zap.L().Debug("faultDomains: grouped", zap.Int("domains", len(by)))
 	var out []Check
 	for _, domain := range sortedKeys(by) {
 		res := by[domain]

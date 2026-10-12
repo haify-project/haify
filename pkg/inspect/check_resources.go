@@ -4,13 +4,20 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // checkResources judges every resource's replicas from every node's own view.
 func checkResources(in *Input) []Check {
+	log := zap.L()
+	log.Debug("checkResources: start", zap.Int("resources", len(in.Resources)))
 	var out []Check
 	var unreadable []string
 	for _, r := range sortedResources(in) {
+		log.Debug("checkResources: resource", zap.String("resource", r.Name), zap.Strings("diskful", r.Diskful),
+			zap.Strings("tiebreakers", r.Tiebreakers), zap.Strings("clients", r.Clients), zap.String("dr", r.DR),
+			zap.String("served_by", r.ServedBy), zap.Bool("quorum_risk", r.QuorumRisk))
 		if r.ServedBy != "" && r.ServedBy != "self-ha" {
 			out = append(out, primaryCheck(in, r, AreaResources, "resource", "a `haify ha create` service", "")...)
 			out = append(out, promoterChecks(in, r, AreaResources, "resource", "haify-ha-"+r.Name+".toml", "")...)
@@ -20,9 +27,11 @@ func checkResources(in *Input) []Check {
 		for _, n := range participants(r) {
 			p, ok := in.probe(n)
 			if !ok {
+				log.Debug("checkResources: node not probed", zap.String("resource", r.Name), zap.String("node", n))
 				continue
 			}
 			if !p.DRBDOK {
+				log.Debug("checkResources: DRBD status unreadable on node", zap.String("resource", r.Name), zap.String("node", n))
 				unreadable = append(unreadable, in.nodeName(n))
 				continue
 			}
@@ -37,6 +46,7 @@ func checkResources(in *Input) []Check {
 		}
 	}
 	out = append(out, faultDomains(in)...)
+	log.Debug("checkResources: done", zap.Int("findings", len(out)), zap.Strings("unreadable", unreadable))
 	if len(unreadable) > 0 {
 		out = append(out, Check{ID: "resource.status_unreadable", Area: AreaResources, Subject: strings.Join(dedupe(unreadable), ","),
 			Status: StatusError, Message: "drbdsetup status --json gave no readable answer, so replica states there are unknown"})
@@ -59,19 +69,26 @@ func replicaChecks(in *Input, r Resource, n string, p *NodeProbe) []Check {
 	addr := sshTarget(in, name)
 	v := p.Resource(r.Name)
 	if v == nil {
+		zap.L().Debug("replicaChecks: resource not up on node", zap.String("resource", r.Name), zap.String("node", name))
 		return []Check{{ID: "resource.not_up", Area: AreaResources, Subject: subject, Status: StatusFail,
 			Message: fmt.Sprintf("%s is not up on %s; that replica is not protecting anything", r.Name, name),
 			Fix:     fmt.Sprintf("ssh %s sudo drbdadm up %s", addr, r.Name)}}
 	}
+	log := zap.L()
 	var out []Check
 	expectDiskless := contains(r.Tiebreakers, name) || contains(r.Clients, name)
+	log.Debug("replicaChecks: start", zap.String("resource", r.Name), zap.String("node", name), zap.String("role", v.Role),
+		zap.Strings("disk_states", v.diskStates()), zap.Bool("expect_diskless", expectDiskless), zap.Int("connections", len(v.Connections)))
 	ev := []string{fmt.Sprintf("%s: role %s, disk %s", name, v.Role, strings.Join(v.diskStates(), "/"))}
 	for _, c := range v.Connections {
 		ev = append(ev, fmt.Sprintf("-> %s: %s, peer-role %s, %s", c.Name, c.ConnectionState, orDash(c.PeerRole), peerStates(c)))
 	}
 
 	if bad := v.worstDisk(expectDiskless); bad != "" {
-		if syncing, done := anySyncing(v); syncing && bad == "Inconsistent" {
+		syncing, done := anySyncing(v)
+		log.Debug("replicaChecks: disk not UpToDate", zap.String("resource", r.Name), zap.String("node", name),
+			zap.String("disk_state", bad), zap.Bool("syncing", syncing), zap.Float64("percent_done", done))
+		if syncing && bad == "Inconsistent" {
 			out = append(out, Check{ID: "resource.resyncing", Area: AreaResources, Subject: subject, Status: StatusWarn,
 				Message:  fmt.Sprintf("resync in progress (%.1f%% done); the replica on %s is not a complete copy until it ends", done, name),
 				Evidence: ev})
@@ -88,6 +105,8 @@ func replicaChecks(in *Input, r Resource, n string, p *NodeProbe) []Check {
 	for _, c := range v.Connections {
 		peer := in.nodeName(c.Name)
 		psubject := fmt.Sprintf("%s@%s->%s", r.Name, name, peer)
+		log.Debug("replicaChecks: connection", zap.String("resource", r.Name), zap.String("node", name), zap.String("peer", peer),
+			zap.String("connection_state", c.ConnectionState), zap.String("peer_role", c.PeerRole))
 		switch {
 		case strings.EqualFold(c.ConnectionState, "StandAlone"):
 			out = append(out, Check{ID: "resource.standalone", Area: AreaResources, Subject: psubject, Status: StatusFail,
@@ -119,6 +138,8 @@ func replicaChecks(in *Input, r Resource, n string, p *NodeProbe) []Check {
 // drbd-reactor on a node with an UpToDate replica, which re-runs promotion.
 func primaryCheck(in *Input, r Resource, area Area, prefix, why, restart string) []Check {
 	prim, known := primaries(in, r)
+	zap.L().Debug("primaryCheck: start", zap.String("resource", r.Name), zap.String("why", why), zap.Strings("primary", prim),
+		zap.Bool("known", known))
 	switch {
 	case len(prim) == 1:
 		return nil
@@ -129,6 +150,8 @@ func primaryCheck(in *Input, r Resource, area Area, prefix, why, restart string)
 			Message: "no node of " + r.Name + " answered, so whether it has a Primary is unknown"}}
 	}
 	ev, best := replicaEvidence(in, r)
+	zap.L().Debug("primaryCheck: no Primary", zap.String("resource", r.Name), zap.String("best", best),
+		zap.Bool("has_restart", restart != ""))
 	c := Check{ID: prefix + ".no_primary", Area: area, Subject: r.Name, Status: StatusFail,
 		Message:  fmt.Sprintf("%s should be serving (%s) but no node is Primary; nothing is serving its I/O", r.Name, why),
 		Evidence: ev}
@@ -182,6 +205,7 @@ func primaries(in *Input, r Resource) ([]string, bool) {
 		out = append(out, n)
 	}
 	sort.Strings(out)
+	zap.L().Debug("primaries: collected", zap.String("resource", r.Name), zap.Strings("primary", out), zap.Bool("known", known))
 	return out, known
 }
 
@@ -206,15 +230,19 @@ func replicaEvidence(in *Input, r Resource) ([]string, string) {
 			best = in.nodeName(n)
 		}
 	}
+	zap.L().Debug("replicaEvidence: collected", zap.String("resource", r.Name), zap.Int("count", len(ev)), zap.String("best", best))
 	return ev, best
 }
 
 func stuckState(c DRBDConnection, eitherDiskless bool) string {
 	for _, pd := range c.PeerDevices {
 		if stuckReplication[pd.ReplicationState] {
+			zap.L().Debug("stuckState: handshake state on a connected link", zap.String("peer", c.Name), zap.Int("volume", pd.Volume),
+				zap.String("replication_state", pd.ReplicationState))
 			return pd.ReplicationState
 		}
 		if pd.ReplicationState == "Off" && !eitherDiskless {
+			zap.L().Debug("stuckState: replication Off between diskful peers", zap.String("peer", c.Name), zap.Int("volume", pd.Volume))
 			return "Off"
 		}
 	}
@@ -246,13 +274,16 @@ func diskMessage(state, node string) string {
 func diskFix(state, addr, res string, v *DRBDResource) string {
 	switch state {
 	case "Diskless", "Failed", "Detached":
+		zap.L().Debug("diskFix: disk gone, attach", zap.String("resource", res), zap.String("disk_state", state))
 		return fmt.Sprintf("ssh %s sudo drbdadm attach %s", addr, res)
 	}
 	for _, c := range v.Connections {
 		if !c.Connected() {
+			zap.L().Debug("diskFix: a peer is disconnected, adjust", zap.String("resource", res), zap.String("peer", c.Name))
 			return fmt.Sprintf("ssh %s sudo drbdadm adjust %s", addr, res)
 		}
 	}
+	zap.L().Debug("diskFix: all peers connected, reconnect", zap.String("resource", res), zap.String("disk_state", state))
 	return fmt.Sprintf("ssh %s sudo drbdadm disconnect %s && ssh %s sudo drbdadm connect %s", addr, res, addr, res)
 }
 
@@ -284,6 +315,7 @@ func sshTarget(in *Input, name string) string {
 	if n := in.node(in.nodeName(name)); n != nil && n.Address != "" {
 		return n.Address
 	}
+	zap.L().Debug("sshTarget: no registered address, using the name", zap.String("node", name))
 	return name
 }
 

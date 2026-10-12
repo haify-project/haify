@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
 )
 
 // Schedule lateness, in cron intervals since the last success.
@@ -19,7 +20,10 @@ const (
 // success against its own cadence, the targets they ship to, snapshot
 // schedules still firing, and backup base snapshots nothing refers to.
 func checkBackups(in *Input) []Check {
+	log := zap.L()
 	b := in.Backups
+	log.Debug("checkBackups: start", zap.Bool("scheduler_enabled", b.SchedulerEnabled), zap.Int("schedules", len(b.Schedules)),
+		zap.Int("snapshot_schedules", len(b.SnapSchedules)), zap.Int("targets", len(b.Targets)), zap.Bool("running", b.Running))
 	var out []Check
 	enabled := 0
 	for _, s := range b.Schedules {
@@ -41,6 +45,7 @@ func checkBackups(in *Input) []Check {
 	sort.Slice(scheds, func(i, j int) bool { return scheds[i].Name < scheds[j].Name })
 	for _, s := range scheds {
 		if !s.Enabled {
+			log.Debug("checkBackups: backup schedule disabled", zap.String("schedule", s.Name))
 			continue
 		}
 		out = append(out, backupScheduleChecks(in, s)...)
@@ -49,13 +54,17 @@ func checkBackups(in *Input) []Check {
 	sort.Slice(snaps, func(i, j int) bool { return snaps[i].Name < snaps[j].Name })
 	for _, s := range snaps {
 		if !s.Enabled || !b.SchedulerEnabled {
+			log.Debug("checkBackups: snapshot schedule not running", zap.String("schedule", s.Name), zap.Bool("enabled", s.Enabled))
 			continue
 		}
 		base, what := s.LastRun, "last run"
 		if base.IsZero() {
 			base, what = s.CreatedAt, "created, never run,"
 		}
-		if c, ok := lateness(in.Now, s.Cron, base); ok && c.Status != StatusPass {
+		c, ok := lateness(in.Now, s.Cron, base)
+		log.Debug("checkBackups: snapshot schedule", zap.String("schedule", s.Name), zap.String("cron", s.Cron),
+			zap.Time("base", base), zap.Bool("judged", ok), zap.String("status", string(c.Status)))
+		if ok && c.Status != StatusPass {
 			c.ID, c.Subject = "backups.snapshot_schedule_late", s.Name
 			c.Message = fmt.Sprintf("snapshot schedule %q (%s) %s %s; %s", s.Name, s.Cron, what, base.UTC().Format(time.RFC3339), c.Message)
 			c.Fix = "journalctl -u haify-controller | grep -i 'snapshot schedule'"
@@ -63,6 +72,7 @@ func checkBackups(in *Input) []Check {
 		}
 	}
 	out = append(out, leftoverBaseSnapshots(in)...)
+	log.Debug("checkBackups: done", zap.Int("enabled", enabled), zap.Int("findings", len(out)))
 	if len(out) == 0 && enabled == 0 {
 		out = append(out, pass("backups.schedules", AreaBackups, "no backup or snapshot schedules"))
 	}
@@ -74,6 +84,12 @@ func checkBackups(in *Input) []Check {
 }
 
 func backupScheduleChecks(in *Input, s BackupSchedule) []Check {
+	log := zap.L()
+	// LastError is not traced: a backup tool's error can name the target's
+	// endpoint and credentials.
+	log.Debug("backupScheduleChecks: start", zap.String("schedule", s.Name), zap.String("resource", s.Resource),
+		zap.String("target", s.Target), zap.String("cron", s.Cron), zap.Bool("target_exists", in.Backups.Targets[s.Target]),
+		zap.Bool("has_last_error", s.LastError != ""), zap.Time("last_run", s.LastRun), zap.Time("last_success", s.LastSuccess))
 	var out []Check
 	if !in.Backups.Targets[s.Target] {
 		out = append(out, Check{ID: "backups.target_missing", Area: AreaBackups, Subject: s.Name, Status: StatusFail,
@@ -91,7 +107,10 @@ func backupScheduleChecks(in *Input, s BackupSchedule) []Check {
 	if base.IsZero() {
 		base, what = s.CreatedAt, "no successful run since it was created"
 	}
-	if c, ok := lateness(in.Now, s.Cron, base); ok && c.Status != StatusPass {
+	c, ok := lateness(in.Now, s.Cron, base)
+	log.Debug("backupScheduleChecks: lateness", zap.String("schedule", s.Name), zap.Time("base", base), zap.Bool("judged", ok),
+		zap.String("status", string(c.Status)))
+	if ok && c.Status != StatusPass {
 		c.ID, c.Subject, c.Fix = "backups.schedule_late", s.Name, "haify backup schedule run "+s.Name
 		c.Message = fmt.Sprintf("backup schedule %s (%s): %s %s; %s", s.Name, s.Cron, what, stamp(base), c.Message)
 		out = append(out, c)
@@ -103,11 +122,14 @@ func backupScheduleChecks(in *Input, s BackupSchedule) []Check {
 func lateness(now time.Time, spec string, base time.Time) (Check, bool) {
 	sched, err := cron.ParseStandard(spec)
 	if err != nil || base.IsZero() {
+		zap.L().Debug("lateness: cron unparsable or no base time", zap.String("cron", spec), zap.Bool("base_zero", base.IsZero()),
+			zap.Error(err))
 		return Check{}, false
 	}
 	next := sched.Next(now)
 	interval := sched.Next(next).Sub(next)
 	if interval <= 0 {
+		zap.L().Debug("lateness: no positive interval", zap.String("cron", spec), zap.Duration("interval", interval))
 		return Check{}, false
 	}
 	age := now.Sub(base)
@@ -121,6 +143,8 @@ func lateness(now time.Time, spec string, base time.Time) (Check, bool) {
 		c.Status = StatusWarn
 	}
 	c.Message = fmt.Sprintf("that is %.1f intervals ago", ratio)
+	zap.L().Debug("lateness: judged", zap.String("cron", spec), zap.Duration("interval", interval), zap.Duration("age", age),
+		zap.Float64("ratio", ratio), zap.String("status", string(c.Status)))
 	return c, true
 }
 
@@ -128,6 +152,7 @@ func lateness(now time.Time, spec string, base time.Time) (Check, bool) {
 // as an incremental base. Each pins every block it shares with the origin.
 func leftoverBaseSnapshots(in *Input) []Check {
 	if in.Backups.Running {
+		zap.L().Debug("leftoverBaseSnapshots: a backup is running, not judging")
 		return nil
 	}
 	var out []Check
@@ -143,6 +168,7 @@ func leftoverBaseSnapshots(in *Input) []Check {
 			}
 			orphans = append(orphans, key)
 		}
+		zap.L().Debug("leftoverBaseSnapshots: node", zap.String("node", node), zap.Strings("orphans", orphans))
 		if len(orphans) == 0 {
 			continue
 		}

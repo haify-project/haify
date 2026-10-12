@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // maxEventEvidence bounds how many undelivered events a check lists.
@@ -18,8 +20,12 @@ const maxEventEvidence = 10
 // report that paging works; the delivery results of real alerts say the same
 // without the noise.
 func checkAlerts(in *Input) []Check {
+	log := zap.L()
 	a := in.Alerts
+	log.Debug("checkAlerts: start", zap.Bool("enabled", a.Enabled), zap.Int("targets", len(a.Targets)),
+		zap.Int("events", len(a.Events)), zap.Time("since", a.Since))
 	if !a.Enabled {
+		log.Debug("checkAlerts: alerting disabled")
 		return []Check{{ID: "alerts.disabled", Area: AreaAlerts, Status: StatusWarn,
 			Message: "[alert] enabled = false: nothing watches cluster health between inspections, and nothing is delivered",
 			Fix:     "set [alert] enabled = true in /etc/haify/controller.toml and restart haify-controller"}}
@@ -31,12 +37,18 @@ func checkAlerts(in *Input) []Check {
 			active++
 		}
 	}
+	log.Debug("checkAlerts: enabled channels", zap.Int("count", active))
 	if active == 0 {
 		out = append(out, Check{ID: "alerts.no_channel", Area: AreaAlerts, Status: StatusFail,
 			Message: "alerts are raised but no enabled notification channel exists; they reach nobody",
 			Fix:     "haify channel add --name <name> --kind <generic|feishu|slack|wecom|dingtalk> --url <webhook-url>"})
 	}
 	for _, t := range a.Targets {
+		// LastError is not traced: a failed delivery's error can carry the
+		// webhook URL, and with it a bot token.
+		log.Debug("checkAlerts: channel", zap.String("channel", t.Name), zap.Bool("enabled", t.Enabled), zap.Bool("known", t.Known),
+			zap.Int("consecutive_failures", t.ConsecutiveFailures), zap.Time("last_success", t.LastSuccess),
+			zap.Time("last_failure", t.LastFailure))
 		switch {
 		case !t.Enabled:
 			out = append(out, Check{ID: "alerts.channel_muted", Area: AreaAlerts, Subject: t.Name, Status: StatusWarn,
@@ -79,6 +91,8 @@ func undelivered(a AlertInput) (Check, bool) {
 				failed++
 			}
 		}
+		zap.L().Debug("undelivered: event", zap.Uint64("event", e.ID), zap.String("type", e.Type), zap.String("severity", e.Severity),
+			zap.Int("accepted", accepted), zap.Int("failed", failed), zap.Int("later", later))
 		if accepted > 0 && failed < accepted {
 			continue
 		}
@@ -96,9 +110,11 @@ func undelivered(a AlertInput) (Check, bool) {
 			strings.TrimSpace(e.Resource+" "+e.Node), e.Message, why))
 	}
 	if len(lost) == 0 {
+		zap.L().Debug("undelivered: every event reached a channel", zap.Int("events", len(a.Events)))
 		return Check{}, false
 	}
 	n := len(lost)
+	zap.L().Debug("undelivered: events reached no one", zap.Int("count", n), zap.Bool("critical", critical))
 	if n > maxEventEvidence {
 		lost = append(lost[:maxEventEvidence], fmt.Sprintf("... and %d more", n-maxEventEvidence))
 	}

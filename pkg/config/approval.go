@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
 )
 
 // ApprovalConfig is [rbac.approval]: two-person approval.
@@ -49,6 +50,7 @@ var DefaultApprovalMethods = []string{
 }
 
 func setApprovalDefaults() {
+	zap.L().Debug("setApprovalDefaults: registering approval defaults")
 	viper.SetDefault("rbac.approval.enabled", false)
 	viper.SetDefault("rbac.approval.ttl_minutes", 60)
 }
@@ -56,23 +58,32 @@ func setApprovalDefaults() {
 // ApprovalMethods is the effective list.
 func (a ApprovalConfig) ApprovalMethods() []string {
 	if len(a.Methods) == 0 {
+		zap.L().Debug("ApprovalConfig.ApprovalMethods: none configured, using defaults", zap.Int("count", len(DefaultApprovalMethods)))
 		return DefaultApprovalMethods
 	}
+	zap.L().Debug("ApprovalConfig.ApprovalMethods: using configured list", zap.Int("count", len(a.Methods)))
 	return a.Methods
 }
 
 func (a *ApprovalConfig) validate(rbacEnabled bool) error {
+	log := zap.L()
+	log.Debug("ApprovalConfig.validate: start", zap.Bool("enabled", a.Enabled), zap.Bool("rbac_enabled", rbacEnabled),
+		zap.Int("methods", len(a.Methods)), zap.Int("ttl_minutes", a.TTLMinutes))
 	if !a.Enabled {
+		log.Debug("ApprovalConfig.validate: disabled, nothing to check")
 		return nil
 	}
 	if !rbacEnabled {
+		log.Debug("ApprovalConfig.validate: approval without rbac")
 		return fmt.Errorf("rbac.approval needs [rbac] enabled: approval is a second user, and without RBAC there are no users")
 	}
 	if a.TTLMinutes <= 0 {
+		log.Debug("ApprovalConfig.validate: ttl unset, defaulting", zap.Int("ttl_minutes", 60))
 		a.TTLMinutes = 60
 	}
 	for _, m := range a.Methods {
 		if strings.TrimSpace(m) == "" || strings.ContainsAny(m, "/. ") {
+			log.Debug("ApprovalConfig.validate: not a method name", zap.String("method", m))
 			return fmt.Errorf("rbac.approval.methods: %q is not an API method name (e.g. DeleteBackupTarget)", m)
 		}
 	}

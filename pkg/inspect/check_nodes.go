@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Node thresholds.
@@ -22,9 +24,14 @@ const (
 // filesystem, address, DRBD stack, and that every node agrees with the
 // others on versions, controller binary and /etc/hosts.
 func checkNodes(in *Input) []Check {
+	log := zap.L()
+	log.Debug("checkNodes: start", zap.Int("nodes", len(in.Nodes)), zap.Int("probes", len(in.Probes)),
+		zap.Int("probe_errors", len(in.ProbeErrors)))
 	var out []Check
 	for _, name := range sortedKeys(in.ProbeErrors) {
 		addr := sshTarget(in, name)
+		log.Debug("checkNodes: node did not answer", zap.String("node", name), zap.String("addr", addr),
+			zap.String("error", in.ProbeErrors[name]))
 		out = append(out, Check{ID: "nodes.ssh", Area: AreaNodes, Subject: name, Status: StatusFail,
 			Message: fmt.Sprintf("%s did not answer the probe over SSH at %s; every check on it is unknown. If it is up at another address (DHCP), register that address",
 				name, addr),
@@ -35,12 +42,14 @@ func checkNodes(in *Input) []Check {
 	for _, n := range in.Nodes {
 		p, ok := in.Probes[n.Name]
 		if !ok || p == nil {
+			log.Debug("checkNodes: no probe for node", zap.String("node", n.Name))
 			continue
 		}
 		out = append(out, nodeChecks(in, n, p)...)
 	}
 	out = append(out, consistencyChecks(in)...)
 	out = append(out, hostsChecks(in)...)
+	log.Debug("checkNodes: done", zap.Int("findings", len(out)), zap.String("worst", string(Worst(out))))
 	switch {
 	case len(in.Nodes) == 0:
 		out = append(out, pass("nodes.health", AreaNodes, "no registered nodes"))
@@ -53,8 +62,12 @@ func checkNodes(in *Input) []Check {
 }
 
 func nodeChecks(in *Input, n Node, p *NodeProbe) []Check {
+	log := zap.L()
 	var out []Check
 	addr := sshTarget(in, n.Name)
+	log.Debug("nodeChecks: start", zap.String("node", n.Name), zap.String("addr", addr), zap.Bool("complete", p.Complete),
+		zap.String("hostname", p.Hostname), zap.String("ntp", p.NTPSynced), zap.Int("root_use", p.RootUse),
+		zap.String("drbd_kmod", p.DRBDKmod), zap.String("reactor", p.Reactor), zap.String("reactor_active", p.ReactorUp))
 	if !p.Complete {
 		out = append(out, Check{ID: "nodes.probe_incomplete", Area: AreaNodes, Subject: n.Name, Status: StatusError,
 			Message: "the probe output stopped before its end; checks on this node may be missing", Evidence: p.Problems})
@@ -63,6 +76,8 @@ func nodeChecks(in *Input, n Node, p *NodeProbe) []Check {
 		if c, ok := clockCheck(in, n, p); ok {
 			out = append(out, c)
 		}
+	} else {
+		log.Debug("nodeChecks: no node time or probe window, clock not judged", zap.String("node", n.Name))
 	}
 	if p.NTPSynced == "no" {
 		out = append(out, Check{ID: "nodes.ntp", Area: AreaNodes, Subject: n.Name, Status: StatusWarn,
@@ -85,6 +100,8 @@ func nodeChecks(in *Input, n Node, p *NodeProbe) []Check {
 		if ip == nil || p.HasAddr(a) || len(p.Addrs) == 0 {
 			continue
 		}
+		log.Debug("nodeChecks: registered address not on an interface", zap.String("node", n.Name), zap.String("addr", a),
+			zap.Bool("private", privateAddr(ip)), zap.Bool("identity_holds", identityHolds(n, p)), zap.Strings("interfaces", p.Addrs))
 		// The node answered SSH at a public address that none of its
 		// interfaces carries, as itself: a cloud VM behind NAT. Re-registering
 		// it at the interface address would cut the controller off from it.
@@ -129,6 +146,8 @@ func clockCheck(in *Input, n Node, p *NodeProbe) (Check, bool) {
 		skew = p.Now - start
 	}
 	abs := math.Abs(skew)
+	zap.L().Debug("clockCheck: skew", zap.String("node", n.Name), zap.Float64("node_time", p.Now), zap.Float64("window_start", start),
+		zap.Float64("window_end", end), zap.Float64("skew_seconds", skew))
 	if abs <= clockWarn {
 		return Check{}, false
 	}
@@ -180,8 +199,10 @@ func candidateAddr(old string, addrs []string) string {
 		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || (ip.To4() == nil) != (o.To4() == nil) {
 			continue
 		}
+		zap.L().Debug("candidateAddr: chose interface address", zap.String("old", old), zap.String("addr", a))
 		return a
 	}
+	zap.L().Debug("candidateAddr: no candidate", zap.String("old", old), zap.Strings("addrs", addrs))
 	return ""
 }
 
@@ -202,6 +223,7 @@ func consistencyChecks(in *Input) []Check {
 				groups[v] = append(groups[v], name)
 			}
 		}
+		zap.L().Debug("consistencyChecks: versions", zap.String("component", comp.what), zap.Int("distinct", len(groups)))
 		if len(groups) > 1 {
 			out = append(out, Check{ID: comp.id, Area: AreaNodes, Status: StatusWarn,
 				Message:  fmt.Sprintf("%s differs between nodes; mixed versions are fine during an upgrade and a trap after one", comp.what),
@@ -223,6 +245,7 @@ func consistencyChecks(in *Input) []Check {
 		byArch[p.Arch][p.CtlSHA] = append(byArch[p.Arch][p.CtlSHA], name)
 	}
 	for _, arch := range sortedKeys(byArch) {
+		zap.L().Debug("consistencyChecks: controller binaries", zap.String("arch", arch), zap.Int("distinct", len(byArch[arch])))
 		if c, ok := binaryCheck(in, arch, byArch[arch]); ok {
 			out = append(out, c)
 		}
@@ -241,6 +264,8 @@ func binaryCheck(in *Input, arch string, bins map[string][]string) (Check, bool)
 	}
 	st := StatusWarn
 	msg := "the installed haify-controller binaries differ between " + which
+	zap.L().Debug("binaryCheck: binaries differ", zap.String("arch", arch), zap.Int("distinct", len(bins)),
+		zap.Bool("self_ha", in.SelfHA != nil))
 	if in.SelfHA != nil {
 		st = StatusFail
 		msg += "; a Self-HA failover starts whichever version that node has, against the same database"
@@ -286,6 +311,8 @@ func hostsChecks(in *Input) []Check {
 					continue
 				}
 				seen[key] = true
+				zap.L().Debug("hostsChecks: stale hosts entry", zap.String("host", holder), zap.String("node", n.Name),
+					zap.String("ip", e.IP), zap.String("registered", n.Address))
 				out = append(out, Check{ID: "nodes.hosts_entry", Area: AreaNodes, Subject: holder + ":" + n.Name, Status: StatusWarn,
 					Message: fmt.Sprintf("/etc/hosts on %s maps %s to %s, but %s is registered at %s", holder,
 						strings.Join(e.Names, " "), e.IP, n.Name, n.Address),
@@ -321,6 +348,8 @@ func binaryArchChecks(in *Input) []Check {
 		if p.CtlMachine == "" || p.Arch == "" || !known || want == p.Arch {
 			continue
 		}
+		zap.L().Debug("binaryArchChecks: binary built for another architecture", zap.String("node", name),
+			zap.String("binary_arch", want), zap.String("arch", p.Arch))
 		out = append(out, Check{ID: "nodes.controller_binary_arch", Area: AreaNodes, Subject: name, Status: StatusFail,
 			Message: fmt.Sprintf("the haify-controller binary on %s is built for %s, but the node is %s; it cannot run there",
 				name, want, p.Arch),

@@ -5,6 +5,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Certificate expiry thresholds.
@@ -16,7 +18,10 @@ const (
 // checkTLS judges certificate expiry: the API server certificate, the
 // replication CA, and every node's replication certificate.
 func checkTLS(in *Input) []Check {
+	log := zap.L()
 	t := in.TLS
+	log.Debug("checkTLS: start", zap.Bool("has_api_cert", t.APICert != nil), zap.String("api_cert_path", t.APICertPath),
+		zap.Bool("api_cert_error", t.APICertErr != ""), zap.Bool("has_replication_ca", t.ReplicationCA != nil))
 	var out []Check
 	seen := 0
 	if t.APICertErr != "" {
@@ -40,11 +45,13 @@ func checkTLS(in *Input) []Check {
 	for _, node := range sortedKeys(in.Probes) {
 		raw := in.Probes[node].TLSCert
 		if len(raw) == 0 {
+			log.Debug("checkTLS: node has no replication certificate", zap.String("node", node))
 			continue
 		}
 		seen++
 		cert, err := parsePEMCert(raw)
 		if err != nil {
+			log.Debug("checkTLS: node certificate unreadable", zap.String("node", node), zap.Error(err))
 			out = append(out, Check{ID: "tls.replication_cert", Area: AreaTLS, Subject: node, Status: StatusFail,
 				Message: "/etc/haify/drbd-tls/node.crt is unreadable: " + err.Error(), Fix: "haify replication-tls setup"})
 			continue
@@ -53,6 +60,7 @@ func checkTLS(in *Input) []Check {
 			out = append(out, c)
 		}
 	}
+	log.Debug("checkTLS: done", zap.Int("certificates", seen), zap.Int("findings", len(out)))
 	if len(out) == 0 && seen == 0 {
 		out = append(out, pass("tls.expiry", AreaTLS, "no TLS certificates in use"))
 	}
@@ -65,6 +73,8 @@ func checkTLS(in *Input) []Check {
 
 func expiry(in *Input, id, subject, what string, cert *x509.Certificate, fix string) (Check, bool) {
 	left := cert.NotAfter.Sub(in.Now)
+	zap.L().Debug("expiry: certificate", zap.String("id", id), zap.String("subject", subject),
+		zap.Time("not_after", cert.NotAfter), zap.Duration("left", left), zap.Bool("ok", left >= certWarn))
 	if left >= certWarn {
 		return Check{}, false
 	}
@@ -87,9 +97,12 @@ func expiry(in *Input, id, subject, what string, cert *x509.Certificate, fix str
 func parsePEMCert(raw []byte) (*x509.Certificate, error) {
 	block, _ := pem.Decode(raw)
 	if block == nil {
+		zap.L().Debug("parsePEMCert: no PEM block", zap.Int("bytes", len(raw)))
 		return nil, fmt.Errorf("no PEM block")
 	}
-	return x509.ParseCertificate(block.Bytes)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	zap.L().Debug("parsePEMCert: parsed", zap.Error(err))
+	return cert, err
 }
 
 // ParseCertFile reads the first certificate of PEM data; exported for the

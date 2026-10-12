@@ -1,18 +1,7 @@
 // Package config provides configuration management
 package config
 
-import (
-	"crypto/tls"
-	"crypto/x509"
-	"fmt"
-	"os"
-	"slices"
-	"strings"
-
-	"github.com/go-viper/mapstructure/v2"
-	"github.com/robfig/cron/v3"
-	"github.com/spf13/viper"
-)
+import "go.uber.org/zap"
 
 // Config represents the application configuration
 type Config struct {
@@ -140,11 +129,15 @@ func (a AlertConfig) Receivers() []WebhookReceiver {
 			MinSeverity: a.WebhookMinSeverity,
 		})
 	}
-	for _, w := range a.Webhooks {
+	for i, w := range a.Webhooks {
 		if w.URL != "" {
 			out = append(out, w)
+		} else {
+			zap.L().Debug("AlertConfig.Receivers: skipping webhook without a URL", zap.Int("index", i))
 		}
 	}
+	zap.L().Debug("AlertConfig.Receivers: built receivers", zap.Bool("has_webhook_url", a.WebhookURL != ""),
+		zap.Int("webhooks", len(a.Webhooks)), zap.Int("count", len(out)))
 	return out
 }
 
@@ -240,93 +233,6 @@ type DatabaseConfig struct {
 	Path string `mapstructure:"path"` // Database file path (default: /var/lib/haify/haify.db)
 }
 
-// TLSConfig controls transport security for the gRPC API (and, through the
-// in-process REST gateway, for everything the web UI calls).
-//
-// This section used to be pure decoration: nothing in the tree read it, so
-// `enabled = true` produced a plaintext listener while the startup log happily
-// reported TLS as on — the worst kind of failure, a security switch that
-// claims to be closed. Every field below is now read at startup and every
-// unusable combination is rejected there, not at the first connection.
-//
-// The fields are named from the CONTROLLER's point of view, because that is
-// who reads them: CertFile/KeyFile are the certificate this server presents.
-// The old names (ca_cert / client_cert / client_key) described a *client*, and
-// a config still carrying them is rejected rather than reinterpreted — see
-// Validate. The client-side spellings live on in pkg/client, where they are
-// correct.
-type TLSConfig struct {
-	Enabled bool `mapstructure:"enabled"`
-	// CertFile and KeyFile are the server certificate chain and its private
-	// key, PEM encoded. Both are required when Enabled.
-	CertFile string `mapstructure:"cert_file"`
-	KeyFile  string `mapstructure:"key_file"`
-	// ClientCAFile is the CA bundle that signs client certificates. Setting it
-	// is what turns on mutual TLS: the server then requires and verifies a
-	// client certificate on every connection. There is deliberately no
-	// separate "require_client_cert" switch — a CA configured but not enforced
-	// is exactly the kind of security setting that looks on while being off.
-	ClientCAFile string `mapstructure:"client_ca_file"`
-	// REST also serves the REST gateway (rest_port) over TLS, with the same
-	// certificate. Off by default because REST clients written against plain
-	// HTTP stop working. Server-side only: REST callers authenticate with a
-	// bearer token, and browsers behind the web UI have no client certificate.
-	REST bool `mapstructure:"rest"`
-
-	// Legacy client-viewpoint names. They are still decoded so that a config
-	// which sets them fails loudly at startup instead of being silently
-	// ignored (which, for three releases, is what happened to the whole
-	// section). They are never used for anything else.
-	LegacyCACert     string `mapstructure:"ca_cert,omitempty"`
-	LegacyClientCert string `mapstructure:"client_cert,omitempty"`
-	LegacyClientKey  string `mapstructure:"client_key,omitempty"`
-}
-
-// MutualTLS reports whether client certificates are required and verified.
-func (t TLSConfig) MutualTLS() bool { return t.Enabled && t.ClientCAFile != "" }
-
-// Validate rejects a [tls] section that cannot work, at startup rather than at
-// the first connection. A controller that boots "with TLS" and only discovers
-// at the first handshake that its key does not match its certificate has
-// already told the operator it is secure.
-func (t TLSConfig) Validate() error {
-	if t.LegacyCACert != "" || t.LegacyClientCert != "" || t.LegacyClientKey != "" {
-		return fmt.Errorf("tls: ca_cert/client_cert/client_key name a *client's* material and are no longer read; " +
-			"the controller needs its own certificate — set tls.cert_file and tls.key_file, " +
-			"and tls.client_ca_file to require client certificates. " +
-			"(haify keeps --tls-ca/--tls-cert/--tls-key for the client side.)")
-	}
-	if !t.Enabled {
-		if t.REST {
-			return fmt.Errorf("tls.rest needs tls.enabled: the REST gateway is served with tls.cert_file")
-		}
-		return nil
-	}
-	if t.CertFile == "" || t.KeyFile == "" {
-		return fmt.Errorf("tls.cert_file and tls.key_file are required when tls.enabled is true")
-	}
-	// LoadX509KeyPair is the check, not a formality: it catches a missing or
-	// unreadable file, a PEM block that is not a certificate, and — the one an
-	// existence check would wave through — a key that does not belong to the
-	// certificate.
-	if _, err := tls.LoadX509KeyPair(t.CertFile, t.KeyFile); err != nil {
-		return fmt.Errorf("tls: cannot load cert_file %q with key_file %q: %w", t.CertFile, t.KeyFile, err)
-	}
-	if t.ClientCAFile != "" {
-		pem, err := os.ReadFile(t.ClientCAFile)
-		if err != nil {
-			return fmt.Errorf("tls: cannot read client_ca_file %q: %w", t.ClientCAFile, err)
-		}
-		// An unparsable bundle would otherwise produce an empty pool, and an
-		// empty ClientCAs pool rejects every client — mutual TLS that locks
-		// out the whole cluster instead of failing to start.
-		if !x509.NewCertPool().AppendCertsFromPEM(pem) {
-			return fmt.Errorf("tls: client_ca_file %q contains no PEM certificate", t.ClientCAFile)
-		}
-	}
-	return nil
-}
-
 // LogConfig represents logging configuration
 type LogConfig struct {
 	Level  string `mapstructure:"level"`
@@ -377,198 +283,11 @@ func (u UIConfig) UIAddress(serverListen string) (string, int) {
 	if port == 0 {
 		port = DefaultUIPort
 	}
+	zap.L().Debug("UIConfig.UIAddress: resolved", zap.String("listen_address", u.ListenAddress),
+		zap.Int("port", u.Port), zap.String("server_listen", serverListen),
+		zap.String("addr", addr), zap.Int("resolved_port", port))
 	return addr, port
 }
 
 // DefaultUIPort is the port the UI bound before [ui] was honoured.
 const DefaultUIPort = 3376
-
-// Load loads configuration from file
-func Load(configPath string) (*Config, error) {
-	// Set defaults
-	setDefaults()
-
-	// Read config file
-	if configPath != "" {
-		viper.SetConfigFile(configPath)
-	} else {
-		viper.SetConfigName("controller")
-		viper.AddConfigPath("/etc/haify/")
-		viper.AddConfigPath("./configs/")
-		viper.AddConfigPath(".")
-	}
-
-	// Enable environment variable override
-	viper.SetEnvPrefix("HAIFY")
-	viper.AutomaticEnv()
-
-	if err := viper.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("failed to read config: %w", err)
-	}
-
-	var config Config
-	if err := viper.Unmarshal(&config); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-
-	// Validate config
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-
-	return &config, nil
-}
-
-// Validate validates the configuration
-// validPoolTypeDefaults are the values storage.default_pool_type may take.
-//
-// ZFS is deliberately absent even though `haify pool create --type zfs` works:
-// a zpool is built from vdevs by a separate RPC, so an unspecified type never
-// resolves to one. Accepting "zfs" here would produce a controller that starts
-// cleanly and then fails every pool creation that omits a type, with an error
-// about LVM that names a setting the operator wrote on purpose.
-var validPoolTypeDefaults = []string{"vg", "lvm", "lvm-thin", "thin-pool", "thin_pool", "lvm-thin-vdo", "thin_vdo"}
-
-func (c *Config) Validate() error {
-	if c.Server.ListenAddress == "" {
-		c.Server.ListenAddress = "0.0.0.0"
-	}
-	if c.Server.Port == 0 {
-		c.Server.Port = 3374
-	}
-	if c.Server.RESTPort == 0 {
-		c.Server.RESTPort = 3375
-	}
-	if c.Server.RESTPort < 1 || c.Server.RESTPort > 65535 {
-		return fmt.Errorf("server.rest_port %d is not a TCP port", c.Server.RESTPort)
-	}
-	if c.Server.RESTPort == c.Server.Port {
-		return fmt.Errorf("server.rest_port and server.port are both %d; the REST gateway needs a port of its own", c.Server.Port)
-	}
-	if c.Log.Level == "" {
-		c.Log.Level = "info"
-	}
-	if t := strings.ToLower(strings.TrimSpace(c.Storage.DefaultPoolType)); t != "" {
-		if !slices.Contains(validPoolTypeDefaults, t) {
-			return fmt.Errorf("storage.default_pool_type %q is not a pool type this controller can create (want one of %s)",
-				c.Storage.DefaultPoolType, strings.Join(validPoolTypeDefaults, ", "))
-		}
-	}
-
-	if spec := strings.TrimSpace(c.Storage.VerifySchedule); spec != "" {
-		if _, err := cron.ParseStandard(spec); err != nil {
-			return fmt.Errorf("storage.verify_schedule %q is not a cron spec: %w", spec, err)
-		}
-	}
-
-	if err := c.validateSections(); err != nil {
-		return err
-	}
-	if c.Auth.Enabled {
-		if len(c.Auth.Token) < 16 {
-			return fmt.Errorf("auth.token must be at least 16 characters when auth is enabled")
-		}
-	}
-	if c.RBAC.Enabled {
-		if len(c.RBAC.Users) == 0 {
-			return fmt.Errorf("rbac.users must declare at least one user when rbac is enabled")
-		}
-		seen := make(map[string]struct{}, len(c.RBAC.Users))
-		for i, u := range c.RBAC.Users {
-			if u.Name == "" {
-				return fmt.Errorf("rbac.users[%d].name is required", i)
-			}
-			if u.Role == "" {
-				return fmt.Errorf("rbac.users[%q].role is required", u.Name)
-			}
-			if len(u.Token) < 16 {
-				return fmt.Errorf("rbac.users[%q].token must be at least 16 characters", u.Name)
-			}
-			if _, dup := seen[u.Token]; dup {
-				return fmt.Errorf("rbac.users[%q] reuses a token assigned to another user", u.Name)
-			}
-			seen[u.Token] = struct{}{}
-		}
-	}
-	if err := c.TLS.Validate(); err != nil {
-		return err
-	}
-	return c.Inspect.Validate()
-}
-
-func setDefaults() {
-	viper.SetDefault("server.listen_address", "0.0.0.0")
-	viper.SetDefault("server.port", 3374)
-	viper.SetDefault("server.rest_port", 3375)
-	viper.SetDefault("database.path", "/var/lib/haify/haify.db")
-	viper.SetDefault("auth.enabled", false)
-	viper.SetDefault("tls.enabled", false)
-	viper.SetDefault("log.level", "info")
-	viper.SetDefault("log.format", "json")
-	// Thin by default. A thick pool cannot hold a snapshot history: LVM makes
-	// every snapshot reserve a fixed COW area up front (Haify reserves 20% of the
-	// origin), so a 10 GiB pool holding a 6 GiB volume fits two snapshots —
-	// which is not a retention policy. Thin snapshots cost only the blocks that
-	// diverge. Set "vg" here for the thick behaviour on every client at once.
-	viper.SetDefault("storage.default_pool_type", "thin_pool")
-	viper.SetDefault("storage.default_snapshot_suffix", "_snap")
-	// Monthly, 03:00 on the 1st. Two replicas that disagree both report
-	// UpToDate; nothing but reading both finds it.
-	viper.SetDefault("storage.verify_schedule", "0 3 1 * *")
-	viper.SetDefault("metrics.enabled", true)
-	viper.SetDefault("metrics.listen_address", "0.0.0.0")
-	viper.SetDefault("metrics.port", 9433)
-	setSectionDefaults()
-	viper.SetDefault("rbac.enabled", false)
-	viper.SetDefault("gateway.auto_state_volume", true)
-	viper.SetDefault("gateway.state_volume_size_gb", 1)
-	viper.SetDefault("resource.auto_tiebreaker", true)
-	viper.SetDefault("resource.fault_domain_label", "host")
-	viper.SetDefault("schedule.enabled", true)
-	viper.SetDefault("alert.enabled", true)
-	viper.SetDefault("alert.warning_hold_sec", 30)
-	viper.SetDefault("alert.check_interval_sec", 30)
-	viper.SetDefault("alert.check_nodes", true)
-	viper.SetDefault("alert.watch_drbd_events", true)
-	viper.SetDefault("alert.idle_interval_sec", 300)
-	viper.SetDefault("alert.history_size", 500)
-	// On by default: a thin pool filling up is silent until it is fatal, and it
-	// costs nothing extra to watch.
-	viper.SetDefault("alert.check_pools", true)
-	viper.SetDefault("alert.pool_near_full_percent", 85.0)
-	viper.SetDefault("alert.pool_full_percent", 95.0)
-	inspectDefaults()
-}
-
-// Save saves configuration to file
-// Save writes the configuration back out.
-//
-// Sections go through mapstructure rather than straight into viper.Set: viper
-// serialises a struct under its Go field names ("DefaultPoolType"), while Load
-// reads the mapstructure tags ("default_pool_type"). Setting the struct
-// directly produces a file that looks right and silently loses every value on
-// the next Load — every section, not just one. mapstructure.Decode turns the
-// struct into a map keyed by those same tags, so what is written is what is
-// read back.
-func (c *Config) Save(path string) error {
-	config := viper.New()
-	sections := []struct {
-		name string
-		v    any
-	}{
-		{"server", c.Server}, {"database", c.Database}, {"auth", c.Auth},
-		{"tls", c.TLS}, {"log", c.Log}, {"storage", c.Storage},
-		{"metrics", c.Metrics}, {"audit", c.Audit}, {"rbac", c.RBAC},
-		{"gateway", c.Gateway}, {"resource", c.Resource},
-		{"schedule", c.Schedule}, {"alert", c.Alert}, {"inspect", c.Inspect}, {"self_heal", c.SelfHeal}, {"quota", c.Quota},
-	}
-	for _, s := range sections {
-		var m map[string]any
-		if err := mapstructure.Decode(s.v, &m); err != nil {
-			return fmt.Errorf("encode %s section: %w", s.name, err)
-		}
-		config.Set(s.name, m)
-	}
-
-	return config.WriteConfigAs(path)
-}

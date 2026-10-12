@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 // NodeProxyState is one node's view of its haify-proxy instance.
@@ -63,10 +66,15 @@ func (s *ProxyStatus) Healthy() bool {
 // currently reach the DR WAN endpoint. It is read-only (no sudo) and does a
 // single reachability attempt so a status query never blocks on retries.
 func Status(ctx context.Context, deploy DeploymentClient, spec ProxySpec) (*ProxyStatus, error) {
+	log := zap.L()
+	log.Debug("Status: start", zap.String("resource", spec.Resource), zap.String("primary", spec.PrimaryNodeAddr),
+		zap.String("dr", spec.DRNodeAddr))
 	if deploy == nil {
+		log.Debug("Status: no deployment client", zap.String("resource", spec.Resource))
 		return nil, fmt.Errorf("wanproxy: deployment client is nil")
 	}
 	if err := spec.Validate(); err != nil {
+		log.Debug("Status: spec invalid", zap.String("resource", spec.Resource), zap.Error(err))
 		return nil, err
 	}
 
@@ -77,8 +85,10 @@ func Status(ctx context.Context, deploy DeploymentClient, spec ProxySpec) (*Prox
 		DR:       NodeProxyState{Host: spec.DRNodeAddr},
 	}
 
+	start := time.Now()
 	res, err := deploy.Exec(ctx, []string{spec.PrimaryNodeAddr, spec.DRNodeAddr},
 		fmt.Sprintf("systemctl is-active %s", instance))
+	log.Debug("Status: queried unit state", zap.String("unit", instance), zap.Error(err), zap.Duration("took", time.Since(start)))
 	if err != nil {
 		return nil, fmt.Errorf("wanproxy: query proxy status: %w", err)
 	}
@@ -99,6 +109,9 @@ func Status(ctx context.Context, deploy DeploymentClient, spec ProxySpec) (*Prox
 	// losing observability must not make the resource look broken.
 	st.PrimaryMetrics = readMetrics(ctx, deploy, spec.PrimaryNodeAddr, spec.Resource)
 
+	log.Debug("Status: done", zap.String("resource", spec.Resource), zap.Bool("primary_active", st.Primary.Active),
+		zap.Bool("dr_active", st.DR.Active), zap.Bool("wan_reachable", st.WANReachable),
+		zap.Bool("has_metrics", st.PrimaryMetrics != nil))
 	return st, nil
 }
 
@@ -112,15 +125,21 @@ func ReadNodeMetrics(ctx context.Context, deploy DeploymentClient, host, legID s
 // it cannot be read or parsed — an older proxy, a first tick that has not landed
 // yet, or an unreachable node all look the same from here and all mean "unknown".
 func readMetrics(ctx context.Context, deploy DeploymentClient, host, resource string) *Metrics {
+	log := zap.L()
 	if deploy == nil || host == "" {
+		log.Debug("readMetrics: no client or host", zap.String("resource", resource), zap.String("host", host))
 		return nil
 	}
+	start := time.Now()
 	res, err := deploy.Exec(ctx, []string{host}, fmt.Sprintf("cat %s", NodeMetricsPath(resource)))
+	log.Debug("readMetrics: read snapshot", zap.String("host", host), zap.String("resource", resource),
+		zap.Error(err), zap.Duration("took", time.Since(start)))
 	if err != nil || res == nil {
 		return nil
 	}
 	hres := res.Hosts[host]
 	if hres == nil || !hres.Success {
+		log.Debug("readMetrics: snapshot not readable on host", zap.String("host", host), zap.String("resource", resource))
 		return nil
 	}
 	return ParseMetrics(hres.Output)
@@ -132,11 +151,15 @@ func readMetrics(ctx context.Context, deploy DeploymentClient, host, resource st
 func ParseMetrics(s string) *Metrics {
 	s = strings.TrimSpace(s)
 	if s == "" {
+		zap.L().Debug("ParseMetrics: empty snapshot")
 		return nil
 	}
 	var m Metrics
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		zap.L().Debug("ParseMetrics: snapshot does not parse", zap.Int("bytes", len(s)), zap.Error(err))
 		return nil
 	}
+	zap.L().Debug("ParseMetrics: parsed", zap.Uint64("buffer_used_bytes", m.BufferUsedBytes),
+		zap.Bool("wan_connected", m.WANConnected), zap.Uint64("reconnects", m.Reconnects))
 	return &m
 }

@@ -44,10 +44,10 @@ package wanproxy
 import (
 	"context"
 	"fmt"
-	"os"
-	"sort"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Reachability-probe tuning. These are package vars (not consts) so tests can
@@ -117,9 +117,12 @@ func UnitInstance(resource string) string {
 // deployments are untouched.
 func LegID(resource, primaryNode string, single bool) string {
 	if single {
+		zap.L().Debug("LegID: single replica, leg named after the resource", zap.String("resource", resource))
 		return resource
 	}
-	return resource + "_" + sanitizeLeg(primaryNode)
+	id := resource + "_" + sanitizeLeg(primaryNode)
+	zap.L().Debug("LegID: per-node leg", zap.String("resource", resource), zap.String("node", primaryNode), zap.String("leg", id))
+	return id
 }
 
 // sanitizeLeg makes a node reference safe for a systemd instance name and a
@@ -160,70 +163,6 @@ WantedBy=multi-user.target
 // UnitTemplate returns the content of the haify-proxy@.service systemd unit
 // template installed on each node.
 func UnitTemplate() string { return unitTemplate }
-
-// HostResult is the per-host outcome of a deploy/exec operation.
-type HostResult struct {
-	Host    string
-	Output  string
-	Success bool
-	Err     error
-}
-
-// Result aggregates per-host outcomes. It mirrors the AllSuccess/FailedHosts
-// contract of pkg/deployment so orchestration here checks multi-host results the
-// same way pkg/controller does, without importing the deployment package's
-// concrete types (keeping the interface trivially mockable).
-type Result struct {
-	Hosts map[string]*HostResult
-}
-
-// AllSuccess reports whether every host succeeded.
-func (r *Result) AllSuccess() bool {
-	for _, h := range r.Hosts {
-		if h == nil || !h.Success {
-			return false
-		}
-	}
-	return true
-}
-
-// FailedHosts lists the hosts that did not succeed.
-func (r *Result) FailedHosts() []string {
-	var failed []string
-	for host, h := range r.Hosts {
-		if h == nil || !h.Success {
-			failed = append(failed, host)
-		}
-	}
-	return failed
-}
-
-// FailureDetails renders the failed hosts with the reason each one gave, so a
-// WAN provisioning error names the problem instead of only the addresses. See
-// deployment.ExecResult.FailureDetails.
-func (r *Result) FailureDetails() string {
-	failed := r.FailedHosts()
-	if len(failed) == 0 {
-		return ""
-	}
-	sort.Strings(failed)
-
-	parts := make([]string, 0, len(failed))
-	for _, host := range failed {
-		reason := ""
-		if h := r.Hosts[host]; h != nil {
-			reason = strings.TrimSpace(h.Output)
-			if reason == "" && h.Err != nil {
-				reason = strings.TrimSpace(h.Err.Error())
-			}
-		}
-		if reason == "" {
-			reason = "no output"
-		}
-		parts = append(parts, fmt.Sprintf("%s: %s", host, strings.Join(strings.Fields(reason), " ")))
-	}
-	return strings.Join(parts, "; ")
-}
 
 // DeploymentClient is the minimal SSH/file-distribution surface wanproxy needs.
 // It intentionally mirrors the isolation pattern pkg/gateway uses: the package
@@ -299,22 +238,32 @@ type ProxySpec struct {
 
 // Validate checks the spec is internally consistent before any node is touched.
 func (s ProxySpec) Validate() error {
+	log := zap.L()
+	log.Debug("ProxySpec.Validate: start", zap.String("resource", s.Resource), zap.String("primary", s.PrimaryNodeAddr),
+		zap.String("dr", s.DRNodeAddr), zap.String("dr_endpoint", s.DRPublicEndpoint),
+		zap.Int("wan_port", s.WANPort), zap.Int("drbd_port", s.DRBDPort))
 	if strings.TrimSpace(s.Resource) == "" {
+		log.Debug("ProxySpec.Validate: no resource name")
 		return fmt.Errorf("wanproxy: resource name is required")
 	}
 	if strings.TrimSpace(s.PrimaryNodeAddr) == "" {
+		log.Debug("ProxySpec.Validate: no primary address", zap.String("resource", s.Resource))
 		return fmt.Errorf("wanproxy: primary node address is required")
 	}
 	if strings.TrimSpace(s.DRNodeAddr) == "" {
+		log.Debug("ProxySpec.Validate: no DR address", zap.String("resource", s.Resource))
 		return fmt.Errorf("wanproxy: DR node address is required")
 	}
 	if strings.TrimSpace(s.DRPublicEndpoint) == "" {
+		log.Debug("ProxySpec.Validate: no DR public endpoint", zap.String("resource", s.Resource))
 		return fmt.Errorf("wanproxy: DR public endpoint is required")
 	}
 	if s.WANPort <= 0 || s.WANPort > 65535 {
+		log.Debug("ProxySpec.Validate: WAN port out of range", zap.String("resource", s.Resource), zap.Int("wan_port", s.WANPort))
 		return fmt.Errorf("wanproxy: WAN port %d out of range", s.WANPort)
 	}
 	if s.DRBDPort <= 0 || s.DRBDPort > 65535 {
+		log.Debug("ProxySpec.Validate: DRBD port out of range", zap.String("resource", s.Resource), zap.Int("drbd_port", s.DRBDPort))
 		return fmt.Errorf("wanproxy: DRBD port %d out of range", s.DRBDPort)
 	}
 	return nil
@@ -338,10 +287,18 @@ func (s ProxySpec) Validate() error {
 //  7. systemctl enable + restart haify-proxy@<resource> (restart, so a leg
 //     that is already running picks up the config and PKI just written)
 func Provision(ctx context.Context, deploy DeploymentClient, spec ProxySpec) error {
+	log := zap.L()
+	start := time.Now()
+	log.Debug("Provision: start", zap.String("resource", spec.Resource), zap.String("primary", spec.PrimaryNodeAddr),
+		zap.String("dr", spec.DRNodeAddr), zap.String("dr_endpoint", spec.DRPublicEndpoint), zap.Int("wan_port", spec.WANPort),
+		zap.Int("drbd_port", spec.DRBDPort), zap.String("egress", spec.PrimaryEgressAddr),
+		zap.Bool("skip_reachability", spec.SkipReachabilityCheck))
 	if deploy == nil {
+		log.Debug("Provision: no deployment client", zap.String("resource", spec.Resource))
 		return fmt.Errorf("wanproxy: deployment client is nil")
 	}
 	if err := spec.Validate(); err != nil {
+		log.Debug("Provision: spec invalid", zap.String("resource", spec.Resource), zap.Error(err))
 		return err
 	}
 
@@ -353,6 +310,7 @@ func Provision(ctx context.Context, deploy DeploymentClient, spec ProxySpec) err
 	// 1. Shared PKI (generate once, reuse thereafter).
 	pki, err := EnsurePKI(PKIDir)
 	if err != nil {
+		log.Debug("Provision: PKI unavailable", zap.String("pki_dir", PKIDir), zap.Error(err))
 		return fmt.Errorf("wanproxy: ensure PKI: %w", err)
 	}
 
@@ -421,10 +379,15 @@ func Provision(ctx context.Context, deploy DeploymentClient, spec ProxySpec) err
 	//    that comes up but silently never syncs.
 	if !spec.SkipReachabilityCheck {
 		if err := VerifyReachability(ctx, deploy, spec); err != nil {
+			log.Debug("Provision: DR endpoint unreachable", zap.String("resource", spec.Resource), zap.Error(err))
 			return err
 		}
+	} else {
+		log.Debug("Provision: reachability check skipped", zap.String("resource", spec.Resource))
 	}
 
+	log.Debug("Provision: done", zap.String("resource", spec.Resource), zap.String("unit", instance),
+		zap.Duration("took", time.Since(start)))
 	return nil
 }
 
@@ -436,10 +399,14 @@ func Provision(ctx context.Context, deploy DeploymentClient, spec ProxySpec) err
 // errors), so a partially-provisioned resource can still be cleaned up. The
 // controller calls Deprovision AFTER `drbdadm down`.
 func Deprovision(ctx context.Context, deploy DeploymentClient, resource, primaryAddr, drAddr string) error {
+	log := zap.L()
+	log.Debug("Deprovision: start", zap.String("resource", resource), zap.String("primary", primaryAddr), zap.String("dr", drAddr))
 	if deploy == nil {
+		log.Debug("Deprovision: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("wanproxy: deployment client is nil")
 	}
 	if strings.TrimSpace(resource) == "" {
+		log.Debug("Deprovision: no resource name")
 		return fmt.Errorf("wanproxy: resource name is required")
 	}
 	both := []string{primaryAddr, drAddr}
@@ -459,93 +426,6 @@ func Deprovision(ctx context.Context, deploy DeploymentClient, resource, primary
 		return err
 	}
 
-	return nil
-}
-
-// ensureBinary reads the controller-local haify-proxy binary and installs it at
-// NodeBinaryPath on every host, then marks it executable. Distributing the same
-// bytes is idempotent, so re-provisioning simply overwrites with identical
-// content.
-// ensureBinaries pushes the right binary to each host.
-//
-// Pushing one file to every node is correct only while the fleet is uniform.
-// The moment it is not — an arm64 box at home and an x86_64 rental off-site —
-// the same push installs an unrunnable file on half of them, and the failure
-// surfaces far from the cause: systemd reports 203/EXEC on the node, while the
-// operator sees a DRBD connection that never forms.
-func ensureBinaries(ctx context.Context, deploy DeploymentClient, hosts []string, spec ProxySpec) error {
-	// Group hosts by the local file they need, so a uniform fleet still gets a
-	// single push rather than one per node.
-	byPath := map[string][]string{}
-	for _, h := range hosts {
-		path := spec.BinaryPath
-		if spec.BinaryFor != nil {
-			path = spec.BinaryFor(h)
-		}
-		if path == "" {
-			continue // pre-staged on this node
-		}
-		byPath[path] = append(byPath[path], h)
-	}
-	for path, group := range byPath {
-		if err := ensureBinary(ctx, deploy, group, path); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func ensureBinary(ctx context.Context, deploy DeploymentClient, hosts []string, localPath string) error {
-	data, err := os.ReadFile(localPath)
-	if err != nil {
-		return fmt.Errorf("wanproxy: read haify-proxy binary %q: %w", localPath, err)
-	}
-	if err := distribute(ctx, deploy, hosts, string(data), NodeBinaryPath, "distribute binary"); err != nil {
-		return err
-	}
-	return run(ctx, deploy, hosts, fmt.Sprintf("sudo chmod 0755 %s", NodeBinaryPath), "chmod binary")
-}
-
-// distribute pushes content to remotePath on hosts and surfaces per-host
-// failures, matching pkg/controller's error style.
-func distribute(ctx context.Context, deploy DeploymentClient, hosts []string, content, remotePath, desc string) error {
-	res, err := deploy.DistributeConfig(ctx, hosts, content, remotePath)
-	if err != nil {
-		return fmt.Errorf("wanproxy: %s: %w", desc, err)
-	}
-	if res != nil && !res.AllSuccess() {
-		return fmt.Errorf("wanproxy: %s failed: %s", desc, res.FailureDetails())
-	}
-	return nil
-}
-
-// requireBinaries fails unless every host now has a runnable haify-proxy, pushed
-// by ensureBinaries or staged beforehand. Without one the unit crash-loops with
-// 203/EXEC on the node, and the only symptom anywhere else is a WAN port that
-// never opens — which the reachability probe used to report as a firewall.
-func requireBinaries(ctx context.Context, deploy DeploymentClient, hosts []string) error {
-	res, err := deploy.Exec(ctx, hosts, "test -x "+NodeBinaryPath)
-	if err != nil {
-		return fmt.Errorf("wanproxy: check for %s: %w", NodeBinaryPath, err)
-	}
-	if res != nil && !res.AllSuccess() {
-		missing := res.FailedHosts()
-		sort.Strings(missing)
-		return fmt.Errorf("wanproxy: no executable %s on %s, and the controller has none for that node's architecture "+
-			"(it looks for %s-<arch>, or %s for its own); install haify-proxy there",
-			NodeBinaryPath, strings.Join(missing, ", "), NodeBinaryPath, NodeBinaryPath)
-	}
-	return nil
-}
-
-// run executes cmd on hosts and surfaces per-host failures.
-func run(ctx context.Context, deploy DeploymentClient, hosts []string, cmd, desc string) error {
-	res, err := deploy.Exec(ctx, hosts, cmd)
-	if err != nil {
-		return fmt.Errorf("wanproxy: %s: %w", desc, err)
-	}
-	if res != nil && !res.AllSuccess() {
-		return fmt.Errorf("wanproxy: %s failed: %s", desc, res.FailureDetails())
-	}
+	log.Debug("Deprovision: done", zap.String("resource", resource))
 	return nil
 }

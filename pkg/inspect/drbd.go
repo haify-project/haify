@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // DRBDResource is one resource in `drbdsetup status --json`, as the node that
@@ -50,12 +52,15 @@ type DRBDPeerDevice struct {
 func ParseDRBDStatus(out string) ([]DRBDResource, error) {
 	out = strings.TrimSpace(out)
 	if out == "" {
+		zap.L().Debug("ParseDRBDStatus: empty output, no resources up")
 		return nil, nil
 	}
 	var res []DRBDResource
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		zap.L().Debug("ParseDRBDStatus: JSON does not parse", zap.Int("bytes", len(out)), zap.Error(err))
 		return nil, fmt.Errorf("drbdsetup status --json unreadable: %w", err)
 	}
+	zap.L().Debug("ParseDRBDStatus: parsed", zap.Int("count", len(res)))
 	return res, nil
 }
 
@@ -79,6 +84,8 @@ func (c DRBDConnection) syncing() (bool, float64) {
 			if pd.PercentResyncDone != nil {
 				done = *pd.PercentResyncDone
 			}
+			zap.L().Debug("DRBDConnection.syncing: resync in progress", zap.String("peer", c.Name), zap.Int("volume", pd.Volume),
+				zap.String("replication_state", pd.ReplicationState), zap.Float64("percent_done", done))
 			return true, done
 		}
 	}
@@ -109,6 +116,8 @@ func (r *DRBDResource) worstDisk(expectDiskless bool) string {
 				continue
 			}
 		}
+		zap.L().Debug("DRBDResource.worstDisk: disk not UpToDate", zap.String("resource", r.Name), zap.Int("volume", d.Volume),
+			zap.String("disk_state", d.DiskState), zap.Bool("expect_diskless", expectDiskless))
 		return d.DiskState
 	}
 	return ""
@@ -118,6 +127,7 @@ func (r *DRBDResource) worstDisk(expectDiskless bool) string {
 func (r *DRBDResource) quorumLost() bool {
 	for _, d := range r.Devices {
 		if d.Quorum != nil && !*d.Quorum {
+			zap.L().Debug("DRBDResource.quorumLost: volume without quorum", zap.String("resource", r.Name), zap.Int("volume", d.Volume))
 			return true
 		}
 	}

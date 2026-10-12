@@ -26,11 +26,13 @@ var RootCmd = &cobra.Command{
 		}
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 		slog.SetDefault(logger)
+		slog.Debug("RootCmd.PersistentPreRun: logger installed", "command", cmd.Name(), "debug", debug, "args", args)
 	},
 }
 
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
+		slog.Debug("Execute: command failed, exiting", "error", err)
 		os.Exit(1)
 	}
 }

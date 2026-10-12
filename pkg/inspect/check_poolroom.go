@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // cowBytes is the copy-on-write area Haify reserves for a snapshot of a thick
@@ -24,11 +26,14 @@ func cowBytes(sizeBytes uint64) uint64 {
 //
 // It returns the findings and how many thick groups it judged.
 func snapshotRoom(in *Input) ([]Check, int) {
+	log := zap.L()
+	log.Debug("snapshotRoom: start", zap.Int("probes", len(in.Probes)))
 	var out []Check
 	groups := 0
 	for _, node := range sortedKeys(in.Probes) {
 		p := in.Probes[node]
 		if !p.LVsOK {
+			log.Debug("snapshotRoom: node has no lvs, skipping", zap.String("node", node))
 			continue
 		}
 		thin := map[string]bool{}
@@ -50,12 +55,18 @@ func snapshotRoom(in *Input) ([]Check, int) {
 		for _, vg := range sortedKeys(vols) {
 			free, known := p.VGFree[vg]
 			if thin[vg] || !known {
+				log.Debug("snapshotRoom: group thin or free space unknown, not judged", zap.String("node", node),
+					zap.String("vg", vg), zap.Bool("thin", thin[vg]), zap.Bool("free_known", known))
 				continue
 			}
 			groups++
 			var short []string
 			for _, lv := range vols[vg] {
-				if need := cowBytes(lv.SizeBytes); need > free {
+				need := cowBytes(lv.SizeBytes)
+				log.Debug("snapshotRoom: volume snapshot reserve", zap.String("node", node), zap.String("vg", vg),
+					zap.String("lv", lv.Name), zap.Uint64("size_bytes", lv.SizeBytes), zap.Uint64("need_bytes", need),
+					zap.Uint64("free_bytes", free), zap.Bool("fits", need <= free))
+				if need > free {
 					short = append(short, fmt.Sprintf("%s (%s, snapshot needs %s)", lv.Name, gib(lv.SizeBytes), gib(need)))
 				}
 			}
@@ -71,6 +82,7 @@ func snapshotRoom(in *Input) ([]Check, int) {
 				Fix:      fmt.Sprintf("haify pool add --pool %s --nodes %s --devices <new-device>", strings.TrimPrefix(vg, "haify_"), node)})
 		}
 	}
+	log.Debug("snapshotRoom: done", zap.Int("findings", len(out)), zap.Int("groups", groups))
 	return out, groups
 }
 

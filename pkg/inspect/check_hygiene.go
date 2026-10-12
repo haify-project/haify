@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // haifyLVName matches the backing volumes Haify creates — <res>_data, <res>_volN,
@@ -15,6 +17,8 @@ var haifyLVName = regexp.MustCompile(`^(.+)_(data|vol[0-9]+|state[0-9]*)(_sched_
 // logical volumes for resources the database no longer has. It only lists;
 // nothing here is deleted, because a name match is not proof.
 func checkHygiene(in *Input) []Check {
+	log := zap.L()
+	log.Debug("checkHygiene: start", zap.Int("resources", len(in.Resources)), zap.Int("probes", len(in.Probes)))
 	known := map[string]bool{}
 	for _, r := range in.Resources {
 		known[r.Name] = true
@@ -29,6 +33,7 @@ func checkHygiene(in *Input) []Check {
 				stale = append(stale, f)
 			}
 		}
+		log.Debug("checkHygiene: node res files", zap.String("node", node), zap.Int("count", len(p.ResFiles)), zap.Strings("stale", stale))
 		if len(stale) > 0 {
 			var cmds []string
 			for _, f := range stale {
@@ -48,6 +53,7 @@ func checkHygiene(in *Input) []Check {
 			if m == nil || known[m[1]] {
 				continue
 			}
+			log.Debug("checkHygiene: orphan volume", zap.String("node", node), zap.String("lv", lv.VG+"/"+lv.Name), zap.String("resource", m[1]))
 			orphans = append(orphans, lv.VG+"/"+lv.Name)
 		}
 		if len(orphans) > 0 {
@@ -57,6 +63,7 @@ func checkHygiene(in *Input) []Check {
 				Fix:      fmt.Sprintf("ssh %s sudo lvremove %s", addr, strings.Join(orphans, " "))})
 		}
 	}
+	log.Debug("checkHygiene: done", zap.Int("findings", len(out)))
 	if len(out) == 0 {
 		out = append(out, pass("hygiene.leftovers", AreaHygiene, "no DRBD configs or Haify-named volumes left by deleted resources"))
 	}

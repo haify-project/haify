@@ -3,6 +3,8 @@ package inspect
 import (
 	"crypto/x509"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Input is everything the checks read. The controller fills it from its
@@ -176,6 +178,7 @@ func (in *Input) nodeName(ref string) string {
 			return n.Name
 		}
 	}
+	zap.L().Debug("Input.nodeName: no registered node matches, keeping the reference", zap.String("ref", ref))
 	return ref
 }
 
@@ -202,6 +205,9 @@ func (in *Input) unanswered(names []string) []string {
 		if _, ok := in.probe(n); !ok {
 			out = append(out, in.nodeName(n))
 		}
+	}
+	if len(out) > 0 {
+		zap.L().Debug("Input.unanswered: nodes without a probe", zap.Strings("nodes", out), zap.Int("asked", len(names)))
 	}
 	return out
 }
