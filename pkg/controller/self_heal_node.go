@@ -115,17 +115,29 @@ func (rm *ResourceManager) NodeRestore(ctx context.Context, node string, dryRun 
 // staleResourceCleanup takes a resource down on a node that is no longer its
 // member and deletes what it holds there: the config, the promoter configs,
 // and the backing volumes haify names after it ("<r>_data", "<r>_vol<K>") with
-// their snapshots. Nothing else is touched.
+// their snapshots. An encrypted LV's LUKS container is closed and its key
+// destroyed first (the open container would block the removal, and the key
+// must not outlive the data); ZFS volumes are never LUKS-encrypted. Nothing
+// else is touched.
 func staleResourceCleanup(r string) string {
 	return fmt.Sprintf(`set -e
 drbdadm down %[1]s 2>/dev/null || true
 rm -f /etc/drbd.d/%[1]s.res /etc/drbd-reactor.d/haify-*-%[1]s.toml /etc/drbd-reactor.d/haify-*-%[1]s.toml.pending
+close_luks() {
+	n="haify_$1_$2"
+	cryptsetup close "$n" 2>/dev/null || true
+	if [ -f "%[2]s/$n.key" ]; then
+		shred -u "%[2]s/$n.key" 2>/dev/null || true
+	fi
+	rm -f "%[2]s/$n.key" "%[2]s/$n.dev"
+}
 for lv in $(lvs --noheadings -o vg_name,lv_name,origin --separator / 2>/dev/null | tr -d ' ' | \
 	awk -F/ '$2 ~ /^%[1]s_(data|vol[0-9]+)$/ || $3 ~ /^%[1]s_(data|vol[0-9]+)$/ {print $1"/"$2}' | sort -r); do
+	close_luks "${lv%%%%/*}" "${lv#*/}"
 	lvremove -f "$lv"
 done
 for ds in $(zfs list -H -o name 2>/dev/null | awk -F/ '$NF ~ /^%[1]s_(data|vol[0-9]+)$/'); do
 	zfs destroy -r "$ds"
 done
-`, r)
+`, r, luksKeyDir)
 }
