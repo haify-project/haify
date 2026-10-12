@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/haify-project/haify/pkg/deployment"
+	"go.uber.org/zap"
 )
 
 // Turning node probes into an HA chain's status: what each unit is, which
@@ -19,6 +20,8 @@ func haServiceStatus(name, status string, facts *haNodeFacts) HaServiceStatus {
 	kind, label := classifyHaUnit(name, u)
 	s := HaServiceStatus{Name: name, Status: status, Kind: kind, Label: label}
 	if u == nil {
+		zap.L().Debug("haServiceStatus: no facts for unit", zap.String("unit", name), zap.String("status", status),
+			zap.String("kind", kind))
 		return s
 	}
 	s.Description = unitOwnDescription(u)
@@ -29,6 +32,9 @@ func haServiceStatus(name, status string, facts *haNodeFacts) HaServiceStatus {
 	case "active", "reloading", "deactivating":
 		s.Since = u.ActiveEnter
 	}
+	zap.L().Debug("haServiceStatus: described", zap.String("unit", name), zap.String("status", status),
+		zap.String("kind", kind), zap.String("active_state", u.ActiveState), zap.String("sub_state", u.SubState),
+		zap.Int("restarts", u.Restarts))
 	return s
 }
 
@@ -58,6 +64,9 @@ func promoterDisabled(p *deployment.ReactorPromoterStatus) bool {
 // instances included, systemd's LoadState says whether the unit (or its
 // template) is installed there.
 func haStandbyReasons(resource string, p *deployment.ReactorPromoterStatus, f *haNodeFacts) (reasons []string, disk string) {
+	log := zap.L()
+	log.Debug("haStandbyReasons: start", zap.String("resource", resource), zap.String("path", p.Path),
+		zap.String("reactor_state", f.ReactorState))
 	if f.ReactorState != "active" {
 		r := "drbd-reactor not running"
 		if f.ReactorState != "" && f.ReactorState != "inactive" {
@@ -67,20 +76,28 @@ func haStandbyReasons(resource string, p *deployment.ReactorPromoterStatus, f *h
 	}
 	for _, name := range promoterUnits(p) {
 		if strings.HasSuffix(name, ".mount") {
+			log.Debug("haStandbyReasons: mount unit generated per node, not checked", zap.String("unit", name))
 			continue
 		}
 		u := f.unit(name)
 		if u == nil {
+			log.Debug("haStandbyReasons: no facts for unit, not checked", zap.String("unit", name))
 			continue
 		}
 		if r := unitLoadReason(name, u); r != "" {
+			log.Debug("haStandbyReasons: unit cannot load", zap.String("unit", name), zap.String("reason", r))
 			reasons = append(reasons, r)
 			continue
 		}
 		if agent := u.Env["AGENT"]; agent != "" {
-			if installed, known := f.Agents[agent]; known && !installed {
+			installed, known := f.Agents[agent]
+			log.Debug("haStandbyReasons: OCF agent of unit", zap.String("unit", name), zap.String("agent", agent),
+				zap.Bool("known", known), zap.Bool("installed", installed))
+			if known && !installed {
 				reasons = append(reasons, fmt.Sprintf("OCF agent %s not installed", ocfAgentName(agent)))
 			}
+		} else {
+			log.Debug("haStandbyReasons: unit loads", zap.String("unit", name), zap.String("load_state", u.LoadState))
 		}
 	}
 	st, ok := f.Drbd[resource]
@@ -92,22 +109,29 @@ func haStandbyReasons(resource string, p *deployment.ReactorPromoterStatus, f *h
 	case st.Disk != "UpToDate":
 		reasons = append(reasons, "disk "+st.Disk)
 	}
+	log.Debug("haStandbyReasons: done", zap.String("resource", resource), zap.Bool("resource_up", ok),
+		zap.String("disk", st.Disk), zap.Strings("reasons", reasons))
 	return reasons, st.Disk
 }
 
 // unitLoadReason says why a unit could not be started on a node, from its
 // load state, or "" when it can be loaded.
 func unitLoadReason(name string, u *haUnitFacts) string {
+	log := zap.L()
 	switch {
 	case u.LoadState == "masked" || strings.HasPrefix(u.UnitFileState, "masked"):
+		log.Debug("unitLoadReason: masked", zap.String("unit", name), zap.String("load_state", u.LoadState),
+			zap.String("unit_file_state", u.UnitFileState))
 		return name + " masked"
 	case u.LoadState == "not-found":
 		prefix, instance, suffix := splitUnitName(name)
+		log.Debug("unitLoadReason: not found", zap.String("unit", name), zap.Bool("template_instance", instance != ""))
 		if instance != "" {
 			return fmt.Sprintf("%s@.%s not installed", prefix, suffix)
 		}
 		return name + " not installed"
 	case u.LoadState == "error" || u.LoadState == "bad-setting":
+		log.Debug("unitLoadReason: load error", zap.String("unit", name), zap.String("load_state", u.LoadState))
 		return fmt.Sprintf("%s cannot be loaded (%s)", name, u.LoadState)
 	}
 	return ""
@@ -126,6 +150,7 @@ func haChainMounts(services []HaServiceStatus) []string {
 			out = append(out, path.Clean(s.Label))
 		}
 	}
+	zap.L().Debug("haChainMounts: mount points of the chain", zap.Int("services", len(services)), zap.Strings("mounts", out))
 	return out
 }
 
@@ -133,9 +158,13 @@ func haChainMounts(services []HaServiceStatus) []string {
 // mounts on node f, and counts the login sessions doing so. Kernel threads
 // never show up: they live in the root cgroup, which the probe drops.
 func haOutsideUsers(chain map[string]bool, mounts []string, f *haNodeFacts) (outside []HaOutsideService, sessions, sessionProcs int) {
+	log := zap.L()
 	if f == nil || len(mounts) == 0 {
+		log.Debug("haOutsideUsers: nothing to check", zap.Bool("has_facts", f != nil), zap.Int("mounts", len(mounts)))
 		return nil, 0, 0
 	}
+	log.Debug("haOutsideUsers: start", zap.Strings("mounts", mounts), zap.Int("chain_units", len(chain)),
+		zap.Int("process_groups", len(f.Procs)))
 	want := map[string]bool{}
 	for _, m := range mounts {
 		want[m] = true
@@ -185,9 +214,13 @@ func haOutsideUsers(chain map[string]bool, mounts []string, f *haNodeFacts) (out
 			o.MountPoints = append(o.MountPoints, m)
 		}
 		sort.Strings(o.MountPoints)
+		log.Debug("haOutsideUsers: unit outside the chain uses a mount", zap.String("unit", unit),
+			zap.Int("processes", a.procs), zap.Strings("mounts", o.MountPoints))
 		outside = append(outside, o)
 	}
 	sort.Slice(outside, func(i, j int) bool { return outside[i].Unit < outside[j].Unit })
+	log.Debug("haOutsideUsers: done", zap.Int("outside", len(outside)), zap.Int("sessions", len(sessionSet)),
+		zap.Int("session_processes", sessionProcs))
 	return outside, len(sessionSet), sessionProcs
 }
 
@@ -209,20 +242,33 @@ func buildHaPromoterStatus(resource string, hosts []string, failover map[string]
 		entry *deployment.ReactorPromoterStatus
 		facts *haNodeFacts
 	}
+	log := zap.L()
+	log.Debug("buildHaPromoterStatus: start", zap.String("resource", resource), zap.Strings("hosts", hosts),
+		zap.Int("probes", len(probes)))
 	var holders []holder
 	for _, h := range hosts {
 		pr := probes[h]
 		if pr.err != nil || pr.facts == nil || pr.facts.Reactor == nil {
+			log.Debug("buildHaPromoterStatus: host has no usable probe", zap.String("host", h),
+				zap.Bool("has_facts", pr.facts != nil), zap.Error(pr.err))
 			continue
 		}
+		found := false
 		for i := range pr.facts.Reactor.Promoter {
 			if p := &pr.facts.Reactor.Promoter[i]; p.DRBDResource == resource {
 				holders = append(holders, holder{host: h, entry: p, facts: pr.facts})
+				found = true
+				log.Debug("buildHaPromoterStatus: host holds the promoter", zap.String("host", h),
+					zap.String("status", p.Status), zap.String("path", p.Path))
 				break
 			}
 		}
+		if !found {
+			log.Debug("buildHaPromoterStatus: host holds no promoter for the resource", zap.String("host", h))
+		}
 	}
 	if len(holders) == 0 {
+		log.Debug("buildHaPromoterStatus: no node holds a promoter", zap.String("resource", resource))
 		return nil
 	}
 
@@ -249,6 +295,8 @@ func buildHaPromoterStatus(resource string, hosts []string, failover map[string]
 		view = running
 	}
 	v := holders[view]
+	log.Debug("buildHaPromoterStatus: chosen view", zap.String("resource", resource), zap.Int("running", running),
+		zap.String("host", v.host), zap.String("status", v.entry.Status))
 	ps := &HaPromoterStatus{
 		DRBDResource: resource,
 		PrimaryOn:    v.entry.PrimaryOn,
@@ -275,6 +323,8 @@ func buildHaPromoterStatus(resource string, hosts []string, failover map[string]
 			continue
 		}
 		reasons, disk := haStandbyReasons(resource, h.entry, h.facts)
+		log.Debug("buildHaPromoterStatus: standby assessed", zap.String("host", h.host),
+			zap.Bool("ready", len(reasons) == 0), zap.String("disk", disk))
 		ps.Standbys = append(ps.Standbys, HaStandby{
 			Node: label(h.host), Ready: len(reasons) == 0, Reasons: reasons, DiskState: disk,
 		})
@@ -284,6 +334,8 @@ func buildHaPromoterStatus(resource string, hosts []string, failover map[string]
 			continue
 		}
 		pr := probes[h]
+		log.Debug("buildHaPromoterStatus: failover host without a promoter entry", zap.String("host", h),
+			zap.Bool("has_facts", pr.facts != nil), zap.Error(pr.err))
 		switch {
 		case pr.err != nil || pr.facts == nil:
 			ps.Standbys = append(ps.Standbys, HaStandby{Node: label(h), Reasons: []string{"node did not answer"}})
@@ -299,5 +351,7 @@ func buildHaPromoterStatus(resource string, hosts []string, failover map[string]
 				DiskState: pr.facts.Drbd[resource].Disk})
 		}
 	}
+	log.Debug("buildHaPromoterStatus: done", zap.String("resource", resource), zap.String("active_node", ps.ActiveNode),
+		zap.Int("deps", len(ps.Deps)), zap.Int("standbys", len(ps.Standbys)), zap.Int("outside", len(ps.Outside)))
 	return ps
 }

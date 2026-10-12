@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -88,24 +89,39 @@ func zfsDestroyCloneCmd(clone string) string {
 // volumeID are the volume being filled.
 func (sm *SnapshotManager) resolveSnapshotSource(ctx context.Context, address, node, target string, volumeID uint32,
 	src SnapshotSource) (string, func(), error) {
+	log := loggerOfController(sm.controller)
+	log.Debug("resolveSnapshotSource: resolving", zap.String("host", address), zap.String("node", node),
+		zap.String("target", target), zap.Uint32("volume", volumeID), zap.String("source_resource", src.Resource),
+		zap.Uint32("source_volume", src.VolumeID), zap.String("snapshot", src.Name), zap.Bool("replicated", src.Replicated))
 	if strings.TrimSpace(src.Resource) == "" {
+		log.Debug("resolveSnapshotSource: no source resource")
 		return "", nil, fmt.Errorf("the source snapshot's resource is required")
 	}
 	if !snapshotSourceNameRe.MatchString(src.Name) {
+		log.Debug("resolveSnapshotSource: invalid snapshot name", zap.String("snapshot", src.Name))
 		return "", nil, fmt.Errorf("%q is not a snapshot name", src.Name)
 	}
 	if sm.controller.db == nil {
+		log.Debug("resolveSnapshotSource: no database")
 		return "", nil, fmt.Errorf("database not available")
 	}
+	start := time.Now()
 	vol, err := sm.controller.resources.dbVolume(ctx, src.Resource, int(src.VolumeID))
+	log.Debug("resolveSnapshotSource: read source volume", zap.String("resource", src.Resource),
+		zap.Uint32("volume", src.VolumeID), zap.Bool("found", err == nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return "", nil, fmt.Errorf("source snapshot %s of %s: %w", src.Name, src.Resource, err)
 	}
 	backing := snapshotBackingName(vol, src.Name, src.Replicated)
 	dep := sm.controller.deployment
+	zfs := isZFSDevice(vol.Device)
+	log.Debug("resolveSnapshotSource: backing name", zap.String("backing", backing), zap.Bool("zfs", zfs))
 
-	if !isZFSDevice(vol.Device) {
+	if !zfs {
+		start := time.Now()
 		res, err := dep.Exec(ctx, []string{address}, "sudo lvs --noheadings -o lv_name "+backing)
+		log.Debug("resolveSnapshotSource: lvs for snapshot", zap.String("host", address), zap.String("backing", backing),
+			zap.Bool("success", err == nil && res.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			return "", nil, fmt.Errorf("look for snapshot %s of %s on %s: %w", src.Name, src.Resource, node, err)
 		}
@@ -119,12 +135,20 @@ func (sm *SnapshotManager) resolveSnapshotSource(ctx context.Context, address, n
 
 	clone := populateCloneName(vol.Pool, target, volumeID)
 	release := func() {
-		if err := execFailure(dep.Exec(context.WithoutCancel(ctx), []string{address}, zfsDestroyCloneCmd(clone))); err != nil {
+		start := time.Now()
+		err := execFailure(dep.Exec(context.WithoutCancel(ctx), []string{address}, zfsDestroyCloneCmd(clone)))
+		log.Debug("resolveSnapshotSource: destroyed temporary clone", zap.String("clone", clone), zap.String("host", address),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			sm.controller.logger.Warn("Failed to remove the temporary clone a snapshot was copied from; remove it with zfs destroy",
 				zap.String("clone", clone), zap.String("node", node), zap.Error(err))
 		}
 	}
-	if err := execFailure(dep.Exec(ctx, []string{address}, zfsCloneForReadCmd(backing, clone))); err != nil {
+	start = time.Now()
+	err = execFailure(dep.Exec(ctx, []string{address}, zfsCloneForReadCmd(backing, clone)))
+	log.Debug("resolveSnapshotSource: zfs clone for reading", zap.String("snapshot", backing), zap.String("clone", clone),
+		zap.String("host", address), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		release()
 		return "", nil, fmt.Errorf("expose snapshot %s of %s (%s) on %s for reading: %w", src.Name, src.Resource, backing, node, err)
 	}
@@ -137,17 +161,24 @@ func (sm *SnapshotManager) resolveSnapshotSource(ctx context.Context, address, n
 // pools alike.
 func (sm *SnapshotManager) PopulateVolumeFromSnapshot(ctx context.Context, resource string, volumeID uint32,
 	src SnapshotSource, node string) (uint64, error) {
+	log := loggerOfController(sm.controller)
+	log.Debug("PopulateVolumeFromSnapshot: populating", zap.String("resource", resource), zap.Uint32("volume", volumeID),
+		zap.String("node", node), zap.String("source_resource", src.Resource), zap.String("snapshot", src.Name))
 	if strings.TrimSpace(resource) == "" {
+		log.Debug("PopulateVolumeFromSnapshot: no resource")
 		return 0, fmt.Errorf("resource is required")
 	}
 	address := sm.controller.ResolveHost(node)
 	if address == "" {
+		log.Debug("PopulateVolumeFromSnapshot: node not found", zap.String("node", node))
 		return 0, fmt.Errorf("node not found: %s", node)
 	}
 	device, release, err := sm.resolveSnapshotSource(ctx, address, node, resource, volumeID, src)
 	if err != nil {
+		log.Debug("PopulateVolumeFromSnapshot: source not resolved", zap.String("resource", resource), zap.Error(err))
 		return 0, err
 	}
 	defer release()
+	log.Debug("PopulateVolumeFromSnapshot: copying from device", zap.String("resource", resource), zap.String("device", device))
 	return sm.PopulateVolume(ctx, resource, volumeID, device, node)
 }

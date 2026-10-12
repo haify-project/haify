@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/util"
 )
@@ -33,16 +36,21 @@ func isFileDevice(dev string) bool { return strings.HasPrefix(dev, fileDevicePre
 // parseFileDevice reads file:PATH:SIZE. The size is needed to create the file;
 // an existing file of another size is refused rather than resized.
 func parseFileDevice(dev string) (fileSpec, error) {
+	log := zap.L()
+	log.Debug("parseFileDevice: start", zap.String("device", dev))
 	rest := strings.TrimPrefix(dev, fileDevicePrefix)
 	i := strings.LastIndex(rest, ":")
 	if i < 0 {
+		log.Debug("parseFileDevice: no size given", zap.String("device", dev))
 		return fileSpec{}, fmt.Errorf("%q: give file:PATH:SIZE, e.g. file:/var/lib/haify-pools/data.img:50G", dev)
 	}
 	p, sizeStr := rest[:i], rest[i+1:]
 	if !path.IsAbs(p) || path.Clean(p) != p || strings.ContainsAny(p, " '\"$`\\;&|") {
+		log.Debug("parseFileDevice: not a plain absolute path", zap.String("path", p))
 		return fileSpec{}, fmt.Errorf("%q is not a plain absolute path", p)
 	}
 	if strings.HasPrefix(p, "/dev/") || strings.HasPrefix(p, "/proc/") || strings.HasPrefix(p, "/sys/") {
+		log.Debug("parseFileDevice: path in a pseudo filesystem", zap.String("path", p))
 		return fileSpec{}, fmt.Errorf("%s is not a place for an image file", p)
 	}
 	// /var/lib/haify is where Self-HA mounts the controller's own replicated
@@ -50,15 +58,19 @@ func parseFileDevice(dev string) (fileSpec, error) {
 	// volume on one node and on the root filesystem, under the mount point,
 	// on the others.
 	if p == "/var/lib/haify" || strings.HasPrefix(p, "/var/lib/haify/") {
+		log.Debug("parseFileDevice: path under the controller's volume", zap.String("path", p))
 		return fileSpec{}, fmt.Errorf("%s is under /var/lib/haify, where the controller's own volume is mounted; use /var/lib/haify-pools", p)
 	}
 	size, err := util.ParseSize(sizeStr)
 	if err != nil {
+		log.Debug("parseFileDevice: bad size", zap.String("path", p), zap.String("size", sizeStr), zap.Error(err))
 		return fileSpec{}, fmt.Errorf("size of %s: %w", p, err)
 	}
 	if size < 1<<30 {
+		log.Debug("parseFileDevice: size below 1 GiB", zap.String("path", p), zap.Uint64("size_bytes", size))
 		return fileSpec{}, fmt.Errorf("%s: a pool file must be at least 1 GiB", p)
 	}
+	log.Debug("parseFileDevice: parsed", zap.String("path", p), zap.Uint64("size_bytes", size))
 	return fileSpec{Path: p, Size: size}, nil
 }
 
@@ -92,6 +104,8 @@ WantedBy=multi-user.target
 // thick one, whose promise to its volumes is that the space exists), installs
 // and starts the unit, and prints the loop device.
 func fileSetupScript(f fileSpec, vg string, thin bool) string {
+	zap.L().Debug("fileSetupScript: building", zap.String("path", f.Path), zap.Uint64("size_bytes", f.Size),
+		zap.String("pool", vg), zap.Bool("thin", thin))
 	alloc := fmt.Sprintf("fallocate -l %d %s", f.Size, f.Path)
 	if thin {
 		alloc = fmt.Sprintf("truncate -s %d %s", f.Size, f.Path)
@@ -124,6 +138,7 @@ losetup -j "$f" | head -1 | cut -d: -f1
 // units on the node itself: the pool record names one node's devices, and a
 // pool of the same name on several nodes has one record.
 func fileTeardownScript(vg string) string {
+	zap.L().Debug("fileTeardownScript: building", zap.String("pool", vg))
 	return fmt.Sprintf(`for u in /etc/systemd/system/haify-pool-file-*.service; do
   [ -e "$u" ] || continue
   grep -qx 'ExecStartPost=-/sbin/vgchange -ay %[1]s' "$u" || continue
@@ -141,19 +156,28 @@ true
 // attachFileDevices turns every file: device into its loop device, leaving
 // disks as they are.
 func (sm *StorageManager) attachFileDevices(ctx context.Context, address, node, vg string, devices []string, thin bool) ([]string, error) {
+	log := loggerOfController(sm.controller)
+	log.Debug("attachFileDevices: start", zap.String("node", node), zap.String("host", address),
+		zap.String("pool", vg), zap.Strings("devices", devices), zap.Bool("thin", thin))
 	out := make([]string, 0, len(devices))
 	for _, d := range devices {
 		if !isFileDevice(d) {
+			log.Debug("attachFileDevices: a disk, kept as is", zap.String("device", d))
 			out = append(out, d)
 			continue
 		}
 		f, err := parseFileDevice(d)
 		if err != nil {
+			log.Debug("attachFileDevices: bad file device", zap.String("device", d), zap.Error(err))
 			return nil, err
 		}
+		start := time.Now()
 		res, err := sm.controller.deployment.Exec(ctx, []string{address},
 			"echo "+base64Std(fileSetupScript(f, vg, thin))+" | base64 -d | sudo /bin/bash")
-		if err := execFailure(res, err); err != nil {
+		err = execFailure(res, err)
+		log.Debug("attachFileDevices: file setup script", zap.String("host", address), zap.String("path", f.Path),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			return nil, fmt.Errorf("set up %s on %s: %w", f.Path, node, err)
 		}
 		// The device is the script's last line; stderr shares the output.
@@ -166,9 +190,12 @@ func (sm *StorageManager) attachFileDevices(ctx context.Context, address, node, 
 			}
 		}
 		if !strings.HasPrefix(loop, "/dev/loop") {
+			log.Debug("attachFileDevices: no loop device came back", zap.String("path", f.Path), zap.String("loop", loop))
 			return nil, fmt.Errorf("set up %s on %s: no loop device came back (%q)", f.Path, node, loop)
 		}
+		log.Debug("attachFileDevices: file attached", zap.String("path", f.Path), zap.String("loop", loop))
 		out = append(out, loop)
 	}
+	log.Debug("attachFileDevices: done", zap.String("node", node), zap.Strings("devices", out))
 	return out, nil
 }

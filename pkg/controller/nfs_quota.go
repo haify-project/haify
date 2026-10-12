@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"hash/crc32"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/gateway"
 )
@@ -33,15 +36,21 @@ func projectID(dir string) uint32 {
 // SetNFSExportQuota limits an NFS export directory of resource to limitBytes;
 // zero removes the limit.
 func (rm *ResourceManager) SetNFSExportQuota(ctx context.Context, resource, exportPath string, limitBytes uint64) error {
+	log := loggerOfController(rm.controller)
+	log.Debug("SetNFSExportQuota: setting quota", zap.String("resource", resource),
+		zap.String("export_path", exportPath), zap.Uint64("limit_bytes", limitBytes))
 	dir, err := gateway.ResolveNFSExportPath(resource, exportPath)
 	if err != nil {
+		log.Debug("SetNFSExportQuota: export path invalid", zap.String("export_path", exportPath), zap.Error(err))
 		return err
 	}
 	hosts, err := rm.failoverHosts(ctx, resource)
 	if err != nil {
+		log.Debug("SetNFSExportQuota: failover hosts unknown", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	id := projectID(dir)
+	log.Debug("SetNFSExportQuota: resolved", zap.String("dir", dir), zap.Uint32("project_id", id), zap.Strings("hosts", hosts))
 	// Run where the export's filesystem is mounted from DRBD; the others skip.
 	script := fmt.Sprintf(`set -e
 dir=%[1]q
@@ -55,7 +64,16 @@ chattr -R -p %[2]d +P "$dir"
 setquota -P %[2]d 0 %[3]d 0 0 "$mp"
 echo DONE
 `, dir, id, (limitBytes+1023)/1024)
+	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, hosts, "echo "+base64Std(script)+" | base64 -d | sudo /bin/bash")
+	if ce := log.Check(zap.DebugLevel, "SetNFSExportQuota: ran chattr/setquota script"); ce != nil {
+		var failed []string
+		if res != nil {
+			failed = res.FailedHosts()
+		}
+		ce.Write(zap.Strings("hosts", hosts), zap.Strings("failed_hosts", failed),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+	}
 	if err != nil {
 		return err
 	}
@@ -63,13 +81,17 @@ echo DONE
 	for _, h := range hosts {
 		hr := res.Hosts[h]
 		if hr == nil {
+			log.Debug("SetNFSExportQuota: no result from host", zap.String("host", h))
 			continue
 		}
 		out := strings.TrimSpace(hr.Output)
+		log.Debug("SetNFSExportQuota: host answered", zap.String("host", h), zap.Bool("success", hr.Success),
+			zap.String("output", out))
 		switch {
 		case !hr.Success:
 			return fmt.Errorf("setting the quota on %s failed: %s", rm.nodeLabel(h), out)
 		case strings.HasSuffix(out, "DONE"):
+			log.Debug("SetNFSExportQuota: quota set", zap.String("host", h), zap.String("dir", dir))
 			return nil
 		case strings.HasSuffix(out, "NOPRJQUOTA"):
 			return fmt.Errorf("the filesystem of %s is not mounted with project quotas: it predates them. Add the "+
@@ -79,5 +101,6 @@ echo DONE
 		}
 		seen = append(seen, rm.nodeLabel(h))
 	}
+	log.Debug("SetNFSExportQuota: export not mounted on any host", zap.String("dir", dir), zap.Strings("hosts", seen))
 	return fmt.Errorf("%s is not mounted on any of %s; is the NFS gateway of %s running?", dir, strings.Join(seen, ", "), resource)
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +68,8 @@ func NewNodeManager(ctrl *Controller) *NodeManager {
 
 // RegisterNode registers a new node
 func (nm *NodeManager) RegisterNode(ctx context.Context, name, address string) (*NodeInfo, error) {
+	loggerOfController(nm.controller).Debug("NodeManager.RegisterNode: registering on the management network only",
+		zap.String("name", name), zap.String("address", address))
 	return nm.RegisterNodeWithReplicationAddress(ctx, name, address, "")
 }
 
@@ -81,19 +82,30 @@ func (nm *NodeManager) RegisterNode(ctx context.Context, name, address string) (
 // `replicationAddress` means "same as address" — the single-network behavior
 // every previously registered node keeps.
 func (nm *NodeManager) RegisterNodeWithReplicationAddress(ctx context.Context, name, address, replicationAddress string) (*NodeInfo, error) {
+	log := nm.controller.logger
 	replicationAddress = strings.TrimSpace(replicationAddress)
+	log.Debug("NodeManager.RegisterNodeWithReplicationAddress: start",
+		zap.String("name", name), zap.String("address", address),
+		zap.String("replication_address", replicationAddress))
 	nm.controller.logger.Info("Registering node",
 		zap.String("name", name),
 		zap.String("address", address),
 		zap.String("replication_address", replicationAddress))
 
 	// Check node health by executing hostname command
+	start := time.Now()
 	result, err := nm.controller.deployment.Exec(ctx, []string{address}, "hostname")
 	if err != nil {
+		log.Debug("NodeManager.RegisterNodeWithReplicationAddress: hostname probe failed to run",
+			zap.String("host", address), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, fmt.Errorf("failed to connect to node: %w", err)
 	}
+	log.Debug("NodeManager.RegisterNodeWithReplicationAddress: hostname probe ran",
+		zap.String("host", address), zap.Bool("success", result.AllSuccess()),
+		zap.Strings("failed_hosts", result.FailedHosts()), zap.Duration("took", time.Since(start)))
 
 	if !result.AllSuccess() {
+		log.Debug("NodeManager.RegisterNodeWithReplicationAddress: refusing, health check failed", zap.String("host", address))
 		return nil, fmt.Errorf("health check failed for node: %s", address)
 	}
 
@@ -105,6 +117,8 @@ func (nm *NodeManager) RegisterNodeWithReplicationAddress(ctx context.Context, n
 			break
 		}
 	}
+	log.Debug("NodeManager.RegisterNodeWithReplicationAddress: hostname resolved",
+		zap.String("name", name), zap.String("hostname", hostname))
 
 	// Preserve any labels a prior registration set, so re-registering a node
 	// (e.g. after a restart or address refresh) does not wipe its rack/zone tags.
@@ -122,6 +136,11 @@ func (nm *NodeManager) RegisterNodeWithReplicationAddress(ctx context.Context, n
 		if existing.State == NodeStateMaintenance || existing.State == NodeStateEvicted {
 			state = existing.State
 		}
+		log.Debug("NodeManager.RegisterNodeWithReplicationAddress: re-registration keeps labels and drain state",
+			zap.String("address", address), zap.Int("labels", len(labels)),
+			zap.String("previous_state", string(existing.State)), zap.String("state", string(state)))
+	} else {
+		log.Debug("NodeManager.RegisterNodeWithReplicationAddress: first registration of this address", zap.String("address", address))
 	}
 	nm.mu.RUnlock()
 
@@ -155,6 +174,8 @@ func (nm *NodeManager) RegisterNodeWithReplicationAddress(ctx context.Context, n
 	if !found {
 		nm.controller.hosts = append(nm.controller.hosts, address)
 	}
+	log.Debug("NodeManager.RegisterNodeWithReplicationAddress: host list updated",
+		zap.String("address", address), zap.Bool("already_listed", found), zap.Int("hosts", len(nm.controller.hosts)))
 	// Update hostsMap for resolution
 	nm.controller.hostsMap[name] = address
 	if hostname != "" {
@@ -182,9 +203,15 @@ func (nm *NodeManager) RegisterNodeWithReplicationAddress(ctx context.Context, n
 				dbNode.Labels = string(encoded)
 			}
 		}
-		if err := nm.controller.db.SaveNode(ctx, dbNode); err != nil {
+		dbStart := time.Now()
+		err := nm.controller.db.SaveNode(ctx, dbNode)
+		log.Debug("NodeManager.RegisterNodeWithReplicationAddress: saved node record",
+			zap.String("address", address), zap.Duration("took", time.Since(dbStart)), zap.Error(err))
+		if err != nil {
 			nm.controller.logger.Error("Failed to save node to database", zap.Error(err))
 		}
+	} else {
+		log.Debug("NodeManager.RegisterNodeWithReplicationAddress: no database, node kept in memory only", zap.String("address", address))
 	}
 
 	nm.controller.logger.Info("Node registered successfully",
@@ -199,7 +226,10 @@ func (nm *NodeManager) RegisterNodeWithReplicationAddress(ctx context.Context, n
 // persists them. With replace=true the label set is replaced wholesale;
 // otherwise labels are merged in and a key with an empty value is deleted.
 func (nm *NodeManager) SetNodeLabels(ctx context.Context, nodeRef string, labels map[string]string, replace bool) (*NodeInfo, error) {
+	log := loggerOfController(nm.controller)
 	resolved := nm.controller.ResolveHost(nodeRef)
+	log.Debug("NodeManager.SetNodeLabels: start", zap.String("node", nodeRef), zap.String("resolved", resolved),
+		zap.Any("labels", labels), zap.Bool("replace", replace))
 
 	nm.mu.Lock()
 	node := nm.nodes[resolved]
@@ -214,9 +244,12 @@ func (nm *NodeManager) SetNodeLabels(ctx context.Context, nodeRef string, labels
 				break
 			}
 		}
+		log.Debug("NodeManager.SetNodeLabels: resolved address not registered, matched by name",
+			zap.String("node", nodeRef), zap.Bool("found", node != nil))
 	}
 	if node == nil {
 		nm.mu.Unlock()
+		log.Debug("NodeManager.SetNodeLabels: node not found", zap.String("node", nodeRef))
 		return nil, fmt.Errorf("node not found: %s", nodeRef)
 	}
 
@@ -228,12 +261,15 @@ func (nm *NodeManager) SetNodeLabels(ctx context.Context, nodeRef string, labels
 	for k, v := range labels {
 		k = strings.TrimSpace(k)
 		if k == "" {
+			log.Debug("NodeManager.SetNodeLabels: skipping empty key")
 			continue
 		}
 		if v == "" {
+			log.Debug("NodeManager.SetNodeLabels: deleting label", zap.String("key", k))
 			delete(node.Labels, k) // empty value deletes the key
 			continue
 		}
+		log.Debug("NodeManager.SetNodeLabels: setting label", zap.String("key", k), zap.String("value", v))
 		node.Labels[k] = v
 	}
 	// Copy for return + persistence outside the lock.
@@ -247,6 +283,7 @@ func (nm *NodeManager) SetNodeLabels(ctx context.Context, nodeRef string, labels
 	if nm.controller.db != nil {
 		encoded, err := json.Marshal(labelsCopy)
 		if err != nil {
+			log.Debug("NodeManager.SetNodeLabels: encoding labels failed", zap.String("node", snapshot.Name), zap.Error(err))
 			return nil, fmt.Errorf("encode labels: %w", err)
 		}
 		// The whole record, replication address included: this used to be
@@ -255,9 +292,16 @@ func (nm *NodeManager) SetNodeLabels(ctx context.Context, nodeRef string, labels
 		// config it took part in.
 		dbNode := nodeRecord(&snapshot)
 		dbNode.Labels = string(encoded)
+		dbStart := time.Now()
 		if err := nm.controller.db.SaveNode(ctx, dbNode); err != nil {
+			log.Debug("NodeManager.SetNodeLabels: saving node record failed", zap.String("node", snapshot.Name),
+				zap.String("address", snapshot.Address), zap.Duration("took", time.Since(dbStart)), zap.Error(err))
 			return nil, fmt.Errorf("persist node labels: %w", err)
 		}
+		log.Debug("NodeManager.SetNodeLabels: saved node record", zap.String("node", snapshot.Name),
+			zap.String("address", snapshot.Address), zap.Duration("took", time.Since(dbStart)))
+	} else {
+		log.Debug("NodeManager.SetNodeLabels: no database, labels kept in memory only", zap.String("node", snapshot.Name))
 	}
 
 	nm.controller.logger.Info("Set node labels",
@@ -269,15 +313,20 @@ func (nm *NodeManager) SetNodeLabels(ctx context.Context, nodeRef string, labels
 // UnregisterNode unregisters a node. It refuses while any resource or gateway
 // still places something on the node (see checkNodeUnreferenced).
 func (nm *NodeManager) UnregisterNode(ctx context.Context, address string) error {
+	log := loggerOfController(nm.controller)
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
 	resolved := nm.controller.ResolveHost(address)
+	log.Debug("NodeManager.UnregisterNode: start", zap.String("address", address), zap.String("resolved", resolved))
 	node := nm.nodes[resolved]
 	if node == nil {
+		log.Debug("NodeManager.UnregisterNode: node not found", zap.String("address", address), zap.String("resolved", resolved))
 		return fmt.Errorf("node not found: %s", address)
 	}
 	if err := nm.checkNodeUnreferenced(ctx, node, resolved); err != nil {
+		log.Debug("NodeManager.UnregisterNode: refused, node still referenced",
+			zap.String("node", node.Name), zap.Error(err))
 		return err
 	}
 
@@ -306,142 +355,32 @@ func (nm *NodeManager) UnregisterNode(ctx context.Context, address string) error
 	}
 	nm.controller.gateway.SetHosts(nm.controller.hosts)
 	nm.controller.hostsLock.Unlock()
+	log.Debug("NodeManager.UnregisterNode: removed from host list and name map",
+		zap.String("node", node.Name), zap.String("hostname", node.Hostname), zap.Int("hosts", len(filteredHosts)))
 
 	// Delete from database
 	if nm.controller.db != nil {
-		if err := nm.controller.db.DeleteNode(ctx, resolved); err != nil {
+		dbStart := time.Now()
+		err := nm.controller.db.DeleteNode(ctx, resolved)
+		log.Debug("NodeManager.UnregisterNode: deleted node record",
+			zap.String("address", resolved), zap.Duration("took", time.Since(dbStart)), zap.Error(err))
+		if err != nil {
 			nm.controller.logger.Error("Failed to delete node from database", zap.Error(err))
 		}
+	} else {
+		log.Debug("NodeManager.UnregisterNode: no database to delete from", zap.String("address", resolved))
 	}
 
 	return nil
 }
 
-// GetNodeAddressByName gets node address by node name
-func (nm *NodeManager) GetNodeAddressByName(name string) string {
-	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
-	for addr, node := range nm.nodes {
-		if node.Name == name || node.Hostname == name || addr == name {
-			return addr
-		}
-	}
-	return ""
-}
-
-// GetDRBDNameByRef returns the name DRBD must see for a node, i.e. the node's
-// real `uname -n` hostname captured at registration.
-//
-// This exists because a DRBD `.res` file only applies to a host whose hostname
-// matches one of its `on <name>` sections — drbdadm otherwise fails the whole
-// resource with "'<res>' not defined in your config (for this host)". Writing
-// the Haify node *name* there silently works only while operators happen to
-// register nodes under their hostname (node1, node2, ...); register the
-// same host as "node-a" while it calls itself "vm-node-a" and every resource
-// create fails.
-//
-// Unknown refs fall back to the ref itself, so callers that already pass a
-// hostname keep working.
-func (nm *NodeManager) GetDRBDNameByRef(ref string) string {
-	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
-	for addr, node := range nm.nodes {
-		if node.Name == ref || node.Hostname == ref || addr == ref {
-			if node.Hostname != "" {
-				return node.Hostname
-			}
-			return ref
-		}
-	}
-	return ref
-}
-
-// GetReplicationAddressByName returns the address DRBD should use to reach a
-// node: its dedicated replication address when one was registered, otherwise the
-// management address.
-//
-// This is deliberately a separate lookup from GetNodeAddressByName: that one
-// answers "where do I SSH to?", this one answers "what goes in the .res file?".
-// Conflating them is what forced replication onto the management network.
-func (nm *NodeManager) GetReplicationAddressByName(name string) string {
-	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
-	for addr, node := range nm.nodes {
-		if node.Name == name || node.Hostname == name || addr == name {
-			if r := strings.TrimSpace(node.ReplicationAddress); r != "" {
-				return r
-			}
-			return addr
-		}
-	}
-	return ""
-}
-
-// GetNodeNameByAddress resolves an address (or name/hostname) to the node's
-// canonical name. Returns "" when no registered node matches. It is the inverse
-// of GetNodeAddressByName and tolerates being handed a name already.
-func (nm *NodeManager) GetNodeNameByAddress(address string) string {
-	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
-	for addr, node := range nm.nodes {
-		if addr == address || node.Name == address || node.Hostname == address {
-			return node.Name
-		}
-	}
-	return ""
-}
-
-// GetNode gets node information
-func (nm *NodeManager) GetNode(ctx context.Context, address string) (*NodeInfo, error) {
-	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
-	resolved := address
-	if node := nm.nodes[resolved]; node != nil {
-		return node, nil
-	}
-
-	for addr, node := range nm.nodes {
-		if node.Name == address || node.Hostname == address {
-			resolved = addr
-			break
-		}
-	}
-
-	node := nm.nodes[resolved]
-	if node == nil {
-		return nil, fmt.Errorf("node not found: %s", address)
-	}
-
-	return node, nil
-}
-
-// ListNodes lists all nodes
-func (nm *NodeManager) ListNodes(ctx context.Context) ([]*NodeInfo, error) {
-	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
-	nodes := make([]*NodeInfo, 0, len(nm.nodes))
-	for _, node := range nm.nodes {
-		nodes = append(nodes, node)
-	}
-
-	// Sorted by name, because a map range gives a different order on almost
-	// every call and the UI redraws this list on each poll: rows jump around
-	// while being read, and a reordered list is indistinguishable from one
-	// where something actually changed.
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
-
-	return nodes, nil
-}
-
 // addHostsEntry adds the new node's hostname and IP to /etc/hosts on all existing nodes
 func (nm *NodeManager) addHostsEntry(ctx context.Context, ip, hostname string) {
+	log := loggerOfController(nm.controller)
+	log.Debug("NodeManager.addHostsEntry: start", zap.String("ip", ip), zap.String("hostname", hostname))
 	if hostname == "" || hostname == ip {
+		log.Debug("NodeManager.addHostsEntry: skipped, no hostname distinct from the address",
+			zap.String("ip", ip), zap.String("hostname", hostname))
 		return
 	}
 
@@ -459,6 +398,7 @@ func (nm *NodeManager) addHostsEntry(ctx context.Context, ip, hostname string) {
 	nm.mu.RUnlock()
 
 	if len(existingNodes) == 0 {
+		log.Debug("NodeManager.addHostsEntry: skipped, no other node to tell", zap.String("hostname", hostname))
 		return
 	}
 
@@ -468,13 +408,20 @@ func (nm *NodeManager) addHostsEntry(ctx context.Context, ip, hostname string) {
 		hostsEntry, hostsEntry,
 	)
 
+	start := time.Now()
 	result, err := nm.controller.deployment.Exec(ctx, existingNodes, hostsCmd)
 	if err != nil {
+		log.Debug("NodeManager.addHostsEntry: append to /etc/hosts failed to run",
+			zap.Strings("hosts", existingNodes), zap.Duration("took", time.Since(start)), zap.Error(err))
 		nm.controller.logger.Warn("Failed to add hosts entry", zap.Error(err))
 		return
 	}
+	log.Debug("NodeManager.addHostsEntry: appended to /etc/hosts",
+		zap.Strings("hosts", existingNodes), zap.Bool("success", result.AllSuccess()),
+		zap.Strings("failed_hosts", result.FailedHosts()), zap.Duration("took", time.Since(start)))
 
 	for nodeHost, r := range result.Hosts {
+		log.Debug("NodeManager.addHostsEntry: host result", zap.String("host", nodeHost), zap.Bool("success", r.Success))
 		if !r.Success {
 			nm.controller.logger.Warn("Failed to add hosts entry",
 				zap.String("node", nodeHost),
@@ -487,20 +434,30 @@ func (nm *NodeManager) addHostsEntry(ctx context.Context, ip, hostname string) {
 // the controller does not know is left to the steps that follow, which report
 // it in their own terms.
 func (rm *ResourceManager) assertNodesOnline(nodes []string) error {
+	log := loggerOfController(rm.controller)
+	log.Debug("ResourceManager.assertNodesOnline: start", zap.Strings("nodes", nodes))
 	var offline []string
 	for _, n := range nodes {
 		addr := rm.controller.ResolveHost(n)
 		rm.controller.nodes.mu.RLock()
 		info := rm.controller.nodes.nodes[addr]
 		rm.controller.nodes.mu.RUnlock()
+		state := ""
+		if info != nil {
+			state = string(info.State)
+		}
+		log.Debug("ResourceManager.assertNodesOnline: node state", zap.String("node", n), zap.String("address", addr),
+			zap.Bool("known", info != nil), zap.String("state", state))
 		if info != nil && info.State == NodeStateOffline {
 			offline = append(offline, n)
 		}
 	}
 	if len(offline) > 0 {
+		log.Debug("ResourceManager.assertNodesOnline: refusing, nodes offline", zap.Strings("offline", offline))
 		return fmt.Errorf("node(s) %s offline: the controller cannot reach them (see haify node list and the node.unreachable alert for why)",
 			strings.Join(offline, ", "))
 	}
+	log.Debug("ResourceManager.assertNodesOnline: all nodes usable", zap.Int("count", len(nodes)))
 	return nil
 }
 
@@ -520,6 +477,8 @@ func nodeRecord(n *NodeInfo) *database.Node {
 	if len(n.Labels) > 0 {
 		if encoded, err := json.Marshal(n.Labels); err == nil {
 			rec.Labels = string(encoded)
+		} else {
+			zap.L().Debug("nodeRecord: labels not encoded", zap.String("node", n.Name), zap.Error(err))
 		}
 	}
 	return rec

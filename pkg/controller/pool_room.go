@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/database"
 )
@@ -25,12 +28,16 @@ import (
 // not knowing is not a refusal, and if the pool really is missing there the
 // lvcreate or lvresize that follows fails on its own, plainly.
 func (rm *ResourceManager) knownPoolFree(ctx context.Context, pool string) (map[string]uint64, error) {
+	log := loggerOfController(rm.controller)
+	log.Debug("knownPoolFree: start", zap.String("pool", pool))
 	pools, err := rm.controller.storage.ListPools(ctx)
 	if err != nil {
+		log.Debug("knownPoolFree: listing pools failed", zap.String("pool", pool), zap.Error(err))
 		return nil, err
 	}
 	nodes, err := rm.controller.nodes.ListNodes(ctx)
 	if err != nil {
+		log.Debug("knownPoolFree: listing nodes failed", zap.Error(err))
 		return nil, err
 	}
 	nameByAddr := make(map[string]string, len(nodes)*2)
@@ -46,14 +53,19 @@ func (rm *ResourceManager) knownPoolFree(ctx context.Context, pool string) (map[
 		}
 		c := poolPlacementCapacity(p, recordedThin)
 		if !c.known {
+			log.Debug("knownPoolFree: free space unknown on node", zap.String("pool", pool), zap.String("node", p.Node))
 			continue
 		}
 		name := nameByAddr[p.Node]
 		if name == "" {
 			name = p.Node
 		}
+		log.Debug("knownPoolFree: node free space", zap.String("pool", pool), zap.String("node", name),
+			zap.Uint64("free_bytes", c.freeBytes))
 		out[name] = c.freeBytes
 	}
+	log.Debug("knownPoolFree: done", zap.String("pool", pool), zap.Bool("recorded_thin", recordedThin),
+		zap.Int("count", len(out)))
 	return out, nil
 }
 
@@ -61,8 +73,12 @@ func (rm *ResourceManager) knownPoolFree(ctx context.Context, pool string) (map[
 // Unknown is not a refusal: when the pool or the volume size cannot be read,
 // the add goes on as it did before.
 func (rm *ResourceManager) assertPoolRoom(ctx context.Context, resource, node string) error {
+	log := loggerOfController(rm.controller)
 	pool, sizeGB := rm.memberPoolAndSize(ctx, resource, "")
+	log.Debug("assertPoolRoom: start", zap.String("resource", resource), zap.String("node", node),
+		zap.String("pool", pool), zap.Uint64("size_gb", sizeGB))
 	if pool == "" || sizeGB == 0 {
+		log.Debug("assertPoolRoom: pool or size unknown, not checked", zap.String("resource", resource))
 		return nil
 	}
 	pool = normalizeManagedName(pool)
@@ -72,12 +88,17 @@ func (rm *ResourceManager) assertPoolRoom(ctx context.Context, resource, node st
 	// compared with the volume's size directly.
 	free, err := rm.knownPoolFree(ctx, pool)
 	if err != nil {
+		log.Debug("assertPoolRoom: free space unreadable, not checked", zap.String("pool", pool), zap.Error(err))
 		return nil
 	}
 	have, known := free[node]
 	if !known || have >= sizeGB<<30 {
+		log.Debug("assertPoolRoom: room enough or unknown", zap.String("pool", pool), zap.String("node", node),
+			zap.Bool("known", known), zap.Uint64("free_bytes", have))
 		return nil
 	}
+	log.Debug("assertPoolRoom: pool too small for the sync", zap.String("pool", pool), zap.String("node", node),
+		zap.Uint64("free_bytes", have), zap.Uint64("size_gb", sizeGB))
 	return fmt.Errorf("the pool %s on %s has %s free and %s is %d GiB, which the sync writes in full: "+
 		"a full pool drops the new replica's disk. Free space or grow the pool first, or add it anyway with --ignore-free-space",
 		strings.TrimPrefix(pool, managedNamePrefix), node, freeText(have), resource, sizeGB)
@@ -98,15 +119,23 @@ func freeText(b uint64) string {
 // onto a full pool did to one test node while a 3 GiB volume grew to
 // 4 GiB. Volumes on ZFS are not checked here.
 func (rm *ResourceManager) assertPoolRoomForGrowth(ctx context.Context, resource string, volumeID uint32, newSizeGB uint64) error {
+	log := loggerOfController(rm.controller)
+	log.Debug("assertPoolRoomForGrowth: start", zap.String("resource", resource), zap.Uint32("volume", volumeID),
+		zap.Uint64("new_size_gb", newSizeGB))
 	if rm.controller.db == nil {
+		log.Debug("assertPoolRoomForGrowth: no database, not checked")
 		return nil
 	}
 	dbRes, err := rm.controller.db.GetResource(ctx, resource)
 	if err != nil || dbRes == nil {
+		log.Debug("assertPoolRoomForGrowth: db resource not found, not checked", zap.String("resource", resource),
+			zap.Error(err))
 		return nil
 	}
 	vols, err := rm.controller.db.ListVolumes(ctx, resource)
 	if err != nil {
+		log.Debug("assertPoolRoomForGrowth: db list volumes failed, not checked", zap.String("resource", resource),
+			zap.Error(err))
 		return nil
 	}
 	var vol *database.Volume
@@ -116,11 +145,14 @@ func (rm *ResourceManager) assertPoolRoomForGrowth(ctx context.Context, resource
 		}
 	}
 	if vol == nil || vol.Pool == "" || strings.HasPrefix(vol.Device, "/dev/zvol/") {
+		log.Debug("assertPoolRoomForGrowth: volume unknown, poolless or on ZFS, not checked",
+			zap.String("resource", resource), zap.Bool("found", vol != nil))
 		return nil
 	}
 	pool := normalizeManagedName(vol.Pool)
 	free, err := rm.knownPoolFree(ctx, pool)
 	if err != nil {
+		log.Debug("assertPoolRoomForGrowth: free space unreadable, not checked", zap.String("pool", pool), zap.Error(err))
 		return nil
 	}
 	newBytes := newSizeGB << 30
@@ -129,6 +161,7 @@ func (rm *ResourceManager) assertPoolRoomForGrowth(ctx context.Context, resource
 	for _, n := range splitCSV(dbRes.Nodes) {
 		have, known := free[n]
 		if !known {
+			log.Debug("assertPoolRoomForGrowth: free space unknown on node", zap.String("node", n))
 			continue
 		}
 		// The growth is measured against the volume as it is on that node, not
@@ -140,17 +173,24 @@ func (rm *ResourceManager) assertPoolRoomForGrowth(ctx context.Context, resource
 			current = live
 		}
 		if newBytes <= current {
+			log.Debug("assertPoolRoomForGrowth: no growth on node", zap.String("node", n),
+				zap.Uint64("current_bytes", current))
 			continue
 		}
 		growth := newBytes - current
+		log.Debug("assertPoolRoomForGrowth: node checked", zap.String("node", n), zap.Uint64("free_bytes", have),
+			zap.Uint64("growth_bytes", growth), zap.Bool("fits", have >= growth))
 		if have < growth {
 			short = append(short, fmt.Sprintf("%s (%s free)", n, freeText(have)))
 			worst = max(worst, growth)
 		}
 	}
 	if len(short) == 0 {
+		log.Debug("assertPoolRoomForGrowth: every node has room", zap.String("resource", resource))
 		return nil
 	}
+	log.Debug("assertPoolRoomForGrowth: nodes short of room", zap.String("resource", resource),
+		zap.Strings("nodes", short))
 	return fmt.Errorf("growing volume %d of %s to %d GiB writes the new area (up to %s) to every replica, and %s cannot hold that: "+
 		"a full pool drops the disk. Free space or grow those pools first, or resize anyway with --ignore-free-space",
 		volumeID, resource, newSizeGB, freeText(worst), strings.Join(short, ", "))
@@ -158,20 +198,31 @@ func (rm *ResourceManager) assertPoolRoomForGrowth(ctx context.Context, resource
 
 // liveVolumeBytes reads the size of a volume's backing LV on one node.
 func (rm *ResourceManager) liveVolumeBytes(ctx context.Context, node string, vol *database.Volume) (uint64, bool) {
+	log := loggerOfController(rm.controller)
 	if vol.VolumeName == "" {
+		log.Debug("liveVolumeBytes: volume has no LV name", zap.String("node", node))
 		return 0, false
 	}
-	res, err := rm.deployment.Exec(ctx, []string{rm.controller.ResolveHost(node)},
+	host := rm.controller.ResolveHost(node)
+	start := time.Now()
+	res, err := rm.deployment.Exec(ctx, []string{host},
 		fmt.Sprintf("sudo lvs --noheadings --nosuffix --units b -o lv_size %s/%s", vol.Pool, vol.VolumeName))
 	if err != nil {
+		log.Debug("liveVolumeBytes: lvs failed", zap.String("host", host), zap.String("pool", vol.Pool),
+			zap.String("volume", vol.VolumeName), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return 0, false
 	}
 	for _, hr := range res.Hosts {
 		if !hr.Success {
+			log.Debug("liveVolumeBytes: lvs failed on host", zap.String("host", hr.Host),
+				zap.String("volume", vol.VolumeName), zap.Duration("took", time.Since(start)))
 			return 0, false
 		}
 		n, err := strconv.ParseUint(strings.TrimSpace(hr.Output), 10, 64)
+		log.Debug("liveVolumeBytes: read", zap.String("host", hr.Host), zap.String("volume", vol.VolumeName),
+			zap.Uint64("size_bytes", n), zap.Duration("took", time.Since(start)), zap.Error(err))
 		return n, err == nil && n > 0
 	}
+	log.Debug("liveVolumeBytes: no host result", zap.String("host", host))
 	return 0, false
 }

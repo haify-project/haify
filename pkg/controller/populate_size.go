@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -52,27 +53,45 @@ func parseLaSizeSectors(out string) uint64 {
 // DRBD metadata on it, so the target's own size bounds the copy), growing the
 // still-empty target first when the source's data region is larger.
 func (sm *SnapshotManager) fitTargetToSource(ctx context.Context, resource string, volumeID uint32, address, target, sourceDevice string) (uint64, error) {
+	log := loggerOfController(sm.controller)
+	log.Debug("fitTargetToSource: reading source data size", zap.String("resource", resource), zap.Uint32("volume", volumeID),
+		zap.String("host", address), zap.String("target", target), zap.String("source", sourceDevice))
 	dep := sm.controller.deployment
+	start := time.Now()
 	res, err := dep.Exec(ctx, []string{address}, sourceDataBytesCmd(sourceDevice))
+	log.Debug("fitTargetToSource: drbdmeta dump-md la-size", zap.String("host", address), zap.String("source", sourceDevice),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil || res.Hosts[address] == nil {
+		log.Debug("fitTargetToSource: source size unknown, target size bounds the copy")
 		return 0, nil
 	}
 	data := parseLaSizeSectors(res.Hosts[address].Output)
 	if data == 0 {
+		log.Debug("fitTargetToSource: source holds no DRBD metadata", zap.String("source", sourceDevice))
 		return 0, nil
 	}
+	start = time.Now()
 	res, err = dep.Exec(ctx, []string{address}, "sudo blockdev --getsize64 "+target)
+	log.Debug("fitTargetToSource: blockdev --getsize64", zap.String("host", address), zap.String("target", target),
+		zap.Bool("success", err == nil && res.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil || !res.AllSuccess() {
 		return 0, fmt.Errorf("read the size of %s on %s: %v", target, address, err)
 	}
 	have, err := strconv.ParseUint(strings.TrimSpace(res.Hosts[address].Output), 10, 64)
 	if err != nil {
+		log.Debug("fitTargetToSource: target size unparsable", zap.String("target", target), zap.Error(err))
 		return 0, fmt.Errorf("read the size of %s on %s: %q", target, address, res.Hosts[address].Output)
 	}
+	log.Debug("fitTargetToSource: sizes", zap.Uint64("source_bytes", data), zap.Uint64("target_bytes", have),
+		zap.Bool("grow", data > have))
 	if data > have {
 		sm.controller.logger.Info("Growing the target to hold the whole source",
 			zap.String("resource", resource), zap.Uint64("source_bytes", data), zap.Uint64("target_bytes", have))
-		if err := sm.controller.resources.ResizeVolumeBytes(ctx, resource, volumeID, data, false); err != nil {
+		start = time.Now()
+		err := sm.controller.resources.ResizeVolumeBytes(ctx, resource, volumeID, data, false)
+		log.Debug("fitTargetToSource: grew target", zap.String("resource", resource), zap.Uint64("size_bytes", data),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			return 0, fmt.Errorf("%s holds %d bytes but %s is %d; growing it failed: %w", sourceDevice, data, resource, have, err)
 		}
 	}

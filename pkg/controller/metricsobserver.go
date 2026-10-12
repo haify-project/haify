@@ -70,25 +70,44 @@ func newMetricsObserver(c *Controller) *metricsObserver {
 	if c.resources != nil {
 		obs.resources = c.resources
 	}
+	obs.debugLog().Debug("newMetricsObserver: created", zap.Bool("has_db", c.db != nil),
+		zap.Bool("has_resources", c.resources != nil))
 	return obs
+}
+
+// debugLog is the observer's logger, or zap's global one when it has none.
+func (o *metricsObserver) debugLog() *zap.Logger {
+	if o.log == nil {
+		return zap.L()
+	}
+	return o.log
 }
 
 // Observed implements alert.Observer.
 func (o *metricsObserver) Observed(obs alert.Observation) {
+	log := o.debugLog()
+	log.Debug("metricsObserver.Observed: exporting poll", zap.Bool("resources", obs.Resources.Enabled),
+		zap.Bool("nodes", obs.Nodes.Enabled), zap.Bool("pools", obs.Pools.Enabled), zap.Int("firing", len(obs.Firing)))
+	start := time.Now()
 	o.observeResources(obs.Resources)
 	o.observeNodes(obs.Nodes)
 	o.observePools(obs.Pools)
 	o.observeGateways()
 	o.observeHealth(obs)
+	log.Debug("metricsObserver.Observed: done", zap.Duration("took", time.Since(start)))
 }
 
 // observeResources records resource health and the live DRBD replication view.
 func (o *metricsObserver) observeResources(res alert.ResourceObservation) {
+	log := o.debugLog()
 	if !res.Enabled {
+		log.Debug("metricsObserver.observeResources: resource check disabled")
 		return
 	}
 	o.metrics.RecordObservation("resources", res.OK, res.Duration.Seconds())
 	if !res.OK {
+		log.Debug("metricsObserver.observeResources: poll failed, keeping previous gauges",
+			zap.Duration("took", res.Duration))
 		return
 	}
 
@@ -133,14 +152,20 @@ func (o *metricsObserver) observeResources(res alert.ResourceObservation) {
 	o.metrics.RecordResourceCount("healthy", healthy)
 	o.metrics.RecordResourceCount("degraded", degraded)
 	o.metrics.SetReplication(snap)
+	log.Debug("metricsObserver.observeResources: exported", zap.Float64("healthy", healthy),
+		zap.Float64("degraded", degraded), zap.Int("replicas", len(snap.Replicas)))
 }
 
 func (o *metricsObserver) observeNodes(nodes alert.NodeObservation) {
+	log := o.debugLog()
 	if !nodes.Enabled {
+		log.Debug("metricsObserver.observeNodes: node check disabled")
 		return
 	}
 	o.metrics.RecordObservation("nodes", nodes.OK, nodes.Duration.Seconds())
 	if !nodes.OK {
+		log.Debug("metricsObserver.observeNodes: poll failed, keeping previous gauges",
+			zap.Duration("took", nodes.Duration))
 		return
 	}
 
@@ -154,21 +179,29 @@ func (o *metricsObserver) observeNodes(nodes alert.NodeObservation) {
 	}
 	o.metrics.RecordNodeState("reachable", reachable)
 	o.metrics.RecordNodeState("unreachable", unreachable)
+	log.Debug("metricsObserver.observeNodes: exported", zap.Float64("reachable", reachable),
+		zap.Float64("unreachable", unreachable))
 }
 
 func (o *metricsObserver) observePools(pools alert.PoolObservation) {
+	log := o.debugLog()
 	if !pools.Enabled {
+		log.Debug("metricsObserver.observePools: pool check disabled")
 		return
 	}
 	o.metrics.RecordObservation("pools", pools.OK, pools.Duration.Seconds())
 	if !pools.OK {
+		log.Debug("metricsObserver.observePools: poll failed, keeping previous gauges",
+			zap.Duration("took", pools.Duration))
 		return
 	}
 
 	capacities := make([]metrics.PoolCapacity, 0, len(pools.Items))
+	skipped := 0
 	for _, p := range pools.Items {
 		total, used, ok := poolCapacityBytes(p)
 		if !ok {
+			skipped++
 			continue
 		}
 		capacities = append(capacities, metrics.PoolCapacity{
@@ -176,6 +209,8 @@ func (o *metricsObserver) observePools(pools alert.PoolObservation) {
 		})
 	}
 	o.metrics.SetPoolCapacities(capacities)
+	log.Debug("metricsObserver.observePools: exported", zap.Int("count", len(capacities)),
+		zap.Int("skipped_without_capacity", skipped))
 }
 
 // poolCapacityBytes picks the capacity figures that describe whether writes to
@@ -208,7 +243,9 @@ func poolCapacityBytes(p alert.PoolStatusInfo) (total, used uint64, ok bool) {
 // one cadence is easier to reason about than two, and a gateway count that is
 // up to one poll old is exactly as fresh as everything else on the page.
 func (o *metricsObserver) observeGateways() {
+	log := o.debugLog()
 	if o.gateways == nil {
+		log.Debug("metricsObserver.observeGateways: no database, skipping")
 		return
 	}
 
@@ -218,6 +255,8 @@ func (o *metricsObserver) observeGateways() {
 	start := time.Now()
 	records, err := o.gateways.ListGateways(ctx)
 	o.metrics.RecordObservation("gateways", err == nil, time.Since(start).Seconds())
+	log.Debug("metricsObserver.observeGateways: listed gateways", zap.Int("count", len(records)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		o.log.Warn("metrics observer: list gateways failed", zap.Error(err))
 		return
@@ -241,6 +280,7 @@ func (o *metricsObserver) observeGateways() {
 		out = append(out, key)
 	}
 	o.metrics.SetGatewayCounts(out)
+	log.Debug("metricsObserver.observeGateways: exported", zap.Int("series", len(out)))
 }
 
 // gatewayMetricState normalises a stored gateway status into a label value.

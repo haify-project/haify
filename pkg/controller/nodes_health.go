@@ -5,29 +5,44 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // GetNodeStatus gets detailed node status
 func (nm *NodeManager) GetNodeStatus(ctx context.Context, address string) (map[string]interface{}, error) {
+	log := loggerOfController(nm.controller)
+	log.Debug("NodeManager.GetNodeStatus: start", zap.String("address", address))
 	nm.mu.RLock()
 	node := nm.nodes[address]
 	nm.mu.RUnlock()
 
 	if node == nil {
+		log.Debug("NodeManager.GetNodeStatus: node not found", zap.String("address", address))
 		return nil, fmt.Errorf("node not found: %s", address)
 	}
 
 	// Get DRBD status
+	start := time.Now()
 	drbdResult, err := nm.controller.deployment.Exec(ctx, []string{address}, "sudo drbdadm status")
 	if err != nil {
+		log.Debug("NodeManager.GetNodeStatus: drbdadm status failed to run", zap.String("host", address),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, fmt.Errorf("failed to get DRBD status: %w", err)
 	}
+	log.Debug("NodeManager.GetNodeStatus: drbdadm status ran", zap.String("host", address),
+		zap.Bool("success", drbdResult.AllSuccess()), zap.Duration("took", time.Since(start)))
 
 	// Get VG info
+	start = time.Now()
 	vgResult, err := nm.controller.deployment.Exec(ctx, []string{address}, "sudo vgs --noheadings -o vg_name")
 	if err != nil {
+		log.Debug("NodeManager.GetNodeStatus: vgs failed to run", zap.String("host", address),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, fmt.Errorf("failed to get VG info: %w", err)
 	}
+	log.Debug("NodeManager.GetNodeStatus: vgs ran", zap.String("host", address),
+		zap.Bool("success", vgResult.AllSuccess()), zap.Duration("took", time.Since(start)))
 
 	resourceCount := 0
 	if drbdResult.AllSuccess() {
@@ -67,32 +82,44 @@ func (nm *NodeManager) GetNodeStatus(ctx context.Context, address string) (map[s
 		},
 	}
 
+	log.Debug("NodeManager.GetNodeStatus: done", zap.String("address", address),
+		zap.Int("resources", resourceCount), zap.Int("pools", poolCount), zap.String("state", string(node.State)))
 	return status, nil
 }
 
 // CheckNodeHealth checks health of a specific node
 func (nm *NodeManager) CheckNodeHealth(ctx context.Context, address string) error {
+	log := loggerOfController(nm.controller)
+	log.Debug("NodeManager.CheckNodeHealth: start", zap.String("address", address))
 	nm.mu.RLock()
 	node := nm.nodes[address]
 	nm.mu.RUnlock()
 
 	if node == nil {
+		log.Debug("NodeManager.CheckNodeHealth: node not found", zap.String("address", address))
 		return fmt.Errorf("node not found: %s", address)
 	}
 
+	start := time.Now()
 	result, err := nm.controller.deployment.Exec(ctx, []string{address}, "echo ok")
 	if err != nil {
+		log.Debug("NodeManager.CheckNodeHealth: probe failed to run, marking offline", zap.String("host", address),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		nm.markHealth(address, NodeStateOffline)
 		return fmt.Errorf("health check failed: %w", err)
 	}
 
 	if !result.AllSuccess() {
+		log.Debug("NodeManager.CheckNodeHealth: probe failed, marking offline", zap.String("host", address),
+			zap.Duration("took", time.Since(start)))
 		nm.markHealth(address, NodeStateOffline)
 		// Why it failed is what an operator needs: an SSH host key that
 		// changed, a refused connection and a timeout are fixed differently.
 		return fmt.Errorf("health check failed: %s", result.FailureDetails())
 	}
 
+	log.Debug("NodeManager.CheckNodeHealth: probe answered, marking online", zap.String("host", address),
+		zap.Duration("took", time.Since(start)))
 	nm.markHealth(address, NodeStateOnline)
 	return nil
 }
@@ -108,10 +135,12 @@ func (nm *NodeManager) CheckNodeHealth(ctx context.Context, address string) erro
 // controller failover; a node that answers again gets the configs it missed
 // (self_heal_return.go).
 func (nm *NodeManager) markHealth(address string, state NodeState) {
+	log := loggerOfController(nm.controller)
 	nm.mu.Lock()
 	n := nm.nodes[address]
 	if n == nil {
 		nm.mu.Unlock()
+		log.Debug("NodeManager.markHealth: node no longer registered", zap.String("address", address))
 		return
 	}
 	wasOffline := !n.OfflineSince.IsZero()
@@ -121,16 +150,22 @@ func (nm *NodeManager) markHealth(address string, state NodeState) {
 	} else if !wasOffline {
 		n.OfflineSince = time.Now()
 	}
-	if n.State != NodeStateMaintenance && n.State != NodeStateEvicted {
+	kept := n.State == NodeStateMaintenance || n.State == NodeStateEvicted
+	if !kept {
 		n.State = state
 	}
 	changed := wasOffline != !n.OfflineSince.IsZero()
 	name := n.Name
+	current := n.State
 	nm.mu.Unlock()
+	log.Debug("NodeManager.markHealth: recorded", zap.String("node", name), zap.String("address", address),
+		zap.String("reading", string(state)), zap.String("state", string(current)),
+		zap.Bool("operator_state_kept", kept), zap.Bool("changed", changed))
 
 	if changed {
 		go nm.persistHealth(address)
 		if state == NodeStateOnline {
+			log.Debug("NodeManager.markHealth: node is back, repairing configs it missed", zap.String("node", name))
 			go nm.controller.resources.repairStaleConfigs(name)
 		}
 	}
@@ -149,6 +184,8 @@ type NodeHealthInfo struct {
 
 // HealthCheck performs a comprehensive health check on a node
 func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeHealthInfo, error) {
+	log := loggerOfController(nm.controller)
+	log.Debug("NodeManager.HealthCheck: start", zap.String("node", nodeName))
 	info := &NodeHealthInfo{
 		AvailableAgents: make([]string, 0),
 	}
@@ -174,9 +211,13 @@ func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeH
 		// Fallback to node name/address if not found
 		sshTarget = nodeName
 	}
+	log.Debug("NodeManager.HealthCheck: resolved SSH target", zap.String("node", nodeName), zap.String("host", sshTarget))
 
 	// Check DRBD installation
+	start := time.Now()
 	drbdResult, err := nm.controller.deployment.Exec(ctx, []string{sshTarget}, "drbdadm --version 2>/dev/null || echo 'not found'")
+	log.Debug("NodeManager.HealthCheck: drbdadm --version ran", zap.String("host", sshTarget),
+		zap.Bool("success", err == nil && drbdResult.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err == nil && drbdResult.AllSuccess() {
 		for _, r := range drbdResult.Hosts {
 			if r.Success && r.Output != "" {
@@ -190,6 +231,7 @@ func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeH
 					// broken: health-check passes and `drbdadm up` then fails
 					// with "Module drbd not found".
 					if version == "" || version == "0" {
+						log.Debug("NodeManager.HealthCheck: DRBD utils present but no kernel module", zap.String("host", sshTarget))
 						break
 					}
 					info.DrbdInstalled = true
@@ -201,7 +243,10 @@ func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeH
 	}
 
 	// Check drbd-reactor installation
+	start = time.Now()
 	reactorResult, err := nm.controller.deployment.Exec(ctx, []string{sshTarget}, "drbd-reactor --version 2>/dev/null || echo 'not found'")
+	log.Debug("NodeManager.HealthCheck: drbd-reactor --version ran", zap.String("host", sshTarget),
+		zap.Bool("success", err == nil && reactorResult.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err == nil && reactorResult.AllSuccess() {
 		for _, r := range reactorResult.Hosts {
 			if r.Success && r.Output != "" {
@@ -217,7 +262,10 @@ func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeH
 
 	// Check drbd-reactor service status
 	if info.DrbdReactorInstalled {
+		start = time.Now()
 		serviceResult, err := nm.controller.deployment.Exec(ctx, []string{sshTarget}, "systemctl is-active drbd-reactor")
+		log.Debug("NodeManager.HealthCheck: systemctl is-active drbd-reactor ran", zap.String("host", sshTarget),
+			zap.Bool("success", err == nil && serviceResult.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err == nil && serviceResult.AllSuccess() {
 			for _, r := range serviceResult.Hosts {
 				if r.Success && strings.TrimSpace(r.Output) == "active" {
@@ -226,11 +274,16 @@ func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeH
 				}
 			}
 		}
+	} else {
+		log.Debug("NodeManager.HealthCheck: drbd-reactor not installed, service not checked", zap.String("host", sshTarget))
 	}
 
 	// Check resource-agents-extra (OCF agents)
 	// Recursively find all executable OCF resource agents
+	start = time.Now()
 	agentsResult, err := nm.controller.deployment.Exec(ctx, []string{sshTarget}, "find /usr/lib/ocf/resource.d -type f -executable -exec basename {} \\; 2>/dev/null | sort -u")
+	log.Debug("NodeManager.HealthCheck: OCF agent listing ran", zap.String("host", sshTarget),
+		zap.Bool("success", err == nil && agentsResult.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err == nil && agentsResult.AllSuccess() {
 		agents := make([]string, 0)
 		seen := make(map[string]bool)
@@ -255,12 +308,20 @@ func (nm *NodeManager) HealthCheck(ctx context.Context, nodeName string) (*NodeH
 		info.AvailableAgents = agents
 	}
 
+	log.Debug("NodeManager.HealthCheck: done", zap.String("node", nodeName),
+		zap.Bool("drbd_installed", info.DrbdInstalled), zap.String("drbd_version", info.DrbdVersion),
+		zap.Bool("drbd_reactor_installed", info.DrbdReactorInstalled), zap.Bool("drbd_reactor_running", info.DrbdReactorRunning),
+		zap.Bool("resource_agents_installed", info.ResourceAgentsInstalled), zap.Int("agents", len(info.AvailableAgents)))
 	return info, nil
 }
 
 func (nm *NodeManager) detectNodeVersion(ctx context.Context, address string) string {
+	log := loggerOfController(nm.controller)
+	start := time.Now()
 	result, err := nm.controller.deployment.Exec(ctx, []string{address}, "cat /etc/os-release 2>/dev/null || uname -r")
 	if err != nil || !result.AllSuccess() {
+		log.Debug("NodeManager.detectNodeVersion: reading os-release failed, version unknown", zap.String("host", address),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return "unknown"
 	}
 
@@ -268,9 +329,13 @@ func (nm *NodeManager) detectNodeVersion(ctx context.Context, address string) st
 		if !r.Success || strings.TrimSpace(r.Output) == "" {
 			continue
 		}
-		return parseNodeEnvironmentVersion(r.Output)
+		v := parseNodeEnvironmentVersion(r.Output)
+		log.Debug("NodeManager.detectNodeVersion: detected", zap.String("host", address), zap.String("version", v),
+			zap.Duration("took", time.Since(start)))
+		return v
 	}
 
+	log.Debug("NodeManager.detectNodeVersion: empty answer, version unknown", zap.String("host", address))
 	return "unknown"
 }
 
@@ -304,12 +369,15 @@ func parseVersion(output string) string {
 			}
 		}
 	}
+	zap.L().Debug("parseVersion: no version found", zap.Int("output_bytes", len(output)))
 	return "unknown"
 }
 
 func parseNodeEnvironmentVersion(output string) string {
+	log := zap.L()
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" {
+		log.Debug("parseNodeEnvironmentVersion: empty output")
 		return "unknown"
 	}
 
@@ -328,17 +396,22 @@ func parseNodeEnvironmentVersion(output string) string {
 
 		switch {
 		case osRelease["PRETTY_NAME"] != "":
+			log.Debug("parseNodeEnvironmentVersion: using PRETTY_NAME")
 			return osRelease["PRETTY_NAME"]
 		case osRelease["NAME"] != "" && osRelease["VERSION"] != "":
+			log.Debug("parseNodeEnvironmentVersion: using NAME and VERSION")
 			return strings.TrimSpace(osRelease["NAME"] + " " + osRelease["VERSION"])
 		case osRelease["NAME"] != "" && osRelease["VERSION_ID"] != "":
+			log.Debug("parseNodeEnvironmentVersion: using NAME and VERSION_ID")
 			return strings.TrimSpace(osRelease["NAME"] + " " + osRelease["VERSION_ID"])
 		}
 	}
 
 	if version := parseVersion(trimmed); version != "unknown" {
+		log.Debug("parseNodeEnvironmentVersion: using a version string", zap.String("version", version))
 		return version
 	}
 
+	log.Debug("parseNodeEnvironmentVersion: using the raw output")
 	return trimmed
 }

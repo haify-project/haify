@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/haify-project/haify/pkg/config"
 	"github.com/haify-project/haify/pkg/rbac"
 	"google.golang.org/grpc"
@@ -17,6 +19,8 @@ import (
 func toRBACUsers(in []config.RBACUser) []rbac.User {
 	out := make([]rbac.User, len(in))
 	for i, u := range in {
+		zap.L().Debug("toRBACUsers: config user", zap.String("user", u.Name), zap.String("role", u.Role),
+			zap.Bool("has_token", u.Token != ""))
 		out[i] = rbac.User{Name: u.Name, Token: u.Token, Role: u.Role}
 	}
 	return out
@@ -25,6 +29,8 @@ func toRBACUsers(in []config.RBACUser) []rbac.User {
 func toRBACPolicies(in []config.RBACPolicy) []rbac.Policy {
 	out := make([]rbac.Policy, len(in))
 	for i, p := range in {
+		zap.L().Debug("toRBACPolicies: config policy", zap.String("role", p.Role), zap.String("object", p.Object),
+			zap.String("action", p.Action))
 		out[i] = rbac.Policy{Role: p.Role, Object: p.Object, Action: p.Action}
 	}
 	return out
@@ -35,6 +41,8 @@ func toRBACPolicies(in []config.RBACPolicy) []rbac.Policy {
 // classifies the RPC into an (object, action) pair and asks Casbin whether the
 // user's role permits it. Both sit after the audit interceptor so denials are
 // recorded. Health checks stay open.
+//
+// The traces here say whether a token was presented, never the token.
 
 type ctxUserKey struct{}
 
@@ -70,13 +78,19 @@ var errPermissionDenied = status.Error(codes.PermissionDenied,
 // rbacIdentityUnaryInterceptor resolves the caller from its bearer token.
 func rbacIdentityUnaryInterceptor(engine *rbac.Engine) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		log := zap.L()
 		if strings.HasPrefix(info.FullMethod, healthServicePrefix) {
+			log.Debug("rbacIdentityUnaryInterceptor: health check, no identity needed", zap.String("method", info.FullMethod))
 			return handler(ctx, req)
 		}
-		name, ok := engine.ResolveUser(bearerToken(ctx))
+		token := bearerToken(ctx)
+		name, ok := engine.ResolveUser(token)
 		if !ok {
+			log.Debug("rbacIdentityUnaryInterceptor: token not recognised", zap.String("method", info.FullMethod),
+				zap.Bool("has_token", token != ""))
 			return nil, errUnauthenticated
 		}
+		log.Debug("rbacIdentityUnaryInterceptor: caller resolved", zap.String("method", info.FullMethod), zap.String("user", name))
 		return handler(context.WithValue(ctx, ctxUserKey{}, name), req)
 	}
 }
@@ -84,11 +98,16 @@ func rbacIdentityUnaryInterceptor(engine *rbac.Engine) grpc.UnaryServerIntercept
 // rbacAuthzUnaryInterceptor enforces the caller's role against the RPC.
 func rbacAuthzUnaryInterceptor(engine *rbac.Engine) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		log := zap.L()
 		if strings.HasPrefix(info.FullMethod, healthServicePrefix) {
+			log.Debug("rbacAuthzUnaryInterceptor: health check, not enforced", zap.String("method", info.FullMethod))
 			return handler(ctx, req)
 		}
 		object, action := rbac.Classify(info.FullMethod)
-		allowed, err := engine.Enforce(userFromContext(ctx), object, action)
+		user := userFromContext(ctx)
+		allowed, err := engine.Enforce(user, object, action)
+		log.Debug("rbacAuthzUnaryInterceptor: enforced", zap.String("method", info.FullMethod), zap.String("user", user),
+			zap.String("object", object), zap.String("action", action), zap.Bool("allowed", allowed), zap.Error(err))
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "authorization check failed: %v", err)
 		}
@@ -102,13 +121,19 @@ func rbacAuthzUnaryInterceptor(engine *rbac.Engine) grpc.UnaryServerInterceptor 
 // rbacIdentityStreamInterceptor resolves the caller for streaming RPCs.
 func rbacIdentityStreamInterceptor(engine *rbac.Engine) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		log := zap.L()
 		if strings.HasPrefix(info.FullMethod, healthServicePrefix) {
+			log.Debug("rbacIdentityStreamInterceptor: health check, no identity needed", zap.String("method", info.FullMethod))
 			return handler(srv, ss)
 		}
-		name, ok := engine.ResolveUser(bearerToken(ss.Context()))
+		token := bearerToken(ss.Context())
+		name, ok := engine.ResolveUser(token)
 		if !ok {
+			log.Debug("rbacIdentityStreamInterceptor: token not recognised", zap.String("method", info.FullMethod),
+				zap.Bool("has_token", token != ""))
 			return errUnauthenticated
 		}
+		log.Debug("rbacIdentityStreamInterceptor: caller resolved", zap.String("method", info.FullMethod), zap.String("user", name))
 		wrapped := &wrappedServerStream{ServerStream: ss,
 			ctx: context.WithValue(ss.Context(), ctxUserKey{}, name)}
 		return handler(srv, wrapped)
@@ -118,11 +143,16 @@ func rbacIdentityStreamInterceptor(engine *rbac.Engine) grpc.StreamServerInterce
 // rbacAuthzStreamInterceptor enforces the role for streaming RPCs.
 func rbacAuthzStreamInterceptor(engine *rbac.Engine) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		log := zap.L()
 		if strings.HasPrefix(info.FullMethod, healthServicePrefix) {
+			log.Debug("rbacAuthzStreamInterceptor: health check, not enforced", zap.String("method", info.FullMethod))
 			return handler(srv, ss)
 		}
 		object, action := rbac.Classify(info.FullMethod)
-		allowed, err := engine.Enforce(userFromContext(ss.Context()), object, action)
+		user := userFromContext(ss.Context())
+		allowed, err := engine.Enforce(user, object, action)
+		log.Debug("rbacAuthzStreamInterceptor: enforced", zap.String("method", info.FullMethod), zap.String("user", user),
+			zap.String("object", object), zap.String("action", action), zap.Bool("allowed", allowed), zap.Error(err))
 		if err != nil {
 			return status.Errorf(codes.Internal, "authorization check failed: %v", err)
 		}

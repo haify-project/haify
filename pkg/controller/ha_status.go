@@ -86,8 +86,10 @@ func (c *haProbeCache) get(host string, now time.Time) (haProbeResult, bool) {
 	defer c.mu.Unlock()
 	e, ok := c.entries[host]
 	if !ok || now.Sub(e.at) > haProbeTTL {
+		zap.L().Debug("haProbeCache.get: miss", zap.String("host", host), zap.Bool("cached", ok))
 		return haProbeResult{}, false
 	}
+	zap.L().Debug("haProbeCache.get: hit", zap.String("host", host), zap.Duration("age", now.Sub(e.at)))
 	return e.haProbeResult, true
 }
 
@@ -97,12 +99,15 @@ func (c *haProbeCache) put(host string, r haProbeResult, at time.Time) {
 	if c.entries == nil {
 		c.entries = map[string]haProbeEntry{}
 	}
+	zap.L().Debug("haProbeCache.put: cached", zap.String("host", host), zap.Bool("failed", r.err != nil))
 	c.entries[host] = haProbeEntry{haProbeResult: r, at: at}
 }
 
 // probeHaNodes probes hosts, one SSH exec each and all at once, answering
 // from the cache for hosts probed within haProbeTTL.
 func (rm *ResourceManager) probeHaNodes(ctx context.Context, hosts []string) map[string]haProbeResult {
+	log := loggerOfController(rm.controller)
+	log.Debug("ResourceManager.probeHaNodes: start", zap.Strings("hosts", hosts))
 	out := make(map[string]haProbeResult, len(hosts))
 	var stale []string
 	now := time.Now()
@@ -114,8 +119,12 @@ func (rm *ResourceManager) probeHaNodes(ctx context.Context, hosts []string) map
 		}
 	}
 	if len(stale) == 0 {
+		log.Debug("ResourceManager.probeHaNodes: every host answered from the cache", zap.Int("count", len(out)))
 		return out
 	}
+	log.Debug("ResourceManager.probeHaNodes: probing hosts not in the cache", zap.Strings("hosts", stale),
+		zap.Int("cached", len(out)))
+	start := time.Now()
 	cmd := haProbeCommand()
 	results := make([]haProbeResult, len(stale))
 	var wg sync.WaitGroup
@@ -129,15 +138,23 @@ func (rm *ResourceManager) probeHaNodes(ctx context.Context, hosts []string) map
 	wg.Wait()
 	done := time.Now()
 	for i, h := range stale {
+		log.Debug("ResourceManager.probeHaNodes: probe result", zap.String("host", h), zap.Error(results[i].err))
 		out[h] = results[i]
 		rm.haProbes.put(h, results[i], done)
 	}
+	log.Debug("ResourceManager.probeHaNodes: done", zap.Int("probed", len(stale)), zap.Int("count", len(out)),
+		zap.Duration("took", time.Since(start)))
 	return out
 }
 
 func (rm *ResourceManager) probeHaNode(ctx context.Context, host, cmd string) haProbeResult {
+	log := loggerOfController(rm.controller)
+	log.Debug("ResourceManager.probeHaNode: running the HA probe", zap.String("host", host),
+		zap.Duration("timeout", haProbeTimeout))
 	start := time.Now()
 	res, err := rm.deployment.Exec(ctx, []string{host}, cmd, deployment.WithExecTimeout(haProbeTimeout))
+	log.Debug("ResourceManager.probeHaNode: probe returned", zap.String("host", host),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		rm.controller.logger.Warn("HA status probe failed",
 			zap.String("node", rm.nodeLabel(host)), zap.Error(err))
@@ -155,7 +172,7 @@ func (rm *ResourceManager) probeHaNode(ctx context.Context, host, cmd string) ha
 			zap.String("node", rm.nodeLabel(host)), zap.Error(err))
 		return haProbeResult{err: fmt.Errorf("probe %s: %w", rm.nodeLabel(host), err)}
 	}
-	rm.controller.logger.Debug("HA status probe",
+	log.Debug("ResourceManager.probeHaNode: probe parsed",
 		zap.String("node", rm.nodeLabel(host)), zap.Duration("took", time.Since(start)))
 	return haProbeResult{facts: facts}
 }
@@ -167,11 +184,15 @@ func (rm *ResourceManager) probeHaNode(ctx context.Context, host, cmd string) ha
 // still reported when it carries a gateway or an app, whose promoters are the
 // same kind of chain.
 func (rm *ResourceManager) GetHaStatus(ctx context.Context, resource string) ([]*HaPromoterStatus, error) {
+	log := loggerOfController(rm.controller)
+	log.Debug("ResourceManager.GetHaStatus: start", zap.String("resource", resource))
 	if rm.controller.db == nil {
+		log.Debug("ResourceManager.GetHaStatus: no database")
 		return nil, fmt.Errorf("database not available")
 	}
 	names, err := rm.haStatusResources(ctx, resource)
 	if err != nil {
+		log.Debug("ResourceManager.GetHaStatus: no resources to report", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 
@@ -184,7 +205,10 @@ func (rm *ResourceManager) GetHaStatus(ctx context.Context, resource string) ([]
 	var all []string
 	seen := map[string]bool{}
 	for _, name := range names {
+		start := time.Now()
 		dbRes, err := rm.controller.db.GetResource(ctx, name)
+		log.Debug("ResourceManager.GetHaStatus: database read resource", zap.String("resource", name),
+			zap.Bool("found", err == nil && dbRes != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil || dbRes == nil {
 			continue
 		}
@@ -192,6 +216,8 @@ func (rm *ResourceManager) GetHaStatus(ctx context.Context, resource string) ([]
 		// (promoter_placement.go); tiebreakers, diskless clients and a WAN
 		// resource's DR node are not probed.
 		hosts, ferr := rm.failoverHosts(ctx, name)
+		log.Debug("ResourceManager.GetHaStatus: failover hosts", zap.String("resource", name),
+			zap.Strings("hosts", hosts), zap.Error(ferr))
 		if ferr != nil || len(hosts) == 0 {
 			continue
 		}
@@ -206,24 +232,34 @@ func (rm *ResourceManager) GetHaStatus(ctx context.Context, resource string) ([]
 		targets = append(targets, t)
 	}
 	if len(targets) == 0 {
+		log.Debug("ResourceManager.GetHaStatus: no resource has failover hosts", zap.Strings("resources", names))
 		return nil, nil
 	}
 
 	probes := rm.probeHaNodes(ctx, all)
 	var result []*HaPromoterStatus
 	for _, t := range targets {
-		if ps := buildHaPromoterStatus(t.name, t.hosts, t.failover, probes, rm.nodeLabel); ps != nil {
+		ps := buildHaPromoterStatus(t.name, t.hosts, t.failover, probes, rm.nodeLabel)
+		log.Debug("ResourceManager.GetHaStatus: resource status", zap.String("resource", t.name),
+			zap.Bool("has_promoter", ps != nil))
+		if ps != nil {
 			result = append(result, ps)
 		}
 	}
+	log.Debug("ResourceManager.GetHaStatus: done", zap.Int("targets", len(targets)), zap.Int("count", len(result)),
+		zap.Int("hosts", len(all)))
 	return result, nil
 }
 
 // haStatusResources names the resources GetHaStatus reports on.
 func (rm *ResourceManager) haStatusResources(ctx context.Context, resource string) ([]string, error) {
+	log := loggerOfController(rm.controller)
 	db := rm.controller.db
 	if resource == "" {
+		start := time.Now()
 		configs, err := db.ListHaConfigs(ctx)
+		log.Debug("ResourceManager.haStatusResources: database list HA configs", zap.Int("count", len(configs)),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			return nil, fmt.Errorf("failed to list HA configs: %w", err)
 		}
@@ -233,11 +269,18 @@ func (rm *ResourceManager) haStatusResources(ctx context.Context, resource strin
 		}
 		return names, nil
 	}
+	start := time.Now()
 	cfg, err := db.GetHaConfig(ctx, resource)
+	log.Debug("ResourceManager.haStatusResources: database read HA config", zap.String("resource", resource),
+		zap.Bool("found", err == nil && cfg != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err == nil && cfg != nil {
 		return []string{resource}, nil
 	}
-	if gw, gerr := db.GetGatewayByResource(ctx, resource); gerr == nil && gw != nil {
+	start = time.Now()
+	gw, gerr := db.GetGatewayByResource(ctx, resource)
+	log.Debug("ResourceManager.haStatusResources: database read gateway", zap.String("resource", resource),
+		zap.Bool("found", gerr == nil && gw != nil), zap.Duration("took", time.Since(start)), zap.Error(gerr))
+	if gerr == nil && gw != nil {
 		return []string{resource}, nil
 	}
 	if rm.hasApp(ctx, resource) {
@@ -246,19 +289,26 @@ func (rm *ResourceManager) haStatusResources(ctx context.Context, resource strin
 	if err == nil {
 		err = fmt.Errorf("ha config not found")
 	}
+	log.Debug("ResourceManager.haStatusResources: no HA config, gateway or app", zap.String("resource", resource), zap.Error(err))
 	return nil, fmt.Errorf("failed to get HA config: %w", err)
 }
 
 // hasApp reports whether an app runs on resource.
 func (rm *ResourceManager) hasApp(ctx context.Context, resource string) bool {
+	log := loggerOfController(rm.controller)
+	start := time.Now()
 	apps, err := rm.controller.db.ListApps(ctx)
+	log.Debug("ResourceManager.hasApp: database list apps", zap.String("resource", resource), zap.Int("count", len(apps)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return false
 	}
 	for _, a := range apps {
 		if strings.EqualFold(a.Resource, resource) {
+			log.Debug("ResourceManager.hasApp: app runs on the resource", zap.String("resource", resource), zap.String("app", a.Name))
 			return true
 		}
 	}
+	log.Debug("ResourceManager.hasApp: no app on the resource", zap.String("resource", resource))
 	return false
 }

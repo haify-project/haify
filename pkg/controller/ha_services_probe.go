@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/haify-project/haify/pkg/deployment"
+	"go.uber.org/zap"
 )
 
 // Probing one node for GetHaStatus.
@@ -120,6 +121,7 @@ true
 
 // haProbeCommand is haProbeScript wrapped for dispatch.
 func haProbeCommand() string {
+	zap.L().Debug("haProbeCommand: building the base64-wrapped probe", zap.Int("script_bytes", len(haProbeScript)))
 	return "echo " + base64Std(haProbeScript) + " | base64 -d | sudo /bin/sh"
 }
 
@@ -159,6 +161,8 @@ func (f *haNodeFacts) unit(name string) *haUnitFacts {
 
 // parseHaNodeProbe reads haProbeScript's output.
 func parseHaNodeProbe(out string) (*haNodeFacts, error) {
+	log := zap.L()
+	log.Debug("parseHaNodeProbe: start", zap.Int("bytes", len(out)))
 	f := &haNodeFacts{
 		Drbd:    map[string]haDrbdLocal{},
 		Units:   map[string]*haUnitFacts{},
@@ -188,6 +192,7 @@ func parseHaNodeProbe(out string) (*haNodeFacts, error) {
 			section, body = "", nil
 		case key == "reactor":
 			if err := f.parseReactor(val); err != nil {
+				log.Debug("parseHaNodeProbe: drbd-reactor status did not parse", zap.Error(err))
 				return nil, err
 			}
 		case key == "reactord":
@@ -208,6 +213,7 @@ func parseHaNodeProbe(out string) (*haNodeFacts, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
+		log.Debug("parseHaNodeProbe: reading the output failed", zap.Error(err))
 		return nil, fmt.Errorf("read HA probe output: %w", err)
 	}
 	for _, u := range f.Units {
@@ -215,30 +221,41 @@ func parseHaNodeProbe(out string) (*haNodeFacts, error) {
 			u.OwnDesc = d
 		}
 	}
+	log.Debug("parseHaNodeProbe: parsed", zap.Bool("has_reactor_status", f.Reactor != nil),
+		zap.String("reactor_state", f.ReactorState), zap.Int("drbd_resources", len(f.Drbd)),
+		zap.Int("unit_names", len(f.Units)), zap.Int("agents", len(f.Agents)), zap.Strings("mounts", f.Mounts),
+		zap.Int("process_groups", len(f.Procs)), zap.Int("outside_units", len(f.Outside)), zap.Int("fragments", len(frags)))
 	return f, nil
 }
 
 func (f *haNodeFacts) parseReactor(b64 string) error {
+	log := zap.L()
 	b64 = strings.TrimSpace(b64)
 	if b64 == "" {
+		log.Debug("haNodeFacts.parseReactor: no drbd-reactor status on the node")
 		return nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
+		log.Debug("haNodeFacts.parseReactor: base64 decode failed", zap.Error(err))
 		return fmt.Errorf("decode drbd-reactor status: %w", err)
 	}
 	if strings.TrimSpace(string(raw)) == "" {
+		log.Debug("haNodeFacts.parseReactor: drbd-reactor status empty")
 		return nil
 	}
 	var rs deployment.ReactorStatus
 	if err := json.Unmarshal(raw, &rs); err != nil {
+		log.Debug("haNodeFacts.parseReactor: JSON did not parse", zap.Int("bytes", len(raw)), zap.Error(err))
 		return fmt.Errorf("parse drbd-reactor status: %w", err)
 	}
 	f.Reactor = &rs
+	log.Debug("haNodeFacts.parseReactor: parsed", zap.Int("promoters", len(rs.Promoter)))
 	return nil
 }
 
 func (f *haNodeFacts) applySection(section string, body []string) {
+	zap.L().Debug("haNodeFacts.applySection: applying", zap.String("section", section), zap.Int("lines", len(body)))
 	switch section {
 	case "drbd":
 		f.Drbd = parseDrbdLocalStatus(body)
@@ -253,6 +270,8 @@ func (f *haNodeFacts) applySection(section string, body []string) {
 		for _, blk := range parseShowBlocks(body) {
 			if u := f.Units[blk["Id"]]; u != nil {
 				u.Env = parseOCFEnv(blk["Environment"])
+			} else {
+				zap.L().Debug("haNodeFacts.applySection: OCF environment for a unit not described", zap.String("unit", blk["Id"]))
 			}
 		}
 	case "outside":
@@ -261,6 +280,8 @@ func (f *haNodeFacts) applySection(section string, body []string) {
 				f.Outside[n] = blk["Description"]
 			}
 		}
+	default:
+		zap.L().Debug("haNodeFacts.applySection: unknown section ignored", zap.String("section", section))
 	}
 }
 
@@ -285,6 +306,7 @@ func parseShowBlocks(lines []string) []map[string]string {
 		}
 	}
 	flush()
+	zap.L().Debug("parseShowBlocks: parsed", zap.Int("lines", len(lines)), zap.Int("blocks", len(blocks)))
 	return blocks
 }
 
@@ -311,6 +333,8 @@ func unitFactsFromShow(blk map[string]string) *haUnitFacts {
 	}
 	u.Restarts, _ = strconv.Atoi(blk["NRestarts"])
 	u.MainPID, _ = strconv.Atoi(blk["MainPID"])
+	zap.L().Debug("unitFactsFromShow: unit", zap.String("unit", u.ID), zap.String("load_state", u.LoadState),
+		zap.String("active_state", u.ActiveState), zap.String("sub_state", u.SubState), zap.Int("restarts", u.Restarts))
 	return u
 }
 
@@ -368,6 +392,7 @@ func parseDrbdLocalStatus(lines []string) map[string]haDrbdLocal {
 					st.Role = v
 				}
 			}
+			zap.L().Debug("parseDrbdLocalStatus: resource", zap.String("resource", cur), zap.String("role", st.Role))
 			out[cur] = st
 			continue
 		}
@@ -386,5 +411,6 @@ func parseDrbdLocalStatus(lines []string) map[string]haDrbdLocal {
 			out[cur] = st
 		}
 	}
+	zap.L().Debug("parseDrbdLocalStatus: parsed", zap.Int("lines", len(lines)), zap.Int("resources", len(out)))
 	return out
 }

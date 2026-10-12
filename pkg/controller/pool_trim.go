@@ -72,6 +72,7 @@ func parseTrimOutput(node, out string) []TrimResult {
 		}
 		res = append(res, r)
 	}
+	zap.L().Debug("parseTrimOutput: parsed", zap.String("node", node), zap.Int("count", len(res)))
 	return res
 }
 
@@ -79,46 +80,63 @@ func parseTrimOutput(node, out string) []TrimResult {
 // when node is empty.
 func (sm *StorageManager) Trim(ctx context.Context, node string) ([]TrimResult, error) {
 	c := sm.controller
+	log := loggerOfController(c)
+	log.Debug("Trim: start", zap.String("node", node))
 	nodes, err := c.nodes.ListNodes(ctx)
 	if err != nil {
+		log.Debug("Trim: listing nodes failed", zap.Error(err))
 		return nil, err
 	}
 	var hosts []string
 	nameOf := map[string]string{}
 	for _, n := range nodes {
 		if node != "" && n.Name != node && n.Address != node {
+			log.Debug("Trim: skipping node, not the one asked for", zap.String("node", n.Name))
 			continue
 		}
 		if node == "" && n.State != NodeStateOnline {
+			log.Debug("Trim: skipping node that is not online", zap.String("node", n.Name),
+				zap.String("state", string(n.State)))
 			continue
 		}
+		log.Debug("Trim: node selected", zap.String("node", n.Name), zap.String("host", n.Address))
 		hosts = append(hosts, n.Address)
 		nameOf[n.Address] = n.Name
 	}
 	if len(hosts) == 0 {
 		if node != "" {
+			log.Debug("Trim: node not registered", zap.String("node", node))
 			return nil, fmt.Errorf("node %q is not registered", node)
 		}
+		log.Debug("Trim: no online nodes")
 		return nil, nil
 	}
 	cmd := "echo " + base64Std(trimScript) + " | base64 -d | sudo /bin/bash"
+	start := time.Now()
 	res, err := c.deployment.Exec(ctx, hosts, cmd, deployment.WithExecTimeout(trimTimeout))
 	if err != nil {
+		log.Debug("Trim: fstrim sweep failed", zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)),
+			zap.Error(err))
 		return nil, err
 	}
+	log.Debug("Trim: fstrim sweep ran", zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)))
 	var out []TrimResult
 	for _, h := range hosts {
 		hr := res.Hosts[h]
 		if hr == nil {
+			log.Debug("Trim: no answer from host", zap.String("host", h))
 			out = append(out, TrimResult{Node: nameOf[h], Err: "no answer"})
 			continue
 		}
 		if !hr.Success && strings.TrimSpace(hr.Output) == "" {
+			log.Debug("Trim: trim failed on host without output", zap.String("host", h))
 			out = append(out, TrimResult{Node: nameOf[h], Err: "trim failed"})
 			continue
 		}
+		log.Debug("Trim: host answered", zap.String("host", h), zap.Bool("success", hr.Success))
 		out = append(out, parseTrimOutput(nameOf[h], hr.Output)...)
 	}
+	log.Debug("Trim: done", zap.String("node", node), zap.Int("count", len(out)))
 	return out, nil
 }
 
@@ -141,6 +159,8 @@ func trimSummary(results []TrimResult) (string, bool) {
 	if len(failed) > 0 {
 		msg += "; failed: " + strings.Join(failed, ", ")
 	}
+	zap.L().Debug("trimSummary: summarised", zap.Int("count", mounts), zap.Uint64("trimmed_bytes", total),
+		zap.Int("failed", len(failed)))
 	return msg, len(failed) > 0
 }
 
@@ -148,12 +168,18 @@ var trimming atomic.Bool
 
 // runTrimSweep is the scheduled trim.
 func (sm *ScheduleManager) runTrimSweep() {
+	log := loggerOfController(sm.controller)
 	if !trimming.CompareAndSwap(false, true) {
+		log.Debug("ScheduleManager.runTrimSweep: a sweep is already running, skipped")
 		return
 	}
 	defer trimming.Store(false)
 	c := sm.controller
+	log.Debug("ScheduleManager.runTrimSweep: tick")
+	start := time.Now()
 	results, err := c.storage.Trim(context.Background(), "")
+	log.Debug("ScheduleManager.runTrimSweep: trim done", zap.Int("count", len(results)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		c.logger.Warn("Trim sweep failed", zap.Error(err))
 		return
@@ -165,13 +191,17 @@ func (sm *ScheduleManager) runTrimSweep() {
 		if failed {
 			sev = event.SeverityWarning
 		}
+		log.Debug("ScheduleManager.runTrimSweep: publishing event", zap.Bool("failed", failed))
 		c.events.Publish(event.Event{Type: event.TypePoolTrimmed, Severity: sev, Status: event.StatusInfo, Message: msg})
 	}
 }
 
 func (sm *ScheduleManager) trimSchedule() string {
 	if sm.controller.config == nil {
+		loggerOfController(sm.controller).Debug("ScheduleManager.trimSchedule: no config, no schedule")
 		return ""
 	}
-	return strings.TrimSpace(sm.controller.config.Storage.Thin.TrimSchedule)
+	sched := strings.TrimSpace(sm.controller.config.Storage.Thin.TrimSchedule)
+	loggerOfController(sm.controller).Debug("ScheduleManager.trimSchedule: schedule", zap.String("schedule", sched))
+	return sched
 }

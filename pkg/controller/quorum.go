@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 // QuorumInfo is the vote arithmetic that decides whether a resource keeps
@@ -43,14 +46,19 @@ const quorumProbe = `drbdsetup status %[1]s --verbose 2>/dev/null`
 // any survivor) is what an operator actually wants to know — "will THIS node
 // keep serving?".
 func (rm *ResourceManager) Quorum(ctx context.Context, resource string) (*QuorumInfo, error) {
+	log := loggerOfController(rm.controller)
+	log.Debug("Quorum: reading", zap.String("resource", resource))
 	if rm.deployment == nil {
+		log.Debug("Quorum: no deployment client")
 		return nil, fmt.Errorf("deployment client not set")
 	}
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
+		log.Debug("Quorum: resource hosts unknown", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 	if len(hosts) == 0 {
+		log.Debug("Quorum: resource has no hosts", zap.String("resource", resource))
 		return nil, fmt.Errorf("resource %q has no reachable hosts", resource)
 	}
 
@@ -58,7 +66,10 @@ func (rm *ResourceManager) Quorum(ctx context.Context, resource string) (*Quorum
 	// to whichever node answers.
 	var out string
 	for _, h := range hosts {
+		start := time.Now()
 		res, rerr := rm.deployment.Exec(ctx, []string{h}, fmt.Sprintf(quorumProbe, resource))
+		log.Debug("Quorum: drbdsetup status --verbose", zap.String("resource", resource), zap.String("host", h),
+			zap.Duration("took", time.Since(start)), zap.Error(rerr))
 		if rerr != nil {
 			continue
 		}
@@ -68,17 +79,20 @@ func (rm *ResourceManager) Quorum(ctx context.Context, resource string) (*Quorum
 			break
 		}
 		if strings.TrimSpace(text) == "" {
+			log.Debug("Quorum: empty status from host", zap.String("host", h))
 			continue
 		}
 		if out == "" {
 			out = text
 		}
 		if strings.Contains(text, "role:Primary") && !strings.Contains(text, "peer-role:Primary") {
+			log.Debug("Quorum: using the Primary's view", zap.String("host", h))
 			out = text
 			break
 		}
 	}
 	if out == "" {
+		log.Debug("Quorum: no node answered", zap.String("resource", resource), zap.Strings("hosts", hosts))
 		return nil, fmt.Errorf("could not read DRBD status for %q from any node", resource)
 	}
 	return parseQuorum(out), nil
@@ -114,5 +128,7 @@ func parseQuorum(out string) *QuorumInfo {
 	if info.Tolerated < 0 {
 		info.Tolerated = 0
 	}
+	zap.L().Debug("parseQuorum: parsed", zap.Int("members", info.Members), zap.Int("required", info.Required),
+		zap.Int("online", info.Online), zap.Int("tolerated", info.Tolerated), zap.Bool("has_quorum", info.HasQuorum))
 	return info
 }
