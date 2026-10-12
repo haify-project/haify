@@ -84,9 +84,11 @@ func (c *Client) ZFSClone(ctx context.Context, hosts []string, snapshot, clonePa
 	return c.Exec(ctx, hosts, cmd)
 }
 
-// ZFSListSnapshots lists ZFS snapshots for a dataset
+// ZFSListSnapshots lists ZFS snapshots for a dataset. -p prints sizes in bytes
+// and the creation time as Unix seconds: the human form ("Mon Oct 12 1:30
+// 2026") has spaces in it and no time zone.
 func (c *Client) ZFSListSnapshots(ctx context.Context, hosts []string, dataset string) (*ExecResult, error) {
-	cmd := fmt.Sprintf("sudo zfs list -t snapshot -o name,used,refer,creation -H %s", dataset)
+	cmd := fmt.Sprintf("sudo zfs list -t snapshot -o name,used,refer,creation -H -p %s", dataset)
 	return c.Exec(ctx, hosts, cmd)
 }
 

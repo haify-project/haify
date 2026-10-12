@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const managedNamePrefix = "haify_"
@@ -101,6 +102,11 @@ func parseLVMPoolLine(line string) (name string, total, free uint64, pv string, 
 	return name, total, free, pv, true
 }
 
+// parseZFSSnapshotLine reads one line of `zfs list -t snapshot -o
+// name,used,refer,creation -H -p`: the snapshot, its dataset and its creation
+// time, which -p gives as Unix seconds and this returns in the form lvs uses
+// for lv_time, so callers parse LVM and ZFS snapshots alike. A creation field
+// in any other form is passed through whole.
 func parseZFSSnapshotLine(line string) (string, string, string, bool) {
 	fields := strings.Fields(strings.TrimSpace(line))
 	if len(fields) < 4 {
@@ -112,5 +118,9 @@ func parseZFSSnapshotLine(line string) (string, string, string, bool) {
 		return "", "", "", false
 	}
 
-	return parts[1], parts[0], fields[3], true
+	created := strings.Join(fields[3:], " ")
+	if secs, err := strconv.ParseInt(created, 10, 64); err == nil {
+		created = time.Unix(secs, 0).UTC().Format("2006-01-02 15:04:05 -0700")
+	}
+	return parts[1], parts[0], created, true
 }

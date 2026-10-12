@@ -83,4 +83,14 @@ func TestParseZFSSnapshotLine(t *testing.T) {
 
 	_, _, _, ok = parseZFSSnapshotLine("haify_tank/app@snap1 0B")
 	assert.False(t, ok)
+
+	// -p output: the creation time is Unix seconds.
+	_, _, createdAt, ok = parseZFSSnapshotLine("haify_tank/app@snap1\t0\t12288\t1791768600")
+	assert.True(t, ok)
+	assert.Equal(t, "2026-10-12 01:30:00 +0000", createdAt)
+
+	// The human form keeps all its words.
+	_, _, createdAt, ok = parseZFSSnapshotLine("haify_tank/app@snap1 0B 0B Mon Oct 12 1:30 2026")
+	assert.True(t, ok)
+	assert.Equal(t, "Mon Oct 12 1:30 2026", createdAt)
 }
