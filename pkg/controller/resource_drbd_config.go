@@ -386,11 +386,29 @@ func (rm *ResourceManager) SetOptions(ctx context.Context, resource string, opti
 // It also puts every registered node's address from the registry into its
 // `on` stanza, so a config left behind by a renumbering that did not finish —
 // a node's old address, or two peers on one — comes back right.
+//
+// Last, it installs the boot unit on every participant, so a member that
+// joined through add-replica, add-dr, attach-diskless or set-tiebreaker before
+// those paths installed it comes back up after its next reboot.
 func (rm *ResourceManager) RepairResourceConfig(ctx context.Context, resource string) error {
 	byHost := rm.controller.nodes.drbdAddressesByHost()
-	return rm.rewriteResourceConfig(ctx, resource, func(current string) (string, error) {
+	if err := rm.rewriteResourceConfig(ctx, resource, func(current string) (string, error) {
 		return reconcileDrbdAddresses(current, byHost), nil
-	})
+	}); err != nil {
+		return err
+	}
+	hosts, err := rm.resourceHosts(ctx, resource)
+	if err != nil {
+		return err
+	}
+	encrypted := false
+	if rm.controller.db != nil {
+		if dbRes, gerr := rm.controller.db.GetResource(ctx, resource); gerr == nil && dbRes != nil {
+			encrypted = dbRes.Encrypted
+		}
+	}
+	return rm.ensureBootUnitOnMembers(ctx, resource,
+		dedupe(append(hosts, rm.disklessParticipantHosts(ctx, resource)...)), encrypted)
 }
 
 // rewriteResourceConfig reads a resource's config from a diskful node, applies

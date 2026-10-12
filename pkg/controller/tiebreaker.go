@@ -196,6 +196,10 @@ func (rm *ResourceManager) SetTiebreaker(ctx context.Context, resource, newNode 
 			rm.controller.logger.Debug("Tiebreaker already up after adjust",
 				zap.String("resource", resource), zap.String("node", newNode))
 		}
+		// A tiebreaker is often a small node that holds no replica of
+		// anything, so the boot unit is not there yet. It has no disk, so a
+		// failure is logged and the move goes on.
+		_ = rm.ensureDRBDBootUnitEnabled(ctx, []string{newHost})
 	}
 
 	// Tear the old one down last: until the new vote is in place, removing it

@@ -293,6 +293,11 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 			return fmt.Errorf("bring up replica on %q: %s", node, detail)
 		}
 	}
+	// The newcomer may never have held a resource before; without the boot
+	// unit its replica stays down after a reboot.
+	if err := rm.ensureBootUnitOnMembers(ctx, resource, []string{newAddr}, dbRes.Encrypted); err != nil {
+		return err
+	}
 
 	succeeded = true
 

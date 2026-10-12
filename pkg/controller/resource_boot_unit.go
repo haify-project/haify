@@ -119,3 +119,30 @@ func (rm *ResourceManager) ensureDRBDBootUnitEnabled(ctx context.Context, hosts 
 		zap.Strings("hosts", hosts))
 	return nil
 }
+
+// ensureBootUnitOnMembers installs the boot unit on nodes that take part in
+// resource by a route other than `resource create`: add-replica, add-dr, a
+// diskless member given a disk in place, and `resource repair` for every
+// member it reaches. (A diskless client or tiebreaker has no container to
+// open, so attach-diskless and set-tiebreaker call ensureDRBDBootUnitEnabled
+// directly and ignore its error.) Create used to be the only caller, so a node
+// that got its first resource any other way never had the unit: after a
+// reboot nothing brought its resources up, and an encrypted replica there
+// came back with its crypt container closed.
+//
+// The unit carries no per-resource state. The script adjusts whatever
+// `drbdadm sh-resources` lists and opens whatever LUKS pointers are under
+// luksKeyDir at boot, so putting it on the node is all a newcomer needs, and
+// resources the node gains later are covered without touching it again.
+//
+// Failure follows the rule CreateResource applies. On an encrypted resource it
+// is returned, because the unit is what opens the container the replica
+// attaches; otherwise ensureDRBDBootUnitEnabled has logged it and it is
+// dropped, since the member is already up and the cost is one manual adjust
+// after a reboot.
+func (rm *ResourceManager) ensureBootUnitOnMembers(ctx context.Context, resource string, hosts []string, encrypted bool) error {
+	if err := rm.ensureDRBDBootUnitEnabled(ctx, hosts); err != nil && encrypted {
+		return fmt.Errorf("install the boot unit that opens the LUKS containers of %s: %w", resource, err)
+	}
+	return nil
+}

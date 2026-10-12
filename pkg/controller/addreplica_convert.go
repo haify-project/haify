@@ -168,6 +168,11 @@ func (rm *ResourceManager) convertDisklessToReplica(ctx context.Context, dbRes *
 	if err := rm.execAllSuccess(ctx, []string{addr}, adjust, "attach the new disk on "+node); err != nil {
 		return err
 	}
+	// A diskless member that joined by attach or set-tiebreaker may never have
+	// had the boot unit, and an encrypted disk now depends on it to open.
+	if err := rm.ensureBootUnitOnMembers(ctx, resource, []string{addr}, dbRes.Encrypted); err != nil {
+		return err
+	}
 	succeeded = true
 
 	dbRes.Nodes = strings.Join(append(primaries, node), ",")

@@ -244,6 +244,11 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 			return fmt.Errorf("bring up DR replica on %q: %s", drNode, detail)
 		}
 	}
+	// The DR is usually a node that holds nothing else of this cluster, so
+	// nothing has put the boot unit there yet.
+	if err := rm.ensureBootUnitOnMembers(ctx, resource, []string{drAddr}, dbRes.Encrypted); err != nil {
+		return err
+	}
 
 	// The cluster now carries the DR; past this point a failure to write the
 	// record is worth reporting but not worth tearing the replica back down.

@@ -144,6 +144,7 @@ func (rm *ResourceManager) AttachDisklessClient(ctx context.Context, resource, n
 		if _, err := rm.deployment.DRBDUp(ctx, []string{ip}, resource); err != nil {
 			return fmt.Errorf("bring up existing diskless client: %w", err)
 		}
+		_ = rm.ensureDRBDBootUnitEnabled(ctx, []string{ip})
 		return rm.recordDisklessClient(ctx, dbRes, clients, node)
 	}
 	if err != nil {
@@ -187,6 +188,10 @@ func (rm *ResourceManager) AttachDisklessClient(ctx context.Context, resource, n
 	if _, err := rm.deployment.DRBDUp(ctx, []string{ip}, resource); err != nil {
 		return fmt.Errorf("bring up diskless client: %w", err)
 	}
+	// A client node is often one that holds no replica of anything, so the
+	// boot unit is not there. It has no crypt container to open, so a failure
+	// is logged and does not undo the attach.
+	_ = rm.ensureDRBDBootUnitEnabled(ctx, []string{ip})
 
 	committed = true
 	rm.controller.logger.Info("Diskless client attached",
@@ -384,6 +389,9 @@ func (rm *ResourceManager) tiebreakerToClient(ctx context.Context, dbRes *databa
 	if _, err := rm.deployment.DRBDUp(ctx, []string{ip}, dbRes.Name); err != nil {
 		return fmt.Errorf("bring up %s on %s: %w", dbRes.Name, node, err)
 	}
+	// A tiebreaker moved here by set-tiebreaker before it installed the boot
+	// unit does not have it; a client is promoted, so it matters more now.
+	_ = rm.ensureDRBDBootUnitEnabled(ctx, []string{ip})
 	dbRes.DisklessNodes = strings.Join(without(splitCSV(dbRes.DisklessNodes), node), ",")
 	dbRes.DisklessClients = strings.Join(append(without(splitCSV(dbRes.DisklessClients), node), node), ",")
 	if err := rm.controller.db.SaveResource(ctx, dbRes); err != nil {
