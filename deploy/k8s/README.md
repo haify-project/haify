@@ -74,6 +74,11 @@ The controller Deployment and the node DaemonSet both run with
 lets a pod reach the VIP even when the VIP is on its own node. The DNS policy
 keeps the Service name working on the host network.
 
+The controller Deployment runs one replica. Raise `replicas` in
+`20-controller.yaml` for a standby: only one replica works at a time, and when
+it stops another takes over within about 15 seconds. The replicas agree on
+which one works through Leases in `kube-system`.
+
 If the controller has `[auth]` or `[rbac]` on, the plugins need its API token.
 Before applying, create a Secret from the token file on a Haify node:
 

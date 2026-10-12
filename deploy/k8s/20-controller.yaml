@@ -4,6 +4,8 @@ metadata:
   name: haify-csi-controller
   namespace: kube-system
 spec:
+  # The sidecars and the plugin's health reporter run with leader election, so
+  # more replicas are safe: one does the work, the others stand by.
   replicas: 1
   selector: { matchLabels: { app: haify-csi-controller } }
   template:
@@ -38,6 +40,10 @@ spec:
             # Pass each claim's namespace and name to CreateVolume, which puts
             # them on the Haify resource (label haify.csi/pvc).
             - "--extra-create-metadata"
+            # One replica acts; with more than one, the others wait on the
+            # Lease in kube-system and take over when it stops.
+            - "--leader-election"
+            - "--leader-election-namespace=kube-system"
             - "--v=2"
           env:
             - name: NAMESPACE
@@ -56,6 +62,8 @@ spec:
             # every replica over SSH.
             - "--timeout=120s"
             - "--handle-volume-inuse-error=false"
+            - "--leader-election"
+            - "--leader-election-namespace=kube-system"
             - "--v=2"
           volumeMounts:
             - { name: socket-dir, mountPath: /csi }
@@ -69,6 +77,8 @@ spec:
             # An LVM/ZFS snapshot returns immediately, but the RPC still crosses
             # SSH to a storage node; keep the same headroom as provisioning.
             - "--timeout=120s"
+            - "--leader-election"
+            - "--leader-election-namespace=kube-system"
             - "--v=2"
           volumeMounts:
             - { name: socket-dir, mountPath: /csi }
@@ -79,7 +89,13 @@ spec:
           args:
             - "--endpoint=unix:///csi/csi.sock"
             - "--haify-controller=haify-controller:3374"
+            # The health reporter runs on the replica holding the Lease, so
+            # each event is posted once, not once per replica.
+            - "--leader-election"
+            - "--leader-election-namespace=kube-system"
           env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
             # The controller's API token, when it has [auth] or [rbac] on.
             # Optional: without the Secret the plugin connects without one.
             - name: HAIFY_TOKEN
