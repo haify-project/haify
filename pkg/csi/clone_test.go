@@ -56,9 +56,11 @@ func TestRestoreFromSnapshotPopulatesNewVolume(t *testing.T) {
 	require.Len(t, b.createCalls, 1)
 	assert.Contains(t, b.createCalls[0].nodes, "n3")
 
-	// And it must actually have been filled from the snapshot device.
+	// And it must actually have been filled from the snapshot, named for the
+	// controller to find rather than as a device path, which differs between
+	// LVM and ZFS pools.
 	require.Len(t, b.populated, 1)
-	assert.Equal(t, "pvc_new/0<-/dev/haify_vg0/haifysnap_s1@n3", b.populated[0])
+	assert.Equal(t, "pvc_new/0<-pvc_src/0@haifysnap_s1 replicated=false on n3", b.populated[0])
 }
 
 func TestRestoreRejectsUnknownSnapshot(t *testing.T) {
@@ -105,7 +107,7 @@ func TestCloneSnapshotsSourceForConsistency(t *testing.T) {
 	// backing store directly, or the copy could be torn.
 	require.Len(t, b.snapCreated, 1, "clone must snapshot the source first")
 	require.Len(t, b.populated, 1)
-	assert.Contains(t, b.populated[0], "haifysnap_clone", "clone must copy from the temporary snapshot")
+	assert.Contains(t, b.populated[0], "<-pvc_src/0@haifysnap_clone", "clone must copy from the temporary snapshot")
 
 	// The temporary snapshot is not left behind.
 	assert.Len(t, b.snapDeleted, 1, "the temporary clone snapshot must be cleaned up")

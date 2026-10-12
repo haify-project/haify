@@ -34,8 +34,39 @@ func NewSnapshotManager(ctrl *Controller) *SnapshotManager {
 	}
 }
 
-// CreateSnapshot creates a snapshot
+// zfsVolumeDataset returns volume's dataset when its record says it is a
+// zvol. The one-node snapshot calls address a volume as "<pool>/<backing>",
+// which reads the same on both pool types, so the record decides.
+func (sm *SnapshotManager) zfsVolumeDataset(ctx context.Context, volume string) (string, bool) {
+	db := sm.controller.db
+	if db == nil {
+		return "", false
+	}
+	pool, backing := parseVolumePath(volume)
+	resources, err := db.ListResources(ctx)
+	if err != nil {
+		return "", false
+	}
+	for _, r := range resources {
+		vols, err := db.ListVolumes(ctx, r.Name)
+		if err != nil {
+			continue
+		}
+		for _, v := range vols {
+			if v.Pool == pool && v.VolumeName == backing {
+				return pool + "/" + backing, isZFSDevice(v.Device)
+			}
+		}
+	}
+	return "", false
+}
+
+// CreateSnapshot creates a snapshot of volume on node: an LVM snapshot, or a
+// ZFS one ("<dataset>@<name>") when the volume is a zvol.
 func (sm *SnapshotManager) CreateSnapshot(ctx context.Context, volume, snapshotName, node string) error {
+	if dataset, ok := sm.zfsVolumeDataset(ctx, volume); ok {
+		return sm.controller.storage.ZFSSnapshot(ctx, dataset, snapshotName, node)
+	}
 	address := sm.controller.ResolveHost(node)
 
 	sm.controller.logger.Info("Creating snapshot",
@@ -79,6 +110,9 @@ func (sm *SnapshotManager) DeleteSnapshot(ctx context.Context, volume, snapshotN
 	if err := sm.controller.assertSnapshotUnlocked(ctx, snapshotName); err != nil {
 		return err
 	}
+	if dataset, ok := sm.zfsVolumeDataset(ctx, volume); ok {
+		return sm.controller.storage.ZFSDeleteSnapshot(ctx, dataset+"@"+snapshotName, node)
+	}
 	address := sm.controller.ResolveHost(node)
 
 	sm.controller.logger.Info("Deleting snapshot",
@@ -109,6 +143,13 @@ func (sm *SnapshotManager) DeleteSnapshot(ctx context.Context, volume, snapshotN
 
 // ListSnapshots lists snapshots for a volume
 func (sm *SnapshotManager) ListSnapshots(ctx context.Context, volume, node string) ([]*SnapshotInfo, error) {
+	if dataset, ok := sm.zfsVolumeDataset(ctx, volume); ok {
+		snaps, err := sm.controller.storage.ZFSListSnapshots(ctx, dataset, node)
+		for _, s := range snaps {
+			s.Volume = volume
+		}
+		return snaps, err
+	}
 	// Parse volume path
 	vg, lv := parseVolumePath(volume)
 	address := sm.controller.ResolveHost(node)

@@ -149,7 +149,7 @@ func (b *sanityBackend) ListSnapshots(_ context.Context, volume, node string) ([
 	return out, nil
 }
 
-func (b *sanityBackend) PopulateVolume(_ context.Context, _ string, _ uint32, _, _ string) (uint64, error) {
+func (b *sanityBackend) PopulateVolumeFromSnapshot(_ context.Context, _ string, _ uint32, _ *haifypb.PopulateSnapshotSource, _ string) (uint64, error) {
 	return 0, nil
 }
 

@@ -332,8 +332,8 @@ type HaifyControllerClient interface {
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
 	RestoreSnapshot(ctx context.Context, in *RestoreSnapshotRequest, opts ...grpc.CallOption) (*RestoreSnapshotResponse, error)
 	ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error)
-	// PopulateVolume copies a source block device (an LVM/ZFS snapshot, or another
-	// resource's backing volume) into an ALREADY-CREATED, still-empty DRBD
+	// PopulateVolume copies a snapshot, or a source block device such as another
+	// resource's backing volume, into an ALREADY-CREATED, still-empty DRBD
 	// resource. Unlike RestoreSnapshot — which merges a snapshot back into its own
 	// origin in place — this fills a *different*, new volume, which is what CSI
 	// restore-from-snapshot and volume cloning need.
@@ -2575,8 +2575,8 @@ type HaifyControllerServer interface {
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
 	RestoreSnapshot(context.Context, *RestoreSnapshotRequest) (*RestoreSnapshotResponse, error)
 	ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error)
-	// PopulateVolume copies a source block device (an LVM/ZFS snapshot, or another
-	// resource's backing volume) into an ALREADY-CREATED, still-empty DRBD
+	// PopulateVolume copies a snapshot, or a source block device such as another
+	// resource's backing volume, into an ALREADY-CREATED, still-empty DRBD
 	// resource. Unlike RestoreSnapshot — which merges a snapshot back into its own
 	// origin in place — this fills a *different*, new volume, which is what CSI
 	// restore-from-snapshot and volume cloning need.

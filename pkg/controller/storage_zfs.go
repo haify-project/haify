@@ -420,12 +420,10 @@ func (sm *StorageManager) ZFSDeleteSnapshot(ctx context.Context, snapshot, node 
 		return fmt.Errorf("failed to delete ZFS snapshot: %w", err)
 	}
 
-	if !result.AllSuccess() {
-		for host, hr := range result.Hosts {
-			if !hr.Success {
-				return fmt.Errorf("failed to delete ZFS snapshot on %s: %s", host, strings.TrimSpace(hr.Output+hr.Error.Error()))
-			}
-		}
+	// execFailure, not hr.Error: a command that ran and failed has output but
+	// may carry no error value.
+	if err := execFailure(result, nil); err != nil {
+		return fmt.Errorf("failed to delete ZFS snapshot: %w", err)
 	}
 
 	return nil

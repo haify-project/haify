@@ -51,11 +51,26 @@ func (s *Server) RestoreSnapshot(ctx context.Context, req *haifypb.RestoreSnapsh
 	}, nil
 }
 
-// PopulateVolume fills a freshly created, still-empty resource from a source
-// block device (a snapshot, or another volume's backing store). It is the
-// server side of CSI restore-from-snapshot and volume cloning.
+// PopulateVolume fills a freshly created, still-empty resource from a snapshot
+// or a source block device (another volume's backing store). It is the server
+// side of restore-from-snapshot and volume cloning in CSI, Cinder and XCP-ng.
 func (s *Server) PopulateVolume(ctx context.Context, req *haifypb.PopulateVolumeRequest) (*haifypb.PopulateVolumeResponse, error) {
-	copied, err := s.snapshots.PopulateVolume(ctx, req.GetResource(), req.GetVolumeId(), req.GetSourceDevice(), req.GetNode())
+	var copied uint64
+	var err error
+	if snap := req.GetSourceSnapshot(); snap != nil {
+		if req.GetSourceDevice() != "" {
+			err = fmt.Errorf("give a source device or a source snapshot, not both")
+		} else {
+			copied, err = s.snapshots.PopulateVolumeFromSnapshot(ctx, req.GetResource(), req.GetVolumeId(), SnapshotSource{
+				Resource:   snap.GetResource(),
+				VolumeID:   snap.GetVolumeId(),
+				Name:       snap.GetName(),
+				Replicated: snap.GetReplicated(),
+			}, req.GetNode())
+		}
+	} else {
+		copied, err = s.snapshots.PopulateVolume(ctx, req.GetResource(), req.GetVolumeId(), req.GetSourceDevice(), req.GetNode())
+	}
 	if err != nil {
 		return &haifypb.PopulateVolumeResponse{Success: false, Message: err.Error()}, nil
 	}

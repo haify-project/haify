@@ -113,10 +113,10 @@ openstack volume type create haify --property volume_backend_name=haify
 | `haify_on_no_quorum` | `suspend-io` | while a host has lost quorum, its guests' I/O waits instead of failing. With `io-error` it fails, and the guest usually needs a reboot afterwards |
 | `haify_copy_timeout` | 3600 | seconds to wait for calls that copy or resync data (at least 60) |
 
-Creating a volume from a snapshot and cloning a volume need an LVM pool. When
-the storage type option is set to zfs, the driver refuses both. On a ZFS pool
-that the controller chose by itself, they are not refused up front: the copy
-fails, and the new volume is deleted again.
+Creating a volume from a snapshot and cloning a volume work on LVM and ZFS
+pools. On ZFS, the controller reads the snapshot through a temporary read-only
+clone, `<pool>/haify-populate-<new resource>-0`, and destroys it when the copy
+is done.
 
 cinder-volume starts even when the controller does not answer, for example
 while Self-HA is moving it to another node. Until the controller answers, the

@@ -49,8 +49,8 @@ class FakeClient:
     def resize(self, name, size_bytes, timeout=None):
         self._call("resize", name, size_bytes)
 
-    def populate(self, name, source, node, timeout=None):
-        self._call("populate", name, source, node)
+    def populate(self, name, src, snap, node, timeout=None):
+        self._call("populate", name, src, snap, node)
 
     def primary(self, name, node):
         self._call("primary", name, node)

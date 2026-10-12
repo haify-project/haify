@@ -282,14 +282,13 @@ class HaifyVDI(VDI.VDI):
 
     def copy(self, read_only):
         """A snapshot or clone is a disk of its own, replicated like any
-        other: an LVM snapshot of this disk, taken at one instant on every
-        copy, filled into a new resource on the same nodes, then dropped."""
+        other: a snapshot of this disk, taken at one instant on every copy,
+        filled into a new resource on the same nodes, then dropped."""
         src = self.sr.call("read disk", self.sr.client.resource, self.location)
         if src is None:
             raise fail("VDIUnavailable", "disk %s does not exist on the Haify controller" % self.location)
-        vol = (src.get("volumes") or [{}])[0]
         nodes = src.get("nodes") or []
-        if not nodes or not vol.get("pool") or not vol.get("backingVolume"):
+        if not nodes or not src.get("volumes"):
             raise fail("VDIUnavailable", "disk %s has no copy to snapshot" % self.location)
         size = self.current_size()
         new_uuid = util.gen_uuid()
@@ -299,8 +298,7 @@ class HaifyVDI(VDI.VDI):
             new = HaifyVDI(self.sr, new_uuid)
             self.sr.call("create the copy", self.sr.client.create, new.payload(new_uuid, size, nodes))
             try:
-                source = "/dev/%s/%s_snap_%s" % (vol["pool"], vol["backingVolume"], snap)
-                self.sr.call("fill the copy", self.sr.client.populate, new.location, source, nodes[0])
+                self.sr.call("fill the copy", self.sr.client.populate, new.location, self.location, snap, nodes[0])
             except Exception:
                 self.sr.call("drop the partial copy", self.sr.client.delete, new.location)
                 raise

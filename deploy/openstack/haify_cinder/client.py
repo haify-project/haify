@@ -121,9 +121,13 @@ class Client:
         return self.request("PATCH", f"/v1/resources/{q(name)}/volumes/0",
                             {"resource": name, "volumeId": 0, "sizeBytes": size_bytes}, timeout=timeout)
 
-    def populate(self, name, source_device, node, timeout=None):
+    def populate(self, name, src, snap, node, timeout=None):
+        """Fills the new resource name from snapshot snap of src, taken on
+        every replica. The controller finds the snapshot's device on node,
+        whatever the pool type."""
         return self.request("POST", f"/v1/resources/{q(name)}/populate",
-                            {"resource": name, "volumeId": 0, "sourceDevice": source_device, "node": node},
+                            {"resource": name, "volumeId": 0, "node": node,
+                             "sourceSnapshot": {"resource": src, "volumeId": 0, "name": snap, "replicated": True}},
                             timeout=timeout)
 
     def set_labels(self, name, labels):

@@ -39,7 +39,7 @@ type fakeBackend struct {
 	snapCreated   []string // "<volume>/<name>@<node>" passed to CreateSnapshot
 	snapDeleted   []string // "<volume>/<name>@<node>" passed to DeleteSnapshot
 	populateErr   error
-	populated     []string // "<res>/<vol><-<device>@<node>" passed to PopulateVolume
+	populated     []string // "<res>/<vol><-<src res>/<src vol>@<snapshot> replicated=<bool> on <node>"
 
 	createCalls []createCall
 }
@@ -77,11 +77,12 @@ func (f *fakeBackend) DeleteSnapshot(_ context.Context, volume, snapshotName, no
 	return nil
 }
 
-func (f *fakeBackend) PopulateVolume(_ context.Context, resource string, volumeID uint32, sourceDevice, node string) (uint64, error) {
+func (f *fakeBackend) PopulateVolumeFromSnapshot(_ context.Context, resource string, volumeID uint32, src *haifypb.PopulateSnapshotSource, node string) (uint64, error) {
 	if f.populateErr != nil {
 		return 0, f.populateErr
 	}
-	f.populated = append(f.populated, fmt.Sprintf("%s/%d<-%s@%s", resource, volumeID, sourceDevice, node))
+	f.populated = append(f.populated, fmt.Sprintf("%s/%d<-%s/%d@%s replicated=%t on %s",
+		resource, volumeID, src.GetResource(), src.GetVolumeId(), src.GetName(), src.GetReplicated(), node))
 	return 1 << 20, nil
 }
 

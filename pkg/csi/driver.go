@@ -60,10 +60,11 @@ type HaifyBackend interface {
 	// CSI driver uses it to make CreateSnapshot idempotent and, walking every
 	// volume's replica nodes, to answer the ListSnapshots RPC.
 	ListSnapshots(ctx context.Context, volume, node string) ([]*haifypb.SnapshotInfo, error)
-	// PopulateVolume copies sourceDevice into an already-created, still-empty
-	// resource, on a node that holds one of its replicas. It backs
-	// restore-from-snapshot and volume cloning.
-	PopulateVolume(ctx context.Context, resource string, volumeID uint32, sourceDevice, node string) (uint64, error)
+	// PopulateVolumeFromSnapshot copies a snapshot into an already-created,
+	// still-empty resource, on a node that holds the snapshot and one of the
+	// resource's replicas. It backs restore-from-snapshot and volume cloning;
+	// the controller finds the snapshot's device on LVM and ZFS pools alike.
+	PopulateVolumeFromSnapshot(ctx context.Context, resource string, volumeID uint32, src *haifypb.PopulateSnapshotSource, node string) (uint64, error)
 	// ResizeVolume expands the backing DRBD+LVM/ZFS volume to newSizeGB on
 	// all replica nodes. Called by ControllerExpandVolume.
 	ResizeVolume(ctx context.Context, resource string, volumeID uint32, sizeGB uint32) error

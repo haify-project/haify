@@ -307,8 +307,8 @@ service HaifyController {
       additional_bindings { get: "/v1/volumes/{volume}/snapshots"; }
     };
   }
-  // PopulateVolume copies a source block device (an LVM/ZFS snapshot, or another
-  // resource's backing volume) into an ALREADY-CREATED, still-empty DRBD
+  // PopulateVolume copies a snapshot, or a source block device such as another
+  // resource's backing volume, into an ALREADY-CREATED, still-empty DRBD
   // resource. Unlike RestoreSnapshot — which merges a snapshot back into its own
   // origin in place — this fills a *different*, new volume, which is what CSI
   // restore-from-snapshot and volume cloning need.
@@ -2315,12 +2315,31 @@ message PopulateVolumeRequest {
   // resource / volume_id identify the freshly created, still-empty target.
   string resource = 1;
   uint32 volume_id = 2;
-  // source_device is the block device to copy FROM, on `node`: an LVM snapshot
-  // (/dev/<vg>/<snap>), a ZFS zvol, or another resource's backing volume.
+  // source_device is the block device to copy FROM, on `node`: an LVM
+  // snapshot (/dev/<vg>/<snap>), a ZFS zvol, or another resource's backing
+  // volume. To copy a snapshot, name it in source_snapshot instead: its device
+  // path depends on the pool type, and a ZFS snapshot has no device of its own.
   string source_device = 3;
-  // node must hold a diskful replica of `resource` AND have source_device
+  // node must hold a diskful replica of `resource` AND have the source
   // locally; the copy runs entirely on that node.
   string node = 4;
+  // source_snapshot names a snapshot to copy FROM, in place of source_device.
+  // The controller finds it on `node`, on LVM and ZFS pools alike.
+  PopulateSnapshotSource source_snapshot = 5;
+}
+
+// PopulateSnapshotSource is a snapshot of one volume of a resource.
+message PopulateSnapshotSource {
+  // resource and volume_id are the volume that was snapshotted.
+  string resource = 1;
+  uint32 volume_id = 2;
+  // name is the snapshot's name as it was given when it was taken.
+  string name = 3;
+  // replicated is true for a snapshot taken on every replica
+  // (CreateResourceSnapshot: "<backing>_snap_<name>", on ZFS
+  // "<dataset>@snap_<name>"), false for one taken on one node
+  // (CreateSnapshot: "<pool>/<name>", on ZFS "<dataset>@<name>").
+  bool replicated = 4;
 }
 
 message PopulateVolumeResponse {

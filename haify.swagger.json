@@ -4503,7 +4503,7 @@
     },
     "/v1/resources/{resource}/populate": {
       "post": {
-        "summary": "PopulateVolume copies a source block device (an LVM/ZFS snapshot, or another\nresource's backing volume) into an ALREADY-CREATED, still-empty DRBD\nresource. Unlike RestoreSnapshot — which merges a snapshot back into its own\norigin in place — this fills a *different*, new volume, which is what CSI\nrestore-from-snapshot and volume cloning need.",
+        "summary": "PopulateVolume copies a snapshot, or a source block device such as another\nresource's backing volume, into an ALREADY-CREATED, still-empty DRBD\nresource. Unlike RestoreSnapshot — which merges a snapshot back into its own\norigin in place — this fills a *different*, new volume, which is what CSI\nrestore-from-snapshot and volume cloning need.",
         "description": "The copy is written to the target's DRBD device (not its backing LV) on a\nnode that holds a replica, so DRBD replicates it to every peer for free.",
         "operationId": "HaifyController_PopulateVolume",
         "responses": {
@@ -7096,11 +7096,15 @@
         },
         "sourceDevice": {
           "type": "string",
-          "description": "source_device is the block device to copy FROM, on `node`: an LVM snapshot\n(/dev/\u003cvg\u003e/\u003csnap\u003e), a ZFS zvol, or another resource's backing volume."
+          "description": "source_device is the block device to copy FROM, on `node`: an LVM\nsnapshot (/dev/\u003cvg\u003e/\u003csnap\u003e), a ZFS zvol, or another resource's backing\nvolume. To copy a snapshot, name it in source_snapshot instead: its device\npath depends on the pool type, and a ZFS snapshot has no device of its own."
         },
         "node": {
           "type": "string",
-          "description": "node must hold a diskful replica of `resource` AND have source_device\nlocally; the copy runs entirely on that node."
+          "description": "node must hold a diskful replica of `resource` AND have the source\nlocally; the copy runs entirely on that node."
+        },
+        "sourceSnapshot": {
+          "$ref": "#/definitions/v1PopulateSnapshotSource",
+          "description": "source_snapshot names a snapshot to copy FROM, in place of source_device.\nThe controller finds it on `node`, on LVM and ZFS pools alike."
         }
       }
     },
@@ -11481,6 +11485,28 @@
           "format": "uint64"
         }
       }
+    },
+    "v1PopulateSnapshotSource": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string",
+          "description": "resource and volume_id are the volume that was snapshotted."
+        },
+        "volumeId": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "name": {
+          "type": "string",
+          "description": "name is the snapshot's name as it was given when it was taken."
+        },
+        "replicated": {
+          "type": "boolean",
+          "description": "replicated is true for a snapshot taken on every replica\n(CreateResourceSnapshot: \"\u003cbacking\u003e_snap_\u003cname\u003e\", on ZFS\n\"\u003cdataset\u003e@snap_\u003cname\u003e\"), false for one taken on one node\n(CreateSnapshot: \"\u003cpool\u003e/\u003cname\u003e\", on ZFS \"\u003cdataset\u003e@\u003cname\u003e\")."
+        }
+      },
+      "description": "PopulateSnapshotSource is a snapshot of one volume of a resource."
     },
     "v1PopulateVolumeResponse": {
       "type": "object",

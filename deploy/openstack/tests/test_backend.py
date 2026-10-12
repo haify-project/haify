@@ -63,7 +63,8 @@ class Snapshots(unittest.TestCase):
         b.create_from_snapshot(VOL, 5, "src", SNAP)
         create = [x for x in c.calls if x[0] == "create_resource"][0][1]
         self.assertEqual(create["nodes"], ["n2", "n3"], "the copy needs the source and target on one node")
-        self.assertIn(("populate", RES, f"/dev/haify_pool0/cinder-src_data_snap_{SNAP}", "n2"), c.calls)
+        self.assertIn(("populate", RES, src, SNAP, "n2"), c.calls,
+                      "the snapshot is named for the controller to find, not given as a device path")
 
     def test_failed_copy_deletes_the_new_volume(self):
         b, c = backend()
@@ -82,11 +83,19 @@ class Snapshots(unittest.TestCase):
         tmp = "clone-" + VOL[:8]
         names = c.names()
         self.assertLess(names.index("create_snapshot"), names.index("populate"))
-        self.assertIn(("populate", RES, f"/dev/vg/lv_snap_{tmp}", "n1"), c.calls)
+        self.assertIn(("populate", RES, "cinder-src", tmp, "n1"), c.calls)
         self.assertEqual(c.calls[-1], ("delete_snapshot", "cinder-src", tmp))
 
-    def test_zfs_is_refused_before_anything_is_created(self):
+    def test_zfs_backend_copies_the_same_way(self):
         b, c = backend(storage_type="zfs")
+        c.res["cinder-src"] = {"name": "cinder-src", "nodes": ["n1", "n2"],
+                               "volumes": [{"pool": "haify_tank", "backingVolume": "cinder-src_data"}]}
+        b.create_from_snapshot(VOL, 5, "src", SNAP)
+        self.assertIn(("populate", RES, "cinder-src", SNAP, "n1"), c.calls)
+
+    def test_source_without_replica_is_refused_before_anything_is_created(self):
+        b, c = backend()
+        c.res["cinder-src"] = {"name": "cinder-src", "nodes": [], "volumes": [{"pool": "vg"}]}
         with self.assertRaises(HaifyError):
             b.create_from_snapshot(VOL, 5, "src", SNAP)
         self.assertNotIn("create_resource", c.names())

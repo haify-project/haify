@@ -174,12 +174,12 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	// retry would take the "already exists" path above and return it as ready.
 	// That window is not closed here; it needs persisted provisioning state.)
 	if source != nil {
-		if _, perr := s.backend.PopulateVolume(ctx, name, 0, source.device, source.node); perr != nil {
+		if _, perr := s.backend.PopulateVolumeFromSnapshot(ctx, name, 0, source.snapshot, source.node); perr != nil {
 			if derr := s.backend.DeleteResource(context.WithoutCancel(ctx), name); derr != nil {
 				s.log.Error("failed to roll back a volume whose restore failed; it may need manual cleanup",
 					zap.String("volume", name), zap.Error(derr))
 			}
-			return nil, status.Errorf(codes.Internal, "populate %q from %q: %v", name, source.device, perr)
+			return nil, status.Errorf(codes.Internal, "populate %q from %s: %v", name, describeSource(source), perr)
 		}
 	}
 

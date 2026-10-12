@@ -217,6 +217,9 @@ the new volume. If it cannot hold one, provisioning fails with
 - A clone snapshots the source first. Reading a mounted volume's disk directly
   could copy it in the middle of a write, so the clone takes an internal
   snapshot, copies from that, and then deletes it.
+- Both work on LVM and ZFS pools. A ZFS snapshot has no block device of its
+  own, so the controller reads it through a temporary read-only clone,
+  `<pool>/haify-populate-<new volume>-0`, and destroys the clone after the copy.
 - `CreateVolume` waits until the copy is done. The shipped provisioner
   `--timeout` is `120s`; raise it for large volumes. If the copy fails, the
   half-written volume is deleted, so a retry starts clean. Only a controller

@@ -10,14 +10,15 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// volumeSource is where a new volume's initial contents come from: a block
-// device on a specific node, which the new volume's placement must therefore
-// include so the copy can run locally.
+// volumeSource is where a new volume's initial contents come from: a snapshot
+// on a specific node, which the new volume's placement must therefore include
+// so the copy can run locally.
 type volumeSource struct {
-	// device is the path to copy from, e.g. /dev/haify_vg0/haifysnap_foo.
-	device string
-	// node holds device locally and must end up holding a replica of the new
-	// volume, since PopulateVolume runs the copy there.
+	// snapshot names what to copy from. The controller finds its device, which
+	// differs between LVM and ZFS pools.
+	snapshot *haifypb.PopulateSnapshotSource
+	// node holds the snapshot locally and must end up holding a replica of the
+	// new volume, since PopulateVolume runs the copy there.
 	node string
 	// cleanup removes anything created purely to serve this copy (the temporary
 	// snapshot taken when cloning a live volume). Nil when there is nothing to
@@ -25,8 +26,8 @@ type volumeSource struct {
 	cleanup func()
 }
 
-// resolveVolumeSource turns a CSI VolumeContentSource into the concrete device
-// to copy from.
+// resolveVolumeSource turns a CSI VolumeContentSource into the snapshot to
+// copy from.
 //
 // Cloning an in-use volume by reading its backing store directly would capture a
 // torn, mid-write image, so a clone first takes a snapshot of the source and
@@ -49,16 +50,13 @@ func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.Volu
 		if gerr != nil || res == nil {
 			return nil, status.Errorf(codes.NotFound, "source volume %q of snapshot %q no longer exists", resource, id)
 		}
-		pool, _, perr := snapshotSource(res)
-		if perr != nil {
+		if _, _, perr := snapshotSource(res); perr != nil {
 			return nil, status.Error(codes.FailedPrecondition, perr.Error())
 		}
 		if err := checkSourceFits(res, wantGiB); err != nil {
 			return nil, err
 		}
-		// snapshotSource returns "<pool>/<lv>"; the snapshot lives in the same pool.
-		poolName := pool[:len(pool)-len(baseName(pool))-1]
-		return &volumeSource{device: fmt.Sprintf("/dev/%s/%s", poolName, snapName), node: node}, nil
+		return &volumeSource{snapshot: oneNodeSnapshot(res, snapName), node: node}, nil
 
 	case *csi.VolumeContentSource_Volume:
 		srcID := src.Volume.GetVolumeId()
@@ -70,7 +68,6 @@ func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.Volu
 		if perr != nil {
 			return nil, status.Error(codes.FailedPrecondition, perr.Error())
 		}
-		poolName := volumePath[:len(volumePath)-len(baseName(volumePath))-1]
 
 		if err := checkSourceFits(res, wantGiB); err != nil {
 			return nil, err
@@ -83,8 +80,8 @@ func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.Volu
 			return nil, status.Errorf(codes.Internal, "snapshot source %q for clone: %v", srcID, err)
 		}
 		return &volumeSource{
-			device: fmt.Sprintf("/dev/%s/%s", poolName, tmp),
-			node:   node,
+			snapshot: oneNodeSnapshot(res, tmp),
+			node:     node,
 			cleanup: func() {
 				// Best effort: a leaked temporary snapshot wastes COW space but
 				// does not corrupt anything, and must not fail the clone.
@@ -97,14 +94,16 @@ func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.Volu
 	}
 }
 
-// baseName returns the segment after the last "/" of a "<pool>/<lv>" path.
-func baseName(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			return path[i+1:]
-		}
-	}
-	return path
+// oneNodeSnapshot names a CSI snapshot of res for PopulateVolume: a snapshot
+// of the volume snapshotSource picks, taken on one node (CreateSnapshot), not
+// on every replica.
+func oneNodeSnapshot(res *haifypb.ResourceInfo, snapName string) *haifypb.PopulateSnapshotSource {
+	return &haifypb.PopulateSnapshotSource{Resource: res.GetName(), VolumeId: res.GetVolumes()[0].GetVolumeId(), Name: snapName}
+}
+
+// describeSource names a volume source in an error message.
+func describeSource(src *volumeSource) string {
+	return fmt.Sprintf("snapshot %s of %s on %s", src.snapshot.GetName(), src.snapshot.GetResource(), src.node)
 }
 
 // contentSourceOf echoes the request's content source back in the response, as

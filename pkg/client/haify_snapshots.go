@@ -141,11 +141,11 @@ func (c *HaifyClient) UnfreezeSnapshotSchedule(ctx context.Context, resource str
 	return nil
 }
 
-// RestoreSnapshot restores a snapshot to its source volume
-// PopulateVolume copies sourceDevice (an LVM/ZFS snapshot, or another volume's
-// backing store) into an already-created, still-empty resource. It backs CSI
-// restore-from-snapshot and volume cloning; unlike RestoreSnapshot it fills a
-// different, new volume rather than merging into the source's own origin.
+// PopulateVolume copies sourceDevice (another volume's backing store, or a
+// snapshot's device) into an already-created, still-empty resource. Unlike
+// RestoreSnapshot it fills a different, new volume rather than merging into
+// the source's own origin. For a snapshot, PopulateVolumeFromSnapshot names it
+// instead and works on ZFS pools too.
 func (c *HaifyClient) PopulateVolume(ctx context.Context, resource string, volumeID uint32, sourceDevice, node string) (uint64, error) {
 	resp, err := c.client.PopulateVolume(ctx, &haifypb.PopulateVolumeRequest{
 		Resource:     resource,
@@ -162,6 +162,26 @@ func (c *HaifyClient) PopulateVolume(ctx context.Context, resource string, volum
 	return resp.BytesCopied, nil
 }
 
+// PopulateVolumeFromSnapshot copies a snapshot into an already-created,
+// still-empty resource, on node, which holds both. The controller finds the
+// snapshot's device itself, on LVM and ZFS pools alike.
+func (c *HaifyClient) PopulateVolumeFromSnapshot(ctx context.Context, resource string, volumeID uint32, src *haifypb.PopulateSnapshotSource, node string) (uint64, error) {
+	resp, err := c.client.PopulateVolume(ctx, &haifypb.PopulateVolumeRequest{
+		Resource:       resource,
+		VolumeId:       volumeID,
+		SourceSnapshot: src,
+		Node:           node,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if !resp.Success {
+		return 0, fmt.Errorf("%s", resp.Message)
+	}
+	return resp.BytesCopied, nil
+}
+
+// RestoreSnapshot restores a snapshot to its source volume
 func (c *HaifyClient) RestoreSnapshot(ctx context.Context, volume, snapshotName, node string) error {
 	req := &haifypb.RestoreSnapshotRequest{
 		Volume:       volume,

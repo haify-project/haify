@@ -120,9 +120,12 @@ class HaifyClient(object):
     def delete_snapshot(self, name, snap):
         self.request("DELETE", "/v1/resources/%s/snapshots/%s" % (urllib.parse.quote(name), urllib.parse.quote(snap)))
 
-    def populate(self, name, source_device, node):
+    def populate(self, name, src, snap, node):
+        # The controller finds the snapshot's device on node, whatever the
+        # pool type: a ZFS snapshot has no device path to give it.
         self.request("POST", "/v1/resources/%s/populate" % urllib.parse.quote(name),
-                     {"resource": name, "volumeId": 0, "sourceDevice": source_device, "node": node})
+                     {"resource": name, "volumeId": 0, "node": node,
+                      "sourceSnapshot": {"resource": src, "volumeId": 0, "name": snap, "replicated": True}})
 
 
 def _message(raw):

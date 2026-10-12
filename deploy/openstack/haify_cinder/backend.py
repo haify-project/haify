@@ -146,21 +146,14 @@ class Backend:
         nodes; DRBD replicates every copied block to the others."""
         src = self.resource_name(src_volume_id)
         snap = self.snapshot_name(snapshot_id)
-        if self.s.storage_type == "zfs":
-            raise HaifyError("a volume from a snapshot or a clone needs an LVM pool; this backend is on ZFS")
         info = self.client.resource(src)
         vols = info.get("volumes") or []
         nodes = [n for n in (info.get("nodes") or []) if n != info.get("drNode")]
         if not vols or not nodes:
             raise HaifyError(f"{src} has no volume or no replica to copy from")
-        vol = vols[0]
-        pool, lv = vol.get("pool"), vol.get("backingVolume")
-        if not pool or not lv:
-            raise HaifyError(f"{src} has no backing volume recorded")
-        source = f"/dev/{pool}/{lv}_snap_{snap}"
         name = self.create(volume_id, size_gb, nodes=nodes, pool=self.s.pool or None)
         try:
-            self.client.populate(name, source, nodes[0], timeout=self.s.copy_timeout)
+            self.client.populate(name, src, snap, nodes[0], timeout=self.s.copy_timeout)
         except HaifyError:
             # A half-filled volume must not stay behind looking like a copy.
             try:

@@ -71,7 +71,7 @@ xe sr-create type=haify shared=true content-type=user name-label="Haify" \
 | --- | --- |
 | Create, delete, resize (grow) | One Haify resource per disk. The size is rounded up to a whole MiB. A disk can grow but not shrink |
 | Start, stop, live migration | The host running the VM is the disk's Primary. A host without a copy joins the disk over the network the first time it needs it, and stays joined after the VM stops or leaves |
-| Snapshot, clone | A full, replicated copy. Haify takes an LVM snapshot of the disk on every copy at the same instant, copies it into a new resource on the same hosts, then deletes the snapshot |
+| Snapshot, clone | A full, replicated copy. Haify snapshots the disk on every copy at the same instant, copies the snapshot into a new resource on the same hosts, then deletes it. This works on LVM and ZFS pools |
 | Scan | Disks the controller has for this SR appear in XAPI; disks it no longer has disappear |
 
 Snapshots and clones copy the whole disk, so each takes as long as reading

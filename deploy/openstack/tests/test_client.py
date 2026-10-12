@@ -108,10 +108,11 @@ class Request(unittest.TestCase):
     def test_paths_are_escaped_and_timeouts_passed(self):
         op, seen = opener({"http://a": {"success": True}})
         c = Client("a", opener=op)
-        c.populate("r", "/dev/vg/lv", "n1", timeout=3600)
+        c.populate("r", "src", "s1", "n1", timeout=3600)
         self.assertEqual(seen[0][:4], ("POST", "http://a:3375/v1/resources/r/populate",
-                                       {"resource": "r", "volumeId": 0, "sourceDevice": "/dev/vg/lv",
-                                        "node": "n1"}, 3600))
+                                       {"resource": "r", "volumeId": 0, "node": "n1",
+                                        "sourceSnapshot": {"resource": "src", "volumeId": 0, "name": "s1",
+                                                           "replicated": True}}, 3600))
         c.detach_client("r", "a/b")
         self.assertEqual(seen[1][1], "http://a:3375/v1/resources/r/diskless-clients/a%2Fb")
 
