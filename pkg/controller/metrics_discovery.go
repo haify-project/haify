@@ -55,7 +55,7 @@ func (c *Controller) nodeExporterTargets(port int, cluster string) []sdGroup {
 func sanitizeLabel(key string) string {
 	out := []byte(key)
 	for i, ch := range out {
-		if !(ch == '_' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9') {
+		if ch != '_' && (ch < 'a' || ch > 'z') && (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') {
 			out[i] = '_'
 		}
 	}
