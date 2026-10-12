@@ -123,7 +123,7 @@ on-drbd-demote-failure = "reboot-immediate"
 stop-services-on-exit = true
 target-as = "BindsTo"
 start = [
-  "ocf:heartbeat:Filesystem fs_app device=%[4]s directory=%[5]s fstype=ext4 run_fsck=no force_unmount=safe",
+  "ocf:heartbeat:Filesystem fs_app device=%[4]s directory=%[5]s fstype=ext4 run_fsck=no force_unmount=false",
   "%[6]s",
   "ocf:heartbeat:IPaddr2 service_ip ip=%[7]s cidr_netmask=%[8]d",
 ]

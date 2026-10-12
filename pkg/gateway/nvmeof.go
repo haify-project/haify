@@ -181,7 +181,7 @@ func (n *NVMeManager) generateNVMeGatewayConfig(req *v1.CreateNVMeGatewayRequest
       target-as = "Requires"
 
       start = [
-        "ocf:heartbeat:Filesystem fs_cluster_private device={{ .DRBDDevice }} directory={{ .ClusterPrivatePath }} fstype={{ .FSType }} run_fsck=no force_unmount=safe",
+        "ocf:heartbeat:Filesystem fs_cluster_private device={{ .DRBDDevice }} directory={{ .ClusterPrivatePath }} fstype={{ .FSType }} run_fsck=no force_unmount=false",
         "ocf:heartbeat:IPaddr2 service_ip ip={{ .IPAddress }} cidr_netmask={{ .Prefix }}",
         "ocf:heartbeat:nvmet-subsystem subsys nqn={{ .NQN }} serial={{ .Serial }}",
 {{ range $idx, $ns := .Namespaces }}

@@ -251,8 +251,8 @@ func generateSMBGatewayConfig(resource, stateDev, dataDev string, ip *ServiceIP)
       target-as = "BindsTo"
 
       start = [
-        "ocf:heartbeat:Filesystem fs_cluster_private device={{ .StateDev }} directory={{ .StatePath }} fstype=ext4 run_fsck=no force_unmount=safe",
-        "ocf:heartbeat:Filesystem fs_share device={{ .DataDev }} directory={{ .ShareRoot }} fstype=ext4 run_fsck=no force_unmount=safe",
+        "ocf:heartbeat:Filesystem fs_cluster_private device={{ .StateDev }} directory={{ .StatePath }} fstype=ext4 run_fsck=no force_unmount=false",
+        "ocf:heartbeat:Filesystem fs_share device={{ .DataDev }} directory={{ .ShareRoot }} fstype=ext4 run_fsck=no force_unmount=false",
         "ocf:heartbeat:IPaddr2 service_ip ip={{ .IP }} cidr_netmask={{ .Prefix }}",
         "{{ .Unit }}",
       ]

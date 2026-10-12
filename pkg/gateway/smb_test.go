@@ -205,14 +205,17 @@ func TestSMBNestedExposure(t *testing.T) {
 // `fuser -m <dir>`; when <dir> is no longer a mount point that names the root
 // filesystem, and every process on the node is killed — init included. Seen on
 // a test node: drbd-reactor died with the rest and the node silently stopped
-// taking failovers. Every generated Filesystem line must use "safe".
+// taking failovers. "safe" walks every entry under /proc before its first
+// unmount attempt; on a host with 1200 threads that took 14 s, past the
+// 10 s the agent allows itself, so the unmount never ran and every move
+// failed. Every generated Filesystem line must use "false".
 func assertSafeUnmount(t *testing.T, config string) {
 	t.Helper()
 	n := 0
 	for _, line := range strings.Split(config, "\n") {
 		if strings.Contains(line, "ocf:heartbeat:Filesystem") {
 			n++
-			assert.Contains(t, line, "force_unmount=safe", line)
+			assert.Contains(t, line, "force_unmount=false", line)
 		}
 	}
 	assert.NotZero(t, n, "the config mounts nothing")
