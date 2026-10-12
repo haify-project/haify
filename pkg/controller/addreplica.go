@@ -184,6 +184,7 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	if err != nil {
 		return err
 	}
+	backingSizes = replicaBackingSizes(backingSizes, dbRes.Encrypted)
 
 	lanHosts := append([]string{}, primaryAddrs...)
 	for _, n := range withoutAll(tiebreakers, away) {
@@ -208,8 +209,7 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 			return fmt.Errorf("create backing volume %s/%s on %q: %w", v.Pool, v.VolumeName, node, cerr)
 		}
 		// The newcomer generates its own key, exactly as every other replica
-		// did. Sizing needs no crypt allowance here: backingSizes is copied
-		// from what an existing replica's LV really is, header included.
+		// did. backingSizes already carries the header (replicaBackingSizes).
 		if dbRes.Encrypted {
 			if cerr := rm.encryptBackingVolumeOn(ctx, newAddr, node, v.Pool, v.VolumeName,
 				fmt.Sprintf("/dev/%s/%s", v.Pool, v.VolumeName)); cerr != nil {

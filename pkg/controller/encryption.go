@@ -94,6 +94,27 @@ var luksNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.+-]*$`)
 // as a peer that refuses to attach because it is not the same number of bytes.
 const luksHeaderBytes = 32 << 20
 
+// replicaBackingSizes turns the sizes an existing replica's lower-level devices
+// report (primaryBackingSizes) into the size of the logical volume a new
+// replica needs.
+//
+// On an encrypted resource DRBD's lower-level device is the crypt container,
+// which is its LV less the LUKS header. An LV made at that size opens to a
+// container one header smaller than its peers', and DRBD refuses a peer that
+// is even one sector short. luksHeaderBytes is at least the header cryptsetup
+// writes, so the newcomer's container comes out the same size or a little
+// larger, which DRBD accepts.
+func replicaBackingSizes(sizes []uint64, encrypted bool) []uint64 {
+	if !encrypted {
+		return sizes
+	}
+	out := make([]uint64, len(sizes))
+	for i, s := range sizes {
+		out[i] = s + luksHeaderBytes
+	}
+	return out
+}
+
 // luksContainerName is the device-mapper name of one node's container for one
 // backing volume. Derived from pool and volume rather than from the resource so
 // that it is identical on every node (the DRBD config is shared) and unique

@@ -128,6 +128,16 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	if err := rm.assertBitmapSlotFree(ctx, primaryAddrs, primaries, resource); err != nil {
 		return err
 	}
+	// The DR copy of an encrypted resource is encrypted too, the way add-replica
+	// builds a local one. A plain LV there would put the only plaintext copy of
+	// the data at the site furthest from the operator, and nothing in `resource
+	// status` would say so. Refuse now if the DR node cannot do it, before any
+	// storage is provisioned there.
+	if dbRes.Encrypted {
+		if err := rm.assertEncryptionSupported(ctx, []string{drAddr}, []string{drNode}); err != nil {
+			return err
+		}
+	}
 
 	// The DR node needs backing volumes of its own: it is a full replica, not a
 	// diskless voter. Sizes and pools come from the resource record, which is
@@ -145,6 +155,7 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	if err != nil {
 		return err
 	}
+	backingSizes = replicaBackingSizes(backingSizes, dbRes.Encrypted)
 
 	bindPorts, err := rm.pickWANBindPorts(ctx, primaryAddrs, dbRes.Port)
 	if err != nil {
@@ -184,12 +195,21 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 		if succeeded {
 			return
 		}
-		rm.undoAddDR(context.WithoutCancel(ctx), resource, resPath, liveConfig, lanHosts, drAddr, multi, dbVols)
+		rm.undoAddDR(context.WithoutCancel(ctx), resource, resPath, liveConfig, lanHosts, drAddr, multi, dbVols,
+			dbRes.Encrypted)
 	}()
 
 	for i, v := range dbVols {
 		if err := rm.createBackingVolumeOn(ctx, drAddr, v.Pool, v.VolumeName, backingSizes[i]); err != nil {
 			return fmt.Errorf("create backing volume %s/%s on DR node %q: %w", v.Pool, v.VolumeName, drNode, err)
+		}
+		// The DR generates its own key on the node, as every other replica
+		// did; nothing about the key crosses the WAN.
+		if dbRes.Encrypted {
+			if err := rm.encryptBackingVolumeOn(ctx, drAddr, drNode, v.Pool, v.VolumeName,
+				fmt.Sprintf("/dev/%s/%s", v.Pool, v.VolumeName)); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -209,7 +229,7 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	// resource row does not carry the storage type or DRBD option overrides, so
 	// a regenerated file would silently drop them (and any manual tuning).
 	newConfig, err := rm.addDRToConfig(liveConfig, resource, drNode, primaries,
-		splitCSV(dbRes.DisklessNodes), drAddr, dbVols, dbRes.Port, bindPorts)
+		splitCSV(dbRes.DisklessNodes), drAddr, dbVols, dbRes.Port, bindPorts, dbRes.Encrypted)
 	if err != nil {
 		return fmt.Errorf("rewrite config for DR site: %w", err)
 	}
@@ -275,7 +295,8 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 // addDRToConfig rewrites a LAN resource config into the two-site shape.
 //
 // Three edits, all additive to the primary site:
-//   - a host stanza for the DR node, with its own volumes and a fresh node-id;
+//   - a host stanza for the DR node, with its own volumes and a fresh node-id
+//     (on an encrypted resource each volume's disk is its crypt container);
 //   - connection-mesh narrowed to the primary site, because a mesh entry for the
 //     DR would pair it with the replicas on their LAN addresses, which cannot
 //     reach it;
@@ -283,7 +304,7 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 //     that replica's WAN leg, plus protocol A and pull-ahead so the WAN cannot
 //     stall writes in the primary site.
 func (rm *ResourceManager) addDRToConfig(content, resource, drNode string, primaries, tiebreakers []string,
-	drAddr string, vols []*database.Volume, port int, bindPorts []int) (string, error) {
+	drAddr string, vols []*database.Volume, port int, bindPorts []int, encrypted bool) (string, error) {
 
 	drName := rm.controller.nodes.GetDRBDNameByRef(drNode)
 	blocks := parseOnBlocks(content)
@@ -306,9 +327,15 @@ func (rm *ResourceManager) addDRToConfig(content, resource, drNode string, prima
 	fmt.Fprintf(&dr, "        address   127.0.0.1:%d;\n", port)
 	fmt.Fprintf(&dr, "        node-id   %d;\n", nextID)
 	for _, v := range vols {
+		// The container's name comes from pool and volume, so it matches the
+		// primaries' stanzas although the key behind it is the DR's own.
+		disk := fmt.Sprintf("/dev/%s/%s", v.Pool, v.VolumeName)
+		if encrypted {
+			disk = luksMapperPath(v.Pool, v.VolumeName)
+		}
 		fmt.Fprintf(&dr, "        volume %d {\n", v.VolumeID)
 		fmt.Fprintf(&dr, "            device    minor %d;\n", minorForVolume(content, v.VolumeID))
-		fmt.Fprintf(&dr, "            disk      /dev/%s/%s;\n", v.Pool, v.VolumeName)
+		fmt.Fprintf(&dr, "            disk      %s;\n", disk)
 		fmt.Fprintf(&dr, "            meta-disk internal;\n")
 		fmt.Fprintf(&dr, "        }\n")
 	}
@@ -423,7 +450,7 @@ func minorForVolume(content string, volumeID int) int {
 // the failure that got us here, and a rollback that aborts halfway is worse than
 // one that keeps going.
 func (rm *ResourceManager) undoAddDR(ctx context.Context, resource, resPath, originalConfig string,
-	lanHosts []string, drAddr string, multi wanproxy.MultiSpec, vols []*database.Volume) {
+	lanHosts []string, drAddr string, multi wanproxy.MultiSpec, vols []*database.Volume, encrypted bool) {
 
 	log := rm.controller.logger.With(zap.String("resource", resource), zap.String("dr_node", drAddr))
 	log.Warn("Rolling back DR site")
@@ -449,6 +476,11 @@ func (rm *ResourceManager) undoAddDR(ctx context.Context, resource, resPath, ori
 	// The volumes go last: while the config still names them, removing them
 	// would only produce a replica that is up and broken.
 	for _, v := range vols {
+		// The open container holds the LV, and its key is worth destroying
+		// whether or not the lvremove that follows succeeds.
+		if encrypted {
+			rm.closeBackingVolumeOn(ctx, []string{drAddr}, v.Pool, v.VolumeName)
+		}
 		if _, err := rm.deployment.Exec(ctx, []string{drAddr},
 			fmt.Sprintf("sudo lvremove -f %s/%s", v.Pool, v.VolumeName)); err != nil {
 			log.Error("Rollback: failed to remove a backing volume on the DR node",

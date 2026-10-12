@@ -48,7 +48,7 @@ func TestAddReplicaToConfigTwoSiteGetsItsOwnLeg(t *testing.T) {
 	rm := addDRTestFixture(t)
 	twoSite, err := rm.addDRToConfig(lanResConfig, "openclaw", "node-c",
 		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300,
-		[]int{7900, 7901})
+		[]int{7900, 7901}, false)
 	require.NoError(t, err)
 
 	// node-d joins as a third primary-site replica: leg index 2.

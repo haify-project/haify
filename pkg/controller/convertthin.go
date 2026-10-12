@@ -74,6 +74,10 @@ type thinVolumePlan struct {
 	// NeedsTeardown is false when a previous attempt already removed the thick
 	// volume. Detaching and removing again would both fail.
 	NeedsTeardown bool
+	// Encrypted marks a volume DRBD reaches through a LUKS container. The
+	// container is closed before the thick LV goes and the thin one is wrapped
+	// in a new one before DRBD attaches, so the rebuilt copy is not plaintext.
+	Encrypted bool
 }
 
 type thinConversionPlan struct {
@@ -138,6 +142,7 @@ func planThinConversion(in *thinConversionInput) (*thinConversionPlan, error) {
 			}
 			vols = append(vols, thinVolumePlan{
 				Resource: res.Name, LV: v.BackingVolume, SizeBytes: size, NeedsTeardown: present,
+				Encrypted: v.Encrypted,
 			})
 			originTotal += size
 			if present {
@@ -381,6 +386,11 @@ func (rm *ResourceManager) applyThinConversion(ctx context.Context, host string,
 		if err := execFailure(rm.deployment.DRBDDetach(ctx, host, v.Resource)); err != nil {
 			return fmt.Errorf("detach %s on %s: %w", v.Resource, plan.Node, err)
 		}
+		// The open container holds the LV, so lvremove would refuse. Its key
+		// goes too: the volume it protected is about to be released.
+		if v.Encrypted {
+			rm.closeBackingVolumeOn(ctx, []string{host}, plan.Pool, v.LV)
+		}
 		if err := execFailure(rm.deployment.LVRemove(ctx, []string{host},
 			fmt.Sprintf("%s/%s", plan.Pool, v.LV))); err != nil {
 			return fmt.Errorf("remove %s/%s (the node is now diskless; rerun to finish): %w",
@@ -415,6 +425,15 @@ func (rm *ResourceManager) applyThinConversion(ctx context.Context, host string,
 		if err := execFailure(rm.deployment.LVCreateThinVolume(ctx, []string{host},
 			plan.Pool, plan.ThinPoolName, v.LV, fmt.Sprintf("%dB", v.SizeBytes))); err != nil {
 			return fmt.Errorf("create thin volume %s/%s: %w", plan.Pool, v.LV, err)
+		}
+		// The config still names the container, so DRBD attaches nothing
+		// until it exists again, under a key made fresh on this node. The size
+		// was read from the old LV, header included.
+		if v.Encrypted {
+			if err := rm.encryptBackingVolumeOn(ctx, host, plan.Node, plan.Pool, v.LV,
+				fmt.Sprintf("/dev/%s/%s", plan.Pool, v.LV)); err != nil {
+				return err
+			}
 		}
 		if err := execFailure(rm.deployment.DRBDCreateMD(ctx, []string{host}, v.Resource,
 			deployment.DefaultMaxPeers)); err != nil {

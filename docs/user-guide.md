@@ -319,7 +319,8 @@ haify pool convert-thin --node node1 --pool haify_data-pool
 It destroys that node's copy and resyncs it in full from the peers. The resource
 keeps serving throughout, and the node is diskless until the resync is done. It
 refuses to start if the node holds a Primary, if a peer is not `UpToDate`, if a resync
-is already running, or if this is one of only two diskful copies.
+is already running, or if this is one of only two diskful copies. The rebuilt copy
+of an encrypted resource is encrypted again, under a new key made on the node.
 
 **Growing a pool.** A new disk in a server shows up in `node disks` and on the
 web UI's Pools page under "Unused disks":
@@ -1849,7 +1850,9 @@ haify resource add-dr db --dr-node dr1 --dr-endpoint dr.example.com
 
 The DR node joins over one `haify-proxy` leg per primary-site replica, with
 protocol A and pull-ahead, and does not vote: quorum stays with the primary
-site.
+site. On an encrypted resource the DR copy is encrypted too, under a key the DR
+node makes for itself, so the DR node needs `cryptsetup` and dm-crypt like every
+other replica; `add-dr` refuses a node without them.
 
 When the DR site's address changes, or the primary should dial out from
 another interface:
@@ -1948,6 +1951,11 @@ What it does and does not cover:
   Nothing is sent anywhere and there is no central escrow. Lose a node's key and
   that replica is gone; the others are unaffected.
 - **It cannot be enabled later.** Decide at creation.
+- **Every copy is encrypted.** A replica added later with `add-replica`, a
+  diskless client or tiebreaker given a disk, the off-site copy added with
+  `add-dr`, and a copy rebuilt by `pool convert-thin` each get a container and
+  key of their own, made on that node. A node without `cryptsetup` and dm-crypt
+  is refused before anything is created on it.
 - LVM pools only.
 - **Backups are plaintext.** `haify backup` reads each snapshot through a
   temporary read-only LUKS mapping on the node it backs up from, so the image

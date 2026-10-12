@@ -88,7 +88,7 @@ func TestAddDRToConfigPreservesPrimarySite(t *testing.T) {
 	rm := addDRTestFixture(t)
 
 	out, err := rm.addDRToConfig(lanResConfig, "openclaw", "node-c",
-		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil)
+		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil, false)
 	require.NoError(t, err)
 
 	assert.Contains(t, out, "address   192.168.1.10:7300;")
@@ -106,7 +106,7 @@ func TestAddDRToConfigAddsDRStanza(t *testing.T) {
 	rm := addDRTestFixture(t)
 
 	out, err := rm.addDRToConfig(lanResConfig, "openclaw", "node-c",
-		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil)
+		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil, false)
 	require.NoError(t, err)
 
 	assert.Contains(t, out, "on haify-c {")
@@ -126,7 +126,7 @@ func TestAddDRToConfigNarrowsMeshAndAddsLegs(t *testing.T) {
 	rm := addDRTestFixture(t)
 
 	out, err := rm.addDRToConfig(lanResConfig, "openclaw", "node-c",
-		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil)
+		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil, false)
 	require.NoError(t, err)
 
 	require.Equal(t, 1, strings.Count(out, "connection-mesh"))
@@ -162,7 +162,7 @@ func TestAddDRToConfigMatchesCreateTimeLayout(t *testing.T) {
 	rm := addDRTestFixture(t)
 
 	added, err := rm.addDRToConfig(lanResConfig, "openclaw", "node-c",
-		[]string{"node-a", "node-b"}, nil, "203.0.113.7", addDRVolumes, 7300, nil)
+		[]string{"node-a", "node-b"}, nil, "203.0.113.7", addDRVolumes, 7300, nil, false)
 	require.NoError(t, err)
 
 	created := rm.generateDrbdConfig(
@@ -189,11 +189,11 @@ func TestAddDRToConfigRejectsDuplicateNode(t *testing.T) {
 	rm := addDRTestFixture(t)
 
 	once, err := rm.addDRToConfig(lanResConfig, "openclaw", "node-c",
-		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil)
+		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil, false)
 	require.NoError(t, err)
 
 	_, err = rm.addDRToConfig(once, "openclaw", "node-c",
-		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil)
+		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already in the config")
 }
@@ -204,7 +204,7 @@ func TestAddDRToConfigWithoutExistingMesh(t *testing.T) {
 	noMesh := lanResConfig[:strings.Index(lanResConfig, "    connection-mesh")] + "}\n"
 
 	out, err := rm.addDRToConfig(noMesh, "openclaw", "node-c",
-		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil)
+		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300, nil, false)
 	require.NoError(t, err)
 
 	assert.Contains(t, out, "on haify-c {")
@@ -316,7 +316,7 @@ func TestAddDRToConfigHonoursProbedBindPorts(t *testing.T) {
 
 	out, err := rm.addDRToConfig(lanResConfig, "openclaw", "node-c",
 		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300,
-		[]int{7900, 7901})
+		[]int{7900, 7901}, false)
 	require.NoError(t, err)
 
 	assert.Contains(t, out, "host haify-a address 127.0.0.1:7900;")
@@ -405,7 +405,7 @@ func TestDisklessMeshRebuildExcludesWANHosts(t *testing.T) {
 	rm := addDRTestFixture(t)
 	twoSite, err := rm.addDRToConfig(lanResConfig, "openclaw", "node-c",
 		[]string{"node-a", "node-b"}, []string{"node-e"}, "203.0.113.7", addDRVolumes, 7300,
-		[]int{7900, 7901})
+		[]int{7900, 7901}, false)
 	require.NoError(t, err)
 
 	out, err := removeDisklessClientBlock(twoSite, "haify-e")
@@ -432,7 +432,7 @@ func TestDisklessAddExcludesWANHostsFromMesh(t *testing.T) {
 		lanResConfig[strings.Index(lanResConfig, "    connection-mesh"):]
 	noTB = strings.Replace(noTB, "hosts haify-a haify-b haify-e;", "hosts haify-a haify-b;", 1)
 	twoSite, err := rm.addDRToConfig(noTB, "openclaw", "node-c",
-		[]string{"node-a", "node-b"}, nil, "203.0.113.7", addDRVolumes, 7300, nil)
+		[]string{"node-a", "node-b"}, nil, "203.0.113.7", addDRVolumes, 7300, nil, false)
 	require.NoError(t, err)
 
 	out, err := addDisklessClientBlock(twoSite, "haify-e", "192.168.1.20", 7300)

@@ -111,6 +111,7 @@ func (rm *ResourceManager) convertDisklessToReplica(ctx context.Context, dbRes *
 	if err != nil {
 		return err
 	}
+	sizes = replicaBackingSizes(sizes, dbRes.Encrypted)
 
 	resPath := fmt.Sprintf("/etc/drbd.d/%s.res", resource)
 	read, err := rm.deployment.Exec(ctx, primaryAddrs[:1], "cat "+resPath)
