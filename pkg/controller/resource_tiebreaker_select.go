@@ -28,6 +28,8 @@ const TiebreakerLabel = "haify.tiebreaker"
 // 2-replica resource's quorum mesh is wrong — it should stay a pure client — so
 // a real storage node is chosen for the tiebreaker whenever one is free.
 func (rm *ResourceManager) selectTiebreaker(ctx context.Context, nodes []string) string {
+	log := rm.resourcesLog()
+	log.Debug("selectTiebreaker: start", zap.Strings("nodes", nodes))
 	inUse := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
 		inUse[n] = true
@@ -47,6 +49,10 @@ func (rm *ResourceManager) selectTiebreaker(ctx context.Context, nodes []string)
 		// A drained node takes nothing new, not even a diskless vote: it is
 		// about to go down, and a tiebreaker that goes down costs quorum.
 		if n == nil || inUse[n.Name] || n.State == NodeStateMaintenance {
+			if n != nil {
+				log.Debug("selectTiebreaker: candidate skipped", zap.String("node", n.Name), zap.Bool("member", inUse[n.Name]),
+					zap.String("state", string(n.State)))
+			}
 			continue
 		}
 		// A tiebreaker joins the resource's DRBD connection mesh, so it must sit
@@ -62,6 +68,7 @@ func (rm *ResourceManager) selectTiebreaker(ctx context.Context, nodes []string)
 			continue
 		}
 		storage := hasPool[n.Name]
+		log.Debug("selectTiebreaker: candidate", zap.String("node", n.Name), zap.String("state", string(n.State)), zap.Bool("storage", storage))
 		switch {
 		case n.State == NodeStateOnline && storage:
 			onlineStorage = append(onlineStorage, n.Name)
@@ -91,11 +98,13 @@ func (rm *ResourceManager) selectTiebreaker(ctx context.Context, nodes []string)
 			sort.Strings(tier)
 			for _, n := range tier {
 				if !apart || !used[faultDomain(n, labels[n], key)] {
+					log.Debug("selectTiebreaker: chose", zap.String("node", n), zap.Bool("separate_fault_domain", apart))
 					return n
 				}
 			}
 		}
 	}
+	log.Debug("selectTiebreaker: no spare node", zap.Strings("nodes", nodes))
 	return ""
 }
 
@@ -111,8 +120,12 @@ func (rm *ResourceManager) selectTiebreaker(ctx context.Context, nodes []string)
 func (rm *ResourceManager) storageNodeSet(ctx context.Context) map[string]bool {
 	set := make(map[string]bool)
 	if rm.controller.storage == nil {
+		rm.resourcesLog().Debug("storageNodeSet: no storage manager")
 		return set
 	}
+	defer func() {
+		rm.resourcesLog().Debug("storageNodeSet: storage nodes", zap.Int("count", len(set)))
+	}()
 	pools, err := rm.controller.storage.ListPools(ctx)
 	if err != nil {
 		rm.controller.logger.Warn("Failed to list pools for tiebreaker selection", zap.Error(err))

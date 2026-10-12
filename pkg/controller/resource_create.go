@@ -14,10 +14,17 @@ import (
 // CreateResourceWithVolumesMetadata creates a resource and persists its
 // organizational metadata with the resolved resource configuration.
 func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context, name string, port uint32, nodes []string, protocol string, storageType string, drbdOptions map[string]string, volumes []VolumeSpec, wan *WANSpec, metadata ResourceMetadata) error {
+	log := rm.resourcesLog()
+	log.Debug("CreateResourceWithVolumesMetadata: start", zap.String("resource", name), zap.Uint32("port", port),
+		zap.Strings("nodes", nodes), zap.String("protocol", protocol), zap.String("storage_type", storageType),
+		zap.Int("drbd_options", len(drbdOptions)), zap.Int("volumes", len(volumes)), zap.Bool("wan", wan != nil),
+		zap.Int("labels", len(metadata.Labels)), zap.String("profile", metadata.Profile), zap.Bool("encrypt", metadata.Encrypt))
 	if rm.deployment == nil {
+		log.Debug("CreateResourceWithVolumesMetadata: no deployment client", zap.String("resource", name))
 		return fmt.Errorf("deployment client not set")
 	}
 	if len(volumes) == 0 {
+		log.Debug("CreateResourceWithVolumesMetadata: no volumes", zap.String("resource", name))
 		return fmt.Errorf("at least one volume is required")
 	}
 
@@ -28,95 +35,13 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 		protocol = "C"
 	}
 
-	// WAN mode is opt-in and strictly gated: when wan == nil the entire block
-	// below is skipped and the LAN path stays byte-for-byte unchanged. When set,
-	// the resource becomes a two-endpoint (primary + DR) async replica routed
-	// through a per-resource haify-proxy pair.
-	var wanCfg *wanConfig
-	if wan != nil {
-		// The primary site may hold several synchronous replicas — the
-		// "两地三中心" shape: protocol C inside the production site, one
-		// asynchronous copy far away. Only the legs that cross the WAN go
-		// through haify-proxy.
-		primaries := make([]string, 0, len(nodes))
-		seen := make(map[string]bool, len(nodes))
-		for _, n := range nodes {
-			p := strings.TrimSpace(n)
-			if p == "" {
-				continue
-			}
-			if seen[p] {
-				return fmt.Errorf("WAN resource %q lists primary node %q twice", name, p)
-			}
-			seen[p] = true
-			primaries = append(primaries, p)
-		}
-		if len(primaries) == 0 {
-			return fmt.Errorf("WAN resource %q requires at least one primary-site node in --nodes", name)
-		}
-
-		drNode := strings.TrimSpace(wan.DRNode)
-		if drNode == "" {
-			return fmt.Errorf("WAN resource %q requires a DR node (--dr-node)", name)
-		}
-		if seen[drNode] {
-			return fmt.Errorf("WAN DR node %q must not also be a primary-site node of %q", drNode, name)
-		}
-		if rm.controller.nodes.GetNodeAddressByName(drNode) == "" {
-			return fmt.Errorf("WAN DR node %q is not a registered node", drNode)
-		}
-		if strings.TrimSpace(wan.DREndpoint) == "" {
-			return fmt.Errorf("WAN resource %q requires a DR endpoint (--dr-endpoint)", name)
-		}
-		if err := validDREndpoint(strings.TrimSpace(wan.DREndpoint)); err != nil {
-			return err
-		}
-		// WAN legs are systemd instances named "<resource>_<node>". A resource
-		// named like one of those would be indistinguishable from another
-		// resource's leg, and leg reconciliation would treat one's tunnels as
-		// the other's litter. Refusing the name is cheaper than disambiguating
-		// it forever.
-		if rm.controller.db != nil {
-			if existing, lerr := rm.controller.db.ListResources(ctx); lerr == nil {
-				names := make([]string, 0, len(existing))
-				for _, e := range existing {
-					names = append(names, e.Name)
-				}
-				if verr := wanproxy.ValidateResourceNameForWAN(name, names); verr != nil {
-					return verr
-				}
-			}
-		}
-		if wan.WANPort == 0 {
-			wan.WANPort = randomWANPort()
-			rm.controller.logger.Info("auto-allocated WAN proxy port",
-				zap.String("resource", name), zap.Uint32("wan_port", wan.WANPort))
-		}
-
-		// Protocol: a single-replica primary site is the historic two-endpoint
-		// WAN resource and is async end to end. With several replicas the LAN
-		// mesh stays synchronous (that is the point of having them) and only
-		// the WAN legs are async — expressed per connection, below.
-		if len(primaries) == 1 {
-			protocol = "A"
-		}
-		nodes = append(append([]string{}, primaries...), drNode)
-		wanCfg = &wanConfig{DRNode: drNode, PrimaryNodes: primaries}
-
-		// Each primary's DRBD needs a loopback port to bind for its WAN leg that
-		// nothing else on that host has claimed; a fixed offset collides with
-		// another resource whose DRBD port happens to sit one offset away.
-		if len(primaries) > 1 && rm.deployment != nil {
-			primaryAddrs := make([]string, 0, len(primaries))
-			for _, n := range primaries {
-				primaryAddrs = append(primaryAddrs, rm.controller.ResolveHost(n))
-			}
-			bindPorts, perr := rm.pickWANBindPorts(ctx, primaryAddrs, int(port))
-			if perr != nil {
-				return fmt.Errorf("choose WAN bind ports: %w", perr)
-			}
-			wanCfg.BindPorts = bindPorts
-		}
+	// WAN mode is opt-in and strictly gated: when wan == nil nothing changes
+	// and the LAN path stays byte-for-byte unchanged. When set, the resource
+	// becomes a two-endpoint (primary + DR) async replica routed through a
+	// per-resource haify-proxy pair; see planCreateWAN.
+	nodes, protocol, wanCfg, err := rm.planCreateWAN(ctx, name, port, nodes, protocol, wan)
+	if err != nil {
+		return err
 	}
 
 	// Resolve every volume: auto-select+normalize its pool and derive a backing
@@ -126,6 +51,7 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	for i, v := range volumes {
 		sizeGB, exact, err := volumeSize(v)
 		if err != nil {
+			log.Debug("CreateResourceWithVolumesMetadata: invalid volume size", zap.String("resource", name), zap.Int("volume_id", i), zap.Error(err))
 			return fmt.Errorf("volume %d: %w", i, err)
 		}
 		v.SizeGB = sizeGB
@@ -136,6 +62,7 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 			// caller must decide.
 			selected, err := rm.autoSelectPool(ctx)
 			if err != nil {
+				log.Debug("CreateResourceWithVolumesMetadata: pool auto-selection failed", zap.String("resource", name), zap.Error(err))
 				return err
 			}
 			pool = selected
@@ -152,8 +79,12 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 			exactBytes: exact,
 			encrypted:  metadata.Encrypt,
 		}
+		log.Debug("CreateResourceWithVolumesMetadata: resolved volume", zap.String("resource", name), zap.Int("volume_id", i),
+			zap.String("volume", volumeName), zap.String("pool", resolved[i].pool), zap.Uint32("size_gb", sizeGB),
+			zap.Uint64("size_bytes", exact), zap.Bool("pool_auto_selected", v.Pool == ""))
 		if metadata.Encrypt {
 			if err := validateLUKSNames(resolved[i].pool, volumeName); err != nil {
+				log.Debug("CreateResourceWithVolumesMetadata: names unusable for LUKS", zap.String("resource", name), zap.Error(err))
 				return err
 			}
 		}
@@ -164,14 +95,17 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	// with the other setting is a request to convert in place, which this does
 	// not do.
 	if err := rm.assertEncryptionNotRetrofitted(ctx, name, metadata.Encrypt); err != nil {
+		log.Debug("CreateResourceWithVolumesMetadata: encryption would change", zap.String("resource", name), zap.Error(err))
 		return err
 	}
 	if metadata.Encrypt {
 		if err := assertEncryptableStorage(storageType); err != nil {
+			log.Debug("CreateResourceWithVolumesMetadata: storage type not encryptable", zap.String("storage_type", storageType), zap.Error(err))
 			return err
 		}
 		for _, v := range resolved {
 			if err := rm.assertEncryptableVDO(ctx, v.pool); err != nil {
+				log.Debug("CreateResourceWithVolumesMetadata: pool not encryptable", zap.String("pool", v.pool), zap.Error(err))
 				return err
 			}
 		}
@@ -181,9 +115,11 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	// volumes exist on the others — with an error about whatever step first
 	// touched that node. Say so before anything is built.
 	if err := rm.assertNodesOnline(nodes); err != nil {
+		log.Debug("CreateResourceWithVolumesMetadata: a node is offline", zap.String("resource", name), zap.Error(err))
 		return err
 	}
 	if err := rm.assertCreateQuota(ctx, resolved, nodes, metadata.Labels); err != nil {
+		log.Debug("CreateResourceWithVolumesMetadata: quota refuses", zap.String("resource", name), zap.Error(err))
 		return err
 	}
 
@@ -209,7 +145,10 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	// carry, so the auto-tiebreaker is skipped entirely for WAN.
 	var disklessNodes []string
 	if len(nodes) == 2 && wan == nil {
-		if rm.controller.config != nil && rm.controller.config.Resource.AutoTiebreaker {
+		auto := rm.controller.config != nil && rm.controller.config.Resource.AutoTiebreaker
+		log.Debug("CreateResourceWithVolumesMetadata: two-node resource; considering a tiebreaker",
+			zap.String("resource", name), zap.Bool("auto_tiebreaker", auto))
+		if auto {
 			if tb := rm.selectTiebreaker(ctx, nodes); tb != "" {
 				disklessNodes = []string{tb}
 				rm.controller.logger.Info("Adding diskless quorum tiebreaker to 2-node resource",
@@ -245,10 +184,13 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 		disklessIPs[i] = ip
 	}
 	allIPs := append(append([]string{}, nodeIPs...), disklessIPs...)
+	log.Debug("CreateResourceWithVolumesMetadata: resolved hosts", zap.String("resource", name),
+		zap.Strings("hosts", nodeIPs), zap.Strings("diskless_hosts", disklessIPs))
 
 	if port == 0 {
 		p, err := rm.nextGlobalPort(ctx, nodeIPs[0])
 		if err != nil {
+			log.Debug("CreateResourceWithVolumesMetadata: port allocation failed", zap.String("resource", name), zap.Error(err))
 			return fmt.Errorf("allocate port: %w", err)
 		}
 		port = p
@@ -262,6 +204,7 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 		rm.controller.logger.Warn("port conflict pre-check failed; continuing",
 			zap.Uint32("port", port), zap.Error(err))
 	} else if conflict != "" {
+		log.Debug("CreateResourceWithVolumesMetadata: port in use", zap.Uint32("port", port), zap.String("owner", conflict))
 		return fmt.Errorf("DRBD port %d is already in use by resource %q; choose a different port", port, conflict)
 	}
 
@@ -271,6 +214,7 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	// unwind, for a request that could never have succeeded.
 	if metadata.Encrypt {
 		if err := rm.assertEncryptionSupported(ctx, nodeIPs, nodes); err != nil {
+			log.Debug("CreateResourceWithVolumesMetadata: encryption unsupported on a node", zap.String("resource", name), zap.Error(err))
 			return err
 		}
 	}
@@ -287,19 +231,22 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 			zap.String("name", name))
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		_, _ = rm.deployment.DRBDDown(cleanupCtx, allIPs, name)
-		_, _ = rm.deployment.Exec(cleanupCtx, allIPs, fmt.Sprintf("sudo rm -f /etc/drbd.d/%s.res", name))
+		_, downErr := rm.deployment.DRBDDown(cleanupCtx, allIPs, name)
+		_, rmErr := rm.deployment.Exec(cleanupCtx, allIPs, fmt.Sprintf("sudo rm -f /etc/drbd.d/%s.res", name))
+		log.Debug("CreateResourceWithVolumesMetadata: rollback took resource down and removed config", zap.String("resource", name),
+			zap.Strings("hosts", allIPs), zap.NamedError("down_error", downErr), zap.NamedError("rm_error", rmErr))
 		// A WAN create may have provisioned the haify-proxy pair before failing;
 		// tear it down too so a retry starts clean. Best-effort (idempotent at
 		// the shell level). nodeIPs is [primaryIP, drIP] for a WAN resource.
 		if wan != nil && len(nodeIPs) >= 2 {
-			_ = wanproxy.DeprovisionMulti(cleanupCtx, rm.wanproxyDeployClient(), wanproxy.MultiSpec{
+			derr := wanproxy.DeprovisionMulti(cleanupCtx, rm.wanproxyDeployClient(), wanproxy.MultiSpec{
 				Resource:         name,
 				PrimaryNodeAddrs: nodeIPs[:len(nodeIPs)-1],
 				DRNodeAddr:       nodeIPs[len(nodeIPs)-1],
 				BaseWANPort:      int(wan.WANPort),
 				BaseDRBDPort:     int(port),
 			})
+			log.Debug("CreateResourceWithVolumesMetadata: rollback deprovisioned WAN proxy", zap.String("resource", name), zap.Error(derr))
 		}
 		// Backing volumes exist on diskful nodes only. An encrypted volume's
 		// container has to be closed and its key destroyed first: while the
@@ -309,17 +256,23 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 			if v.encrypted {
 				rm.closeBackingVolumeOn(cleanupCtx, nodeIPs, v.pool, v.volumeName)
 			}
+			var verr error
 			if storageType == "zfs" || storageType == "zfs-thin" {
-				_, _ = rm.deployment.ZFSDestroyDataset(cleanupCtx, nodeIPs, fmt.Sprintf("%s/%s", v.pool, v.volumeName))
+				_, verr = rm.deployment.ZFSDestroyDataset(cleanupCtx, nodeIPs, fmt.Sprintf("%s/%s", v.pool, v.volumeName))
 			} else {
-				_, _ = rm.deployment.LVRemove(cleanupCtx, nodeIPs, fmt.Sprintf("/dev/%s/%s", v.pool, v.volumeName))
+				_, verr = rm.deployment.LVRemove(cleanupCtx, nodeIPs, fmt.Sprintf("/dev/%s/%s", v.pool, v.volumeName))
 			}
+			log.Debug("CreateResourceWithVolumesMetadata: rollback removed backing volume", zap.String("resource", name),
+				zap.String("pool", v.pool), zap.String("volume", v.volumeName), zap.Error(verr))
 		}
 	}()
 
 	// 1. Create the backing storage for every volume on all diskful nodes.
 	for _, v := range resolved {
+		log.Debug("CreateResourceWithVolumesMetadata: creating backing volume", zap.String("resource", name),
+			zap.String("pool", v.pool), zap.String("volume", v.volumeName))
 		if err := rm.createBackingVolume(ctx, nodeIPs, nodes, storageType, v.pool, v.volumeName, v.sizeGB, v.encrypted); err != nil {
+			log.Debug("CreateResourceWithVolumesMetadata: backing volume failed", zap.String("volume", v.volumeName), zap.Error(err))
 			return err
 		}
 	}
@@ -330,18 +283,24 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	// run of len(resolved) consecutive minors from that base is collision-free.
 	baseMinor, err := rm.nextGlobalMinor(ctx, allIPs)
 	if err != nil {
+		log.Debug("CreateResourceWithVolumesMetadata: minor allocation failed", zap.String("resource", name), zap.Error(err))
 		return fmt.Errorf("failed to allocate device minor: %w", err)
 	}
 	for i := range resolved {
 		resolved[i].minor = baseMinor + i
 	}
+	log.Debug("CreateResourceWithVolumesMetadata: allocated minors", zap.String("resource", name),
+		zap.Int("base_minor", baseMinor), zap.Int("count", len(resolved)))
 	// wanCfg is nil for a LAN resource (output unchanged); non-nil renders the
 	// WAN variant (protocol A + pull-ahead + loopback addresses).
 	drbdOptions = rm.withThinResyncDefaults(ctx, drbdOptions, storageType, resolved)
 	drbdConfig := rm.generateDrbdConfig(name, port, resolved, nodes, disklessNodes, protocol, storageType, drbdOptions, wanCfg)
 
 	// 3. Distribute config to all nodes (diskful + diskless tiebreaker)
+	start := time.Now()
 	configResult, err := rm.deployment.DistributeConfig(ctx, allIPs, drbdConfig, fmt.Sprintf("/etc/drbd.d/%s.res", name))
+	log.Debug("CreateResourceWithVolumesMetadata: distributed config", zap.String("resource", name), zap.Strings("hosts", allIPs),
+		zap.Bool("success", configResult != nil && configResult.Success), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to distribute config: %w", err)
 	}
@@ -351,7 +310,10 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 
 	// 4. Create metadata on diskful nodes only. A diskless tiebreaker has no
 	// backing disk, so `drbdadm create-md` does not apply to it.
+	start = time.Now()
 	mdResult, err := rm.deployment.DRBDCreateMD(ctx, nodeIPs, name, minMetadataPeers)
+	log.Debug("CreateResourceWithVolumesMetadata: created metadata", zap.String("resource", name), zap.Strings("hosts", nodeIPs),
+		zap.Array("failed_hosts", resourcesFailedHosts{mdResult}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to create metadata: %w", err)
 	}
@@ -389,14 +351,21 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 			zap.String("dr", drAddr),
 			zap.String("dr_endpoint", wan.DREndpoint),
 			zap.Int("base_wan_port", int(wan.WANPort)))
-		if err := wanproxy.ProvisionMulti(ctx, rm.wanproxyDeployClient(), multi); err != nil {
+		start = time.Now()
+		err := wanproxy.ProvisionMulti(ctx, rm.wanproxyDeployClient(), multi)
+		log.Debug("CreateResourceWithVolumesMetadata: provisioned WAN proxy", zap.String("resource", name),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			return fmt.Errorf("provision WAN proxy for %s: %w", name, err)
 		}
 	}
 
 	// 5. Bring up resource on all nodes. The diskless node comes up Diskless
 	// and connects; it only participates in quorum.
+	start = time.Now()
 	upResult, err := rm.deployment.DRBDUp(ctx, allIPs, name)
+	log.Debug("CreateResourceWithVolumesMetadata: brought resource up", zap.String("resource", name), zap.Strings("hosts", allIPs),
+		zap.Array("failed_hosts", resourcesFailedHosts{upResult}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to bring up resource: %w", err)
 	}
@@ -425,6 +394,7 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	// On thin storage there is nothing to sync; see initial_sync.go.
 	skipped := false
 	if rm.backedByZeroReadingStorage(ctx, storageType, nodeIPs, resolved) {
+		log.Debug("CreateResourceWithVolumesMetadata: zero-reading storage; skipping initial sync", zap.String("resource", name))
 		if err := rm.skipInitialSync(ctx, name, nodeIPs[0]); err != nil {
 			rm.controller.logger.Warn("Could not skip the initial sync; running a full one",
 				zap.String("resource", name), zap.Error(err))
@@ -433,7 +403,9 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 		}
 	}
 	if !skipped {
+		log.Debug("CreateResourceWithVolumesMetadata: establishing initial sync", zap.String("resource", name), zap.String("host", nodeIPs[0]))
 		if err := rm.establishInitialSync(ctx, name, nodeIPs[0]); err != nil {
+			log.Debug("CreateResourceWithVolumesMetadata: initial sync failed", zap.String("resource", name), zap.Error(err))
 			return fmt.Errorf("failed to establish initial sync for %s: %w", name, err)
 		}
 	}
@@ -447,6 +419,8 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	if wan != nil {
 		// allIPs is every participant; nodeIPs is the diskful ones, the DR last.
 		localVoters := localSiteVoters(len(allIPs))
+		log.Debug("CreateResourceWithVolumesMetadata: narrowing quorum to the primary site", zap.String("resource", name),
+			zap.Int("local_voters", localVoters))
 		if err := rm.applyLocalSiteQuorum(ctx, name, allIPs, localVoters); err != nil {
 			rm.controller.logger.Warn("Could not narrow quorum to the primary site; the DR still votes",
 				zap.String("resource", name), zap.Error(err))
@@ -473,6 +447,7 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	// moment to find out. A resource that cannot survive a reboot is not one to
 	// hand back as created.
 	if bootErr := rm.ensureDRBDBootUnitEnabled(ctx, allIPs); bootErr != nil && metadata.Encrypt {
+		log.Debug("CreateResourceWithVolumesMetadata: boot unit missing on an encrypted resource", zap.String("resource", name), zap.Error(bootErr))
 		return fmt.Errorf("install the boot unit that opens the LUKS containers: %w", bootErr)
 	}
 
@@ -498,7 +473,9 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 			dbRes.WANPort = int(wan.WANPort)
 			dbRes.WANEgressAddress = wan.EgressAddress
 		}
-		if err := rm.controller.db.SaveResource(ctx, dbRes); err != nil {
+		err := rm.controller.db.SaveResource(ctx, dbRes)
+		log.Debug("CreateResourceWithVolumesMetadata: saved resource record", zap.String("resource", name), zap.Error(err))
+		if err != nil {
 			rm.controller.logger.Warn("Failed to save resource to database", zap.Error(err))
 		}
 
@@ -515,13 +492,18 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 				// dealing with, exactly as they already do for a zvol.
 				Device: v.backingDevice(storageType),
 			}
-			if err := rm.controller.db.SaveVolume(ctx, volumeRecord); err != nil {
+			err := rm.controller.db.SaveVolume(ctx, volumeRecord)
+			log.Debug("CreateResourceWithVolumesMetadata: saved volume record", zap.String("resource", name),
+				zap.Int("volume_id", v.id), zap.String("device", volumeRecord.Device), zap.Error(err))
+			if err != nil {
 				rm.controller.logger.Warn("Failed to save volume to database",
 					zap.String("resource", name),
 					zap.Int("volume", v.id),
 					zap.Error(err))
 			}
 		}
+	} else {
+		log.Debug("CreateResourceWithVolumesMetadata: no database; resource not recorded", zap.String("resource", name))
 	}
 
 	rm.controller.logger.Info("DRBD resource created successfully",

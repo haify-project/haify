@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -19,8 +20,10 @@ func (rm *ResourceManager) EvictHa(ctx context.Context, resource string) error {
 	rm.controller.logger.Info("Evicting HA resource",
 		zap.String("resource", resource))
 
+	log := rm.resourcesLog()
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
+		log.Debug("EvictHa: no hosts", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
@@ -30,8 +33,11 @@ func (rm *ResourceManager) EvictHa(ctx context.Context, resource string) error {
 	// Find the active (Primary) node
 	activeNode, err := rm.findActiveNode(ctx, resource, hosts)
 	if err != nil {
+		log.Debug("EvictHa: no active node", zap.String("resource", resource), zap.Error(err))
 		return fmt.Errorf("failed to find active node: %w", err)
 	}
+	local := activeNode == localHostname()
+	log.Debug("EvictHa: active node", zap.String("resource", resource), zap.String("node", activeNode), zap.Bool("local", local))
 
 	rm.controller.logger.Info("Found active node for eviction",
 		zap.String("resource", resource),
@@ -47,14 +53,21 @@ func (rm *ResourceManager) EvictHa(ctx context.Context, resource string) error {
 	if resource == SelfHaResource {
 		evictCmd := fmt.Sprintf(
 			"sudo systemd-run --unit=haify-selfha-evict "+collectFlag+" drbd-reactorctl evict %s", configName)
-		if activeNode == localHostname() {
+		log.Debug("EvictHa: self-HA resource; launching detached eviction", zap.String("resource", resource),
+			zap.String("node", activeNode), zap.Bool("local", local))
+		start := time.Now()
+		if local {
 			// Usually the case: the controller runs where haify-meta is Primary.
 			// Its hostname need not be a name dispatch can reach.
-			if o, err := exec.Command("/bin/bash", "-c", evictCmd).CombinedOutput(); err != nil {
+			o, err := exec.Command("/bin/bash", "-c", evictCmd).CombinedOutput()
+			log.Debug("EvictHa: ran local detached eviction", zap.String("resource", resource),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
+			if err != nil {
 				return fmt.Errorf("failed to launch detached self-eviction: %s", strings.TrimSpace(string(o)))
 			}
 		} else if err := rm.execAllSuccess(ctx, []string{rm.controller.ResolveHost(activeNode)}, evictCmd,
 			"failed to launch detached self-eviction"); err != nil {
+			log.Debug("EvictHa: remote detached eviction failed", zap.String("resource", resource), zap.Error(err))
 			return err
 		}
 		rm.controller.logger.Info("Detached self-eviction launched",
@@ -70,15 +83,21 @@ func (rm *ResourceManager) EvictHa(ctx context.Context, resource string) error {
 	// HA config's name reported success and moved nothing.
 	script := evictScript(resource)
 	var out string
-	if activeNode == localHostname() {
+	start := time.Now()
+	if local {
 		o, err := exec.Command("/bin/bash", "-c", script).CombinedOutput()
 		out = strings.TrimSpace(string(o))
+		log.Debug("EvictHa: ran eviction script locally", zap.String("resource", resource),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			return fmt.Errorf("failed to evict %s on %s: %s", resource, activeNode, out)
 		}
 	} else {
-		result, err := rm.deployment.Exec(ctx, []string{rm.controller.ResolveHost(activeNode)},
+		host := rm.controller.ResolveHost(activeNode)
+		result, err := rm.deployment.Exec(ctx, []string{host},
 			"echo "+base64Std(script)+" | base64 -d | sudo /bin/bash")
+		log.Debug("EvictHa: ran eviction script remotely", zap.String("resource", resource), zap.String("host", host),
+			zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			return fmt.Errorf("failed to evict HA resource: %w", err)
 		}
@@ -134,27 +153,36 @@ exit 3
 func (rm *ResourceManager) RemoveHa(ctx context.Context, resource string) error {
 	rm.controller.logger.Info("Removing HA configuration", zap.String("resource", resource))
 
+	log := rm.resourcesLog()
 	if rm.deployment == nil {
+		log.Debug("RemoveHa: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("deployment client not set")
 	}
 	if rm.controller.db == nil {
+		log.Debug("RemoveHa: no database", zap.String("resource", resource))
 		return fmt.Errorf("database not available")
 	}
 
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
+		log.Debug("RemoveHa: no hosts", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
 	// Get HA config to know what to clean up
 	haCfg, err := rm.controller.db.GetHaConfig(ctx, resource)
+	log.Debug("RemoveHa: HA config lookup", zap.String("resource", resource), zap.Bool("found", haCfg != nil), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to get HA config: %w", err)
 	}
 
 	// 1. Delete promoter config
 	configPath := fmt.Sprintf("/etc/drbd-reactor.d/haify-ha-%s.toml", resource)
-	if err := rm.deployment.DeleteConfig(ctx, hosts, configPath); err != nil {
+	start := time.Now()
+	err = rm.deployment.DeleteConfig(ctx, hosts, configPath)
+	log.Debug("RemoveHa: deleted promoter config", zap.String("resource", resource), zap.String("path", configPath),
+		zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		rm.controller.logger.Warn("Failed to delete promoter config", zap.Error(err))
 	}
 
@@ -165,13 +193,23 @@ func (rm *ResourceManager) RemoveHa(ctx context.Context, resource string) error 
 		mountUnitName = fmt.Sprintf("%s.mount", mountUnitName)
 		mountPath := fmt.Sprintf("/etc/systemd/system/%s", mountUnitName)
 
-		if err := rm.deployment.DeleteConfig(ctx, hosts, mountPath); err != nil {
+		start := time.Now()
+		err := rm.deployment.DeleteConfig(ctx, hosts, mountPath)
+		log.Debug("RemoveHa: deleted mount unit", zap.String("resource", resource), zap.String("path", mountPath),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			rm.controller.logger.Warn("Failed to delete mount unit", zap.Error(err))
 		}
+	} else {
+		log.Debug("RemoveHa: no mount point; no mount unit to delete", zap.String("resource", resource))
 	}
 
 	// 3. Reload daemons
-	if _, err := rm.deployment.Exec(ctx, hosts, "systemctl daemon-reload && systemctl reload drbd-reactor"); err != nil {
+	start = time.Now()
+	res, err := rm.deployment.Exec(ctx, hosts, "systemctl daemon-reload && systemctl reload drbd-reactor")
+	log.Debug("RemoveHa: reloaded systemd and drbd-reactor", zap.String("resource", resource),
+		zap.Array("failed_hosts", resourcesFailedHosts{res}), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		rm.controller.logger.Warn("Failed to reload daemons", zap.Error(err))
 	}
 
@@ -185,7 +223,11 @@ func (rm *ResourceManager) RemoveHa(ctx context.Context, resource string) error 
 	// a no-op, and any failure is only a warning so teardown still completes.
 	if inst := vipServiceIPInstance(haCfg.VIP); inst != "" {
 		stopCmd := fmt.Sprintf("systemctl stop service-ip@%s.service", inst)
+		start := time.Now()
 		result, err := rm.deployment.Exec(ctx, hosts, stopCmd)
+		log.Debug("RemoveHa: stopped VIP unit", zap.String("resource", resource), zap.String("vip", haCfg.VIP),
+			zap.String("instance", inst), zap.Array("failed_hosts", resourcesFailedHosts{result}),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			rm.controller.logger.Warn("Failed to stop VIP service-ip unit",
 				zap.String("vip", haCfg.VIP), zap.Error(err))
@@ -196,7 +238,9 @@ func (rm *ResourceManager) RemoveHa(ctx context.Context, resource string) error 
 	}
 
 	// 4. Remove from database
-	if err := rm.controller.db.DeleteHaConfig(ctx, resource); err != nil {
+	err = rm.controller.db.DeleteHaConfig(ctx, resource)
+	log.Debug("RemoveHa: deleted HA record", zap.String("resource", resource), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("failed to delete HA config from database: %w", err)
 	}
 

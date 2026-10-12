@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -97,10 +98,15 @@ sudo systemctl enable ` + drbdBootUnit
 // containers, so its absence means the node comes back with no backing device
 // at all; that caller treats the error as fatal.
 func (rm *ResourceManager) ensureDRBDBootUnitEnabled(ctx context.Context, hosts []string) error {
+	log := rm.resourcesLog()
 	if rm.deployment == nil || len(hosts) == 0 {
+		log.Debug("ensureDRBDBootUnitEnabled: nothing to do", zap.Bool("has_deployment", rm.deployment != nil), zap.Int("hosts", len(hosts)))
 		return nil
 	}
+	start := time.Now()
 	result, err := rm.deployment.Exec(ctx, hosts, drbdBootUnitInstallCmd())
+	log.Debug("ensureDRBDBootUnitEnabled: installed boot unit", zap.String("unit", drbdBootUnit), zap.Strings("hosts", hosts),
+		zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		rm.controller.logger.Warn("Failed to install DRBD boot unit; nodes may not auto-up resources after reboot",
 			zap.String("unit", drbdBootUnit),
@@ -141,8 +147,14 @@ func (rm *ResourceManager) ensureDRBDBootUnitEnabled(ctx context.Context, hosts 
 // dropped, since the member is already up and the cost is one manual adjust
 // after a reboot.
 func (rm *ResourceManager) ensureBootUnitOnMembers(ctx context.Context, resource string, hosts []string, encrypted bool) error {
-	if err := rm.ensureDRBDBootUnitEnabled(ctx, hosts); err != nil && encrypted {
-		return fmt.Errorf("install the boot unit that opens the LUKS containers of %s: %w", resource, err)
+	log := rm.resourcesLog()
+	log.Debug("ensureBootUnitOnMembers: start", zap.String("resource", resource), zap.Strings("hosts", hosts), zap.Bool("encrypted", encrypted))
+	if err := rm.ensureDRBDBootUnitEnabled(ctx, hosts); err != nil {
+		if encrypted {
+			log.Debug("ensureBootUnitOnMembers: failed on an encrypted resource; fatal", zap.String("resource", resource), zap.Error(err))
+			return fmt.Errorf("install the boot unit that opens the LUKS containers of %s: %w", resource, err)
+		}
+		log.Debug("ensureBootUnitOnMembers: failed on an unencrypted resource; ignored", zap.String("resource", resource), zap.Error(err))
 	}
 	return nil
 }

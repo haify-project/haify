@@ -20,7 +20,9 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 		zap.String("pool", pool),
 		zap.Uint32("size_gb", sizeGB))
 
+	log := rm.resourcesLog()
 	if rm.deployment == nil {
+		log.Debug("AddVolume: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("deployment client not set")
 	}
 
@@ -31,6 +33,7 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	if pool == "" {
 		selected, err := rm.autoSelectPool(ctx)
 		if err != nil {
+			log.Debug("AddVolume: pool auto-selection failed", zap.String("resource", resource), zap.Error(err))
 			return err
 		}
 		pool = selected
@@ -48,20 +51,25 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 			encrypt = dbRes.Encrypted
 		}
 	}
+	log.Debug("AddVolume: resolved pool and encryption", zap.String("resource", resource), zap.String("pool", pool), zap.Bool("encrypt", encrypt))
 	if encrypt {
 		if err := validateLUKSNames(pool, volume); err != nil {
+			log.Debug("AddVolume: names unusable for LUKS", zap.String("volume", volume), zap.Error(err))
 			return err
 		}
 		if err := rm.assertEncryptableVDO(ctx, pool); err != nil {
+			log.Debug("AddVolume: pool not encryptable", zap.String("pool", pool), zap.Error(err))
 			return err
 		}
 	}
 
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
+		log.Debug("AddVolume: no hosts", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	if err := rm.assertQuotaForResource(ctx, resource, pool, hosts, uint64(sizeGB)); err != nil {
+		log.Debug("AddVolume: quota refuses", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	// Tiebreakers and diskless clients carry the resource config too. They get
@@ -71,7 +79,10 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	allHosts := append(append([]string(nil), hosts...), rm.disklessParticipantHosts(ctx, resource)...)
 
 	// Get current config to find next volume number and minor
+	t0 := time.Now()
 	result, err := rm.deployment.Exec(ctx, []string{hosts[0]}, fmt.Sprintf("cat /etc/drbd.d/%s.res", resource))
+	log.Debug("AddVolume: read config", zap.String("resource", resource), zap.String("host", hosts[0]),
+		zap.Duration("took", time.Since(t0)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to read config: %w", err)
 	}
@@ -83,6 +94,7 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	}
 
 	if hostResult == nil || !hostResult.Success {
+		log.Debug("AddVolume: config read failed", zap.String("resource", resource))
 		return fmt.Errorf("failed to get config")
 	}
 
@@ -133,8 +145,11 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	// fields on a 3-field line and always allocated minor 0.)
 	newMinor, err := rm.nextGlobalMinor(ctx, allHosts)
 	if err != nil {
+		log.Debug("AddVolume: minor allocation failed", zap.String("resource", resource), zap.Error(err))
 		return fmt.Errorf("failed to allocate device minor: %w", err)
 	}
+	log.Debug("AddVolume: new volume", zap.String("resource", resource), zap.Int("volume_id", newVolNum),
+		zap.Int("minor", newMinor), zap.String("disk", drbdDisk), zap.Strings("hosts", allHosts))
 
 	// Extend the synchronized DRBD resource config with the new volume block.
 	// LINBIT recommends updating the config identically on all nodes and then
@@ -158,13 +173,15 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 			zap.String("volume", volume))
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		_, _ = rm.deployment.DistributeConfig(cleanupCtx, allHosts, originalConfig, fmt.Sprintf("/etc/drbd.d/%s.res", resource))
+		_, cerr := rm.deployment.DistributeConfig(cleanupCtx, allHosts, originalConfig, fmt.Sprintf("/etc/drbd.d/%s.res", resource))
 		if encrypt {
 			// Close before removing: the open container holds the LV, and a key
 			// left behind outlives the volume it was protecting.
 			rm.closeBackingVolumeOn(cleanupCtx, hosts, pool, volume)
 		}
-		_, _ = rm.deployment.LVRemove(cleanupCtx, hosts, backingDevice)
+		_, lerr := rm.deployment.LVRemove(cleanupCtx, hosts, backingDevice)
+		log.Debug("AddVolume: rolled back", zap.String("resource", resource), zap.String("volume", volume),
+			zap.NamedError("config_error", cerr), zap.NamedError("lvremove_error", lerr))
 	}()
 
 	// Create the backing volume on every diskful node, shaped by the node's
@@ -177,13 +194,17 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	sizeBytes := backingVolumeSizeBytes(sizeGB, len(hosts)-1, encrypt)
 	for _, host := range hosts {
 		if err := rm.createBackingVolumeOn(ctx, host, pool, volume, sizeBytes); err != nil {
+			log.Debug("AddVolume: backing volume failed", zap.String("host", host), zap.String("volume", volume), zap.Error(err))
 			return fmt.Errorf("failed to create volume %s/%s on %s: %w", pool, volume, host, err)
 		}
 		if encrypt {
 			if err := rm.encryptBackingVolumeOn(ctx, host, host, pool, volume, backingDevice); err != nil {
+				log.Debug("AddVolume: encryption failed", zap.String("host", host), zap.String("volume", volume), zap.Error(err))
 				return err
 			}
 		}
+		log.Debug("AddVolume: backing volume created", zap.String("host", host), zap.String("volume", volume),
+			zap.Uint64("size_bytes", sizeBytes))
 	}
 
 	lines = strings.Split(hostResult.Output, "\n")
@@ -199,14 +220,21 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	updatedLines = append(updatedLines, lines[insertIdx:]...)
 	updatedConfig := addDisklessVolumeOverrides(strings.Join(updatedLines, "\n"), newVolNum, newMinor)
 
-	if _, err := rm.deployment.DistributeConfig(ctx, allHosts, updatedConfig, fmt.Sprintf("/etc/drbd.d/%s.res", resource)); err != nil {
+	t0 = time.Now()
+	_, err = rm.deployment.DistributeConfig(ctx, allHosts, updatedConfig, fmt.Sprintf("/etc/drbd.d/%s.res", resource))
+	log.Debug("AddVolume: distributed config", zap.String("resource", resource), zap.Strings("hosts", allHosts),
+		zap.Duration("took", time.Since(t0)), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("failed to distribute updated config: %w", err)
 	}
 
 	// The new volume's backing device has no DRBD metadata yet; without
 	// create-md the subsequent adjust attaches it Diskless.
 	createMDCmd := fmt.Sprintf("sudo drbdadm create-md --force %s/%d", resource, newVolNum)
+	t0 = time.Now()
 	mdResult, err := rm.deployment.Exec(ctx, hosts, createMDCmd)
+	log.Debug("AddVolume: created metadata", zap.String("resource", resource), zap.Int("volume_id", newVolNum),
+		zap.Array("failed_hosts", resourcesFailedHosts{mdResult}), zap.Duration("took", time.Since(t0)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to create metadata for new volume: %w", err)
 	}
@@ -215,7 +243,10 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	}
 
 	adjustCmd := fmt.Sprintf("sudo drbdadm adjust %s", resource)
+	t0 = time.Now()
 	adjustResult, err := rm.deployment.Exec(ctx, allHosts, adjustCmd)
+	log.Debug("AddVolume: adjusted", zap.String("resource", resource), zap.Strings("hosts", allHosts),
+		zap.Array("failed_hosts", resourcesFailedHosts{adjustResult}), zap.Duration("took", time.Since(t0)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to adjust resource after volume add: %w", err)
 	}
@@ -230,6 +261,7 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	// with a cleared bitmap on one node, which marks all replicas UpToDate
 	// — once every peer's disk has finished its handshake (volume_settle.go).
 	if err := rm.settleNewVolume(ctx, hosts[0], resource, newVolNum); err != nil {
+		log.Debug("AddVolume: settling new volume failed", zap.String("resource", resource), zap.Int("volume_id", newVolNum), zap.Error(err))
 		return err
 	}
 
@@ -243,14 +275,16 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 		zap.String("volume", volume))
 
 	if rm.controller.db != nil {
-		if err := rm.controller.db.SaveVolume(ctx, &database.Volume{
+		err := rm.controller.db.SaveVolume(ctx, &database.Volume{
 			ResourceName: resource,
 			VolumeName:   volume,
 			VolumeID:     newVolNum,
 			Pool:         pool,
 			SizeGB:       int(sizeGB),
 			Device:       drbdDisk,
-		}); err != nil {
+		})
+		log.Debug("AddVolume: saved volume record", zap.String("resource", resource), zap.String("volume", volume), zap.Error(err))
+		if err != nil {
 			rm.controller.logger.Warn("Failed to save added volume to database",
 				zap.String("resource", resource),
 				zap.String("volume", volume),
@@ -267,25 +301,33 @@ func (rm *ResourceManager) RemoveVolume(ctx context.Context, resource string, vo
 		zap.String("resource", resource),
 		zap.Uint32("volume_id", volumeID))
 
+	log := rm.resourcesLog()
 	if rm.deployment == nil {
+		log.Debug("RemoveVolume: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("deployment client not set")
 	}
 
 	if volumeID == 0 {
+		log.Debug("RemoveVolume: volume 0 refused", zap.String("resource", resource))
 		return fmt.Errorf("removing volume 0 is not supported")
 	}
 	if err := rm.controller.assertResourceUnlocked(ctx, resource, "removing a volume"); err != nil {
+		log.Debug("RemoveVolume: resource is locked", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
+		log.Debug("RemoveVolume: no hosts", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	// The diskless participants' copies of the config lose the volume too.
 	allHosts := append(append([]string(nil), hosts...), rm.disklessParticipantHosts(ctx, resource)...)
 
+	t0 := time.Now()
 	result, err := rm.deployment.Exec(ctx, []string{hosts[0]}, fmt.Sprintf("cat /etc/drbd.d/%s.res", resource))
+	log.Debug("RemoveVolume: read config", zap.String("resource", resource), zap.String("host", hosts[0]),
+		zap.Duration("took", time.Since(t0)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("failed to read config: %w", err)
 	}
@@ -296,6 +338,7 @@ func (rm *ResourceManager) RemoveVolume(ctx context.Context, resource string, vo
 		break
 	}
 	if hostResult == nil || !hostResult.Success {
+		log.Debug("RemoveVolume: config read failed", zap.String("resource", resource))
 		return fmt.Errorf("failed to get config")
 	}
 
@@ -309,8 +352,11 @@ func (rm *ResourceManager) RemoveVolume(ctx context.Context, resource string, vo
 		}
 	}
 	if target == nil {
+		log.Debug("RemoveVolume: volume not in config", zap.String("resource", resource), zap.Uint32("volume_id", volumeID))
 		return fmt.Errorf("volume %d not found", volumeID)
 	}
+	log.Debug("RemoveVolume: target volume", zap.String("resource", resource), zap.Uint32("volume_id", volumeID),
+		zap.String("disk", target.DiskPath), zap.Strings("hosts", allHosts))
 
 	lines := strings.Split(configContent, "\n")
 	start := target.StartLine
@@ -321,15 +367,22 @@ func (rm *ResourceManager) RemoveVolume(ctx context.Context, resource string, vo
 	updatedLines = append(updatedLines, lines[target.EndLine+1:]...)
 	newConfig := removeDisklessVolumeOverrides(strings.Join(updatedLines, "\n"), int(volumeID))
 
-	if _, err := rm.deployment.DistributeConfig(ctx, allHosts, newConfig, fmt.Sprintf("/etc/drbd.d/%s.res", resource)); err != nil {
+	t0 = time.Now()
+	_, err = rm.deployment.DistributeConfig(ctx, allHosts, newConfig, fmt.Sprintf("/etc/drbd.d/%s.res", resource))
+	log.Debug("RemoveVolume: distributed config", zap.String("resource", resource), zap.Duration("took", time.Since(t0)), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("failed to distribute updated config: %w", err)
 	}
 
+	t0 = time.Now()
 	adjustRes, err := rm.deployment.Exec(ctx, allHosts, fmt.Sprintf("sudo drbdadm adjust %s", resource))
+	log.Debug("RemoveVolume: adjusted", zap.String("resource", resource), zap.Array("failed_hosts", resourcesFailedHosts{adjustRes}),
+		zap.Duration("took", time.Since(t0)), zap.Error(err))
 	if err == nil && !adjustRes.AllSuccess() {
 		err = fmt.Errorf("drbdadm adjust failed after removing volume %d: %s", volumeID, adjustRes.FailureDetails())
 	}
 	if err != nil {
+		log.Debug("RemoveVolume: adjust failed; restoring config", zap.String("resource", resource), zap.Error(err))
 		// Nothing has been deleted yet, so put every node's config back the
 		// way it was. Left alone, the nodes keep a config the kernel refused,
 		// and the next adjust of this resource — for any reason — fails the
@@ -348,7 +401,10 @@ func (rm *ResourceManager) RemoveVolume(ctx context.Context, resource string, vo
 
 	if strings.HasPrefix(target.DiskPath, "/dev/zvol/") {
 		dataset := strings.TrimPrefix(target.DiskPath, "/dev/zvol/")
+		t0 := time.Now()
 		zfsRes, err := rm.deployment.ZFSDestroyDataset(ctx, hosts, dataset)
+		log.Debug("RemoveVolume: destroyed zvol", zap.String("dataset", dataset), zap.Array("failed_hosts", resourcesFailedHosts{zfsRes}),
+			zap.Duration("took", time.Since(t0)), zap.Error(err))
 		if err != nil {
 			return fmt.Errorf("failed to delete ZFS backing volume: %w", err)
 		}
@@ -361,9 +417,11 @@ func (rm *ResourceManager) RemoveVolume(ctx context.Context, resource string, vo
 		// and close the container first — it holds the LV open.
 		lvPath, cryptPool, cryptVolume, rerr := rm.backingLVFor(ctx, resource, volumeID, target.DiskPath)
 		if rerr != nil {
+			log.Debug("RemoveVolume: backing LV unknown", zap.String("resource", resource), zap.Error(rerr))
 			return rerr
 		}
 		if cryptPool != "" {
+			log.Debug("RemoveVolume: closing LUKS container first", zap.String("pool", cryptPool), zap.String("volume", cryptVolume))
 			rm.closeBackingVolumeOn(ctx, hosts, cryptPool, cryptVolume)
 		}
 
@@ -373,7 +431,10 @@ func (rm *ResourceManager) RemoveVolume(ctx context.Context, resource string, vo
 		// the kernel still holds it after the adjust.
 		removeCmd := fmt.Sprintf("sudo lvremove -f %s || { sudo drbdsetup detach %s/%d 2>/dev/null; sudo lvremove -f %s; }",
 			lvPath, resource, volumeID, lvPath)
+		t0 := time.Now()
 		rmRes, err := rm.deployment.Exec(ctx, hosts, removeCmd)
+		log.Debug("RemoveVolume: removed LV", zap.String("lv", lvPath), zap.Array("failed_hosts", resourcesFailedHosts{rmRes}),
+			zap.Duration("took", time.Since(t0)), zap.Error(err))
 		if err != nil {
 			return fmt.Errorf("failed to delete LVM backing volume: %w", err)
 		}
@@ -384,9 +445,12 @@ func (rm *ResourceManager) RemoveVolume(ctx context.Context, resource string, vo
 
 	if rm.controller.db != nil {
 		dbVolumes, err := rm.controller.db.ListVolumes(ctx, resource)
+		log.Debug("RemoveVolume: listed volume records", zap.String("resource", resource), zap.Int("count", len(dbVolumes)), zap.Error(err))
 		if err == nil {
 			if volume := findVolumeRecord(dbVolumes, volumeID); volume != nil {
-				if err := rm.controller.db.DeleteVolume(ctx, resource, volume.VolumeName); err != nil {
+				err := rm.controller.db.DeleteVolume(ctx, resource, volume.VolumeName)
+				log.Debug("RemoveVolume: deleted volume record", zap.String("volume", volume.VolumeName), zap.Error(err))
+				if err != nil {
 					rm.controller.logger.Warn("Failed to delete volume metadata",
 						zap.String("resource", resource),
 						zap.String("volume", volume.VolumeName),

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/haify-project/haify/pkg/database"
 )
 
@@ -106,12 +108,16 @@ func parseResourceConfigVolumes(content string) []resourceConfigVolume {
 	// Fall back to the older single-volume syntax (device/disk declared at the
 	// resource level, no `volume {}` block) when no volume blocks were found,
 	// so adopting a pre-9 / hand-written resource still discovers its volume.
+	implicit := false
 	if len(volumes) == 0 {
-		if implicit := parseImplicitVolume0(content); implicit != nil {
-			volumes = append(volumes, *implicit)
+		if v := parseImplicitVolume0(content); v != nil {
+			volumes = append(volumes, *v)
+			implicit = true
 		}
 	}
 
+	zap.L().Debug("parseResourceConfigVolumes: parsed volumes", zap.Int("top_level", len(top)),
+		zap.Int("nested", len(nested)), zap.Bool("implicit", implicit), zap.Int("count", len(volumes)))
 	return volumes
 }
 
@@ -158,6 +164,8 @@ func parseImplicitVolume0(content string) *resourceConfigVolume {
 		}
 		depth += strings.Count(line, "{") - strings.Count(line, "}")
 	}
+	zap.L().Debug("parseImplicitVolume0: resource-level volume", zap.Bool("found", haveDisk),
+		zap.String("disk", vol.DiskPath), zap.Int("minor", vol.Minor))
 	if !haveDisk {
 		return nil
 	}
@@ -196,6 +204,7 @@ func parseResourceConfigNodes(content string) []string {
 		seen[n] = true
 		nodes = append(nodes, n)
 	}
+	zap.L().Debug("parseResourceConfigNodes: parsed nodes", zap.Strings("nodes", nodes))
 	return nodes
 }
 
@@ -208,10 +217,12 @@ func parsePortFromConfig(content string) uint32 {
 		}
 		if m := portLineRe.FindStringSubmatch(line); m != nil {
 			if p, err := strconv.Atoi(m[1]); err == nil {
+				zap.L().Debug("parsePortFromConfig: found port", zap.Int("port", p))
 				return uint32(p)
 			}
 		}
 	}
+	zap.L().Debug("parsePortFromConfig: no port in config")
 	return 0
 }
 
@@ -221,6 +232,10 @@ func parsePortFromConfig(content string) uint32 {
 // not carry that information.
 func volumeNameAndPoolFromDiskPath(diskPath string) (volumeName, pool string) {
 	diskPath = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(diskPath), ";"))
+	defer func() {
+		zap.L().Debug("volumeNameAndPoolFromDiskPath: derived", zap.String("device", diskPath),
+			zap.String("volume", volumeName), zap.String("pool", pool))
+	}()
 	if diskPath == "" {
 		return "", ""
 	}
@@ -251,8 +266,10 @@ func drbdConfigReferencesDisk(config, diskRef string) bool {
 	for _, line := range strings.Split(config, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "disk") && strings.Contains(trimmed, diskRef) {
+			zap.L().Debug("drbdConfigReferencesDisk: disk already referenced", zap.String("disk", diskRef))
 			return true
 		}
 	}
+	zap.L().Debug("drbdConfigReferencesDisk: disk not referenced", zap.String("disk", diskRef))
 	return false
 }

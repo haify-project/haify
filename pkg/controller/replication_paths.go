@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 
+	"go.uber.org/zap"
+
 	"github.com/haify-project/haify/pkg/deployment"
 )
 
@@ -56,6 +58,7 @@ func onAddresses(content string) map[string]resAddr {
 			cur = ""
 		}
 	}
+	zap.L().Debug("onAddresses: parsed on-block addresses", zap.Int("count", len(out)))
 	return out
 }
 
@@ -63,15 +66,19 @@ func onAddresses(content string) map[string]resAddr {
 func meshHosts(content string) []string {
 	idx := strings.Index(content, "connection-mesh")
 	if idx < 0 {
+		zap.L().Debug("meshHosts: config has no connection-mesh")
 		return nil
 	}
 	rest := content[idx:]
 	h := strings.Index(rest, "hosts")
 	end := strings.Index(rest, ";")
 	if h < 0 || end < h {
+		zap.L().Debug("meshHosts: connection-mesh has no hosts line")
 		return nil
 	}
-	return strings.Fields(rest[h+len("hosts") : end])
+	hosts := strings.Fields(rest[h+len("hosts") : end])
+	zap.L().Debug("meshHosts: mesh hosts", zap.Strings("hosts", hosts))
+	return hosts
 }
 
 // collapseReplicationPaths turns the explicit path sections written by
@@ -80,6 +87,7 @@ func collapseReplicationPaths(content string) string {
 	if !strings.Contains(content, pathsMarker) {
 		return content
 	}
+	zap.L().Debug("collapseReplicationPaths: folding explicit paths back into the mesh", zap.Int("bytes", len(content)))
 	var out []string
 	skipping := false
 	for _, line := range strings.Split(content, "\n") {
@@ -108,8 +116,10 @@ func collapseReplicationPaths(content string) string {
 // LAN hosts, when at least one pair shares more than one. extra maps a DRBD
 // host name to its addresses beyond the one in its `on` block.
 func expandReplicationPaths(content string, extra map[string][]string) string {
+	log := zap.L()
 	content = collapseReplicationPaths(content)
 	if len(extra) == 0 {
+		log.Debug("expandReplicationPaths: no node has extra paths; config unchanged")
 		return content
 	}
 	addrs := onAddresses(content)
@@ -121,7 +131,10 @@ func expandReplicationPaths(content string, extra map[string][]string) string {
 		// Two hosts and no connection sections: DRBD pairs them implicitly.
 		hosts, header = onHostNames(blocks), "implicit"
 	}
+	log.Debug("expandReplicationPaths: hosts to pair", zap.Strings("hosts", hosts), zap.String("form", header),
+		zap.Int("nodes_with_paths", len(extra)))
 	if len(hosts) < 2 {
+		log.Debug("expandReplicationPaths: fewer than two hosts; config unchanged")
 		return content
 	}
 
@@ -146,6 +159,7 @@ func expandReplicationPaths(content string, extra map[string][]string) string {
 		}
 	}
 	if !multi {
+		log.Debug("expandReplicationPaths: no pair shares a second network; config unchanged")
 		return content
 	}
 
@@ -154,7 +168,10 @@ func expandReplicationPaths(content string, extra map[string][]string) string {
 	for i := range hosts {
 		for j := i + 1; j < len(hosts); j++ {
 			paths := pathsFor(hosts[i], hosts[j])
+			log.Debug("expandReplicationPaths: pair", zap.String("node", hosts[i]), zap.String("peer", hosts[j]), zap.Int("paths", len(paths)))
 			if len(paths) == 0 {
+				log.Debug("expandReplicationPaths: a host's address cannot be read; leaving the mesh alone",
+					zap.String("node", hosts[i]), zap.String("peer", hosts[j]))
 				return content // a host whose address cannot be read: leave the mesh alone
 			}
 			b.WriteString("    connection {\n")
@@ -168,8 +185,10 @@ func expandReplicationPaths(content string, extra map[string][]string) string {
 	fmt.Fprintf(&b, "    %s\n", pathsEndMarker)
 	out, err := insertBeforeResourceClose(stripConnectionMesh(content), b.String())
 	if err != nil {
+		log.Debug("expandReplicationPaths: could not insert paths; config unchanged", zap.Error(err))
 		return content
 	}
+	log.Debug("expandReplicationPaths: wrote explicit paths", zap.Int("hosts", len(hosts)))
 	return out
 }
 
@@ -184,17 +203,21 @@ func validateReplicationPaths(addrs []string) ([]string, error) {
 		}
 		ip := net.ParseIP(a)
 		if ip == nil || ip.To4() == nil {
+			zap.L().Debug("validateReplicationPaths: not IPv4", zap.String("address", a))
 			return nil, fmt.Errorf("%q is not an IPv4 address", a)
 		}
 		if ip.IsLoopback() {
+			zap.L().Debug("validateReplicationPaths: loopback", zap.String("address", a))
 			return nil, fmt.Errorf("%s is a loopback address", a)
 		}
 		if seen[a] {
+			zap.L().Debug("validateReplicationPaths: duplicate", zap.String("address", a))
 			return nil, fmt.Errorf("%s is listed twice", a)
 		}
 		seen[a] = true
 		out = append(out, a)
 	}
+	zap.L().Debug("validateReplicationPaths: valid", zap.Strings("addresses", out))
 	return out, nil
 }
 
@@ -214,6 +237,7 @@ func (nm *NodeManager) replicationPathsByDRBDName() map[string][]string {
 		}
 		out[name] = append([]string(nil), n.ReplicationPaths...)
 	}
+	nm.replicationPathsLog().Debug("NodeManager.replicationPathsByDRBDName: nodes with extra paths", zap.Int("count", len(out)))
 	return out
 }
 
@@ -230,6 +254,8 @@ func isResConfigPath(p string) bool {
 
 func (d *resPathsDeployment) DistributeConfig(ctx context.Context, hosts []string, content, remotePath string, opts ...deployment.ConfigOption) (*deployment.ConfigResult, error) {
 	if isResConfigPath(remotePath) {
+		zap.L().Debug("resPathsDeployment.DistributeConfig: expanding replication paths", zap.String("path", remotePath),
+			zap.Strings("hosts", hosts))
 		content = expandReplicationPaths(content, d.extra())
 	}
 	return d.deploymentClient.DistributeConfig(ctx, hosts, content, remotePath, opts...)
@@ -238,6 +264,7 @@ func (d *resPathsDeployment) DistributeConfig(ctx context.Context, hosts []strin
 func (d *resPathsDeployment) Exec(ctx context.Context, hosts []string, cmd string, opts ...deployment.ExecOption) (*deployment.ExecResult, error) {
 	res, err := d.deploymentClient.Exec(ctx, hosts, cmd, opts...)
 	if res != nil && strings.Contains(cmd, "cat ") && strings.Contains(cmd, "/etc/drbd.d/") {
+		zap.L().Debug("resPathsDeployment.Exec: collapsing replication paths in config read", zap.Strings("hosts", hosts))
 		for _, h := range res.Hosts {
 			if h != nil {
 				h.Output = collapseReplicationPaths(h.Output)

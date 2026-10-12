@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -16,11 +17,17 @@ func (rm *ResourceManager) findActiveNode(ctx context.Context, resource string, 
 		zap.Int("hosts_count", len(hosts)))
 
 	// Prefer drbd-reactor's structured JSON status for HA resources when available.
+	log := rm.resourcesLog()
 	for _, host := range hosts {
+		start := time.Now()
 		promoter, err := rm.deployment.ReactorPromoterStatusByResource(ctx, host, resource)
+		log.Debug("findActiveNode: read reactor promoter status", zap.String("resource", resource), zap.String("host", host),
+			zap.Bool("found", promoter != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil || promoter == nil {
 			continue
 		}
+		log.Debug("findActiveNode: reactor names primary", zap.String("resource", resource), zap.String("host", host),
+			zap.String("primary_on", promoter.PrimaryOn))
 		// A standby's drbd-reactor names a Primary it cannot place as
 		// "unknown"; that is no node, so keep looking.
 		if promoter.PrimaryOn != "" && !strings.EqualFold(promoter.PrimaryOn, "unknown") {
@@ -53,7 +60,10 @@ func (rm *ResourceManager) findActiveNode(ctx context.Context, resource string, 
 		// Check if local node is Primary
 		// No need for sudo since haify-controller runs as root
 		checkCmd := exec.Command("drbdsetup", "status", resource)
+		start := time.Now()
 		output, err := checkCmd.Output()
+		log.Debug("findActiveNode: ran local drbdsetup status", zap.String("resource", resource),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			// Only an ExitError carries Stderr; a missing binary yields an
 			// *exec.Error, so guard the type assertion (it used to panic when
@@ -97,7 +107,10 @@ func (rm *ResourceManager) findActiveNode(ctx context.Context, resource string, 
 
 		// Get DRBD role - check if this host is Primary
 		cmd := fmt.Sprintf("drbdadm status %s", resource)
+		start := time.Now()
 		result, err := rm.deployment.Exec(ctx, []string{host}, cmd)
+		log.Debug("findActiveNode: ran drbdadm status", zap.String("resource", resource), zap.String("host", host),
+			zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			rm.controller.logger.Debug("Failed to check DRBD status",
 				zap.String("host", host),
@@ -165,5 +178,6 @@ func (rm *ResourceManager) findActiveNode(ctx context.Context, resource string, 
 		}
 	}
 
+	log.Debug("findActiveNode: no Primary found", zap.String("resource", resource), zap.Strings("hosts", hosts))
 	return "", fmt.Errorf("no active (Primary) node found for resource %s", resource)
 }

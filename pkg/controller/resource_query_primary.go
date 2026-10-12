@@ -1,5 +1,7 @@
 package controller
 
+import "go.uber.org/zap"
+
 // The node that answers a status query reports what it sent to and received
 // from each peer. Only the Primary's view carries the traffic on every
 // replication link — a Secondary sees its own link to the Primary and nothing
@@ -25,6 +27,8 @@ func (rm *ResourceManager) statusAskOrder(resource string, hosts []string) []int
 			order = append(order, i)
 		}
 	}
+	rm.resourcesLog().Debug("statusAskOrder: order", zap.String("resource", resource), zap.Strings("hosts", hosts),
+		zap.Bool("known_primary_first", first >= 0), zap.Ints("order", order))
 	return order
 }
 
@@ -33,10 +37,13 @@ func (rm *ResourceManager) statusAskOrder(resource string, hosts []string) []int
 // are keyed by their DRBD host name, which is either the registered node name
 // or resolves to the node's address.
 func (rm *ResourceManager) rememberPrimaryHost(resource string, hosts, nodes []string, answeredAt int, localRole string, states map[string]*ResourceNodeState) {
+	log := rm.resourcesLog()
 	if answeredAt < 0 || answeredAt >= len(hosts) {
+		log.Debug("rememberPrimaryHost: no answering host", zap.String("resource", resource), zap.Int("answered_at", answeredAt))
 		return
 	}
 	if localRole == "Primary" {
+		log.Debug("rememberPrimaryHost: answering host is Primary", zap.String("resource", resource), zap.String("host", hosts[answeredAt]))
 		rm.primaryHosts.Store(resource, hosts[answeredAt])
 		return
 	}
@@ -46,9 +53,11 @@ func (rm *ResourceManager) rememberPrimaryHost(resource string, hosts, nodes []s
 		}
 		for i, h := range hosts {
 			if (i < len(nodes) && nodes[i] == name) || h == name || h == rm.controller.ResolveHost(name) {
+				log.Debug("rememberPrimaryHost: peer is Primary", zap.String("resource", resource), zap.String("node", name), zap.String("host", h))
 				rm.primaryHosts.Store(resource, h)
 				return
 			}
 		}
+		log.Debug("rememberPrimaryHost: Primary peer not among hosts", zap.String("resource", resource), zap.String("node", name))
 	}
 }

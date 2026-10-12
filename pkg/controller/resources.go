@@ -5,6 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+
+	"github.com/haify-project/haify/pkg/deployment"
 )
 
 // ResourceInfo represents DRBD resource information
@@ -143,8 +148,37 @@ func NewResourceManager(ctrl *Controller) *ResourceManager {
 	}
 }
 
+// resourcesLog is the logger the resource manager traces through: the
+// controller's, or the global one for a manager built without a controller or
+// logger (tests build them bare).
+func (rm *ResourceManager) resourcesLog() *zap.Logger {
+	if rm != nil && rm.controller != nil && rm.controller.logger != nil {
+		return rm.controller.logger
+	}
+	return zap.L()
+}
+
+// resourcesFailedHosts renders, in a trace, the hosts a command failed on. It
+// is lazy, so a trace that the level drops costs nothing; a nil result renders
+// as an empty list.
+type resourcesFailedHosts struct{ res *deployment.ExecResult }
+
+// MarshalLogArray implements zapcore.ArrayMarshaler.
+func (f resourcesFailedHosts) MarshalLogArray(enc zapcore.ArrayEncoder) error {
+	if f.res == nil {
+		return nil
+	}
+	for host, hr := range f.res.Hosts {
+		if hr == nil || !hr.Success {
+			enc.AppendString(host)
+		}
+	}
+	return nil
+}
+
 // SetDeployment sets the deployment client
 func (rm *ResourceManager) SetDeployment(client deploymentClient) {
+	rm.resourcesLog().Debug("ResourceManager.SetDeployment: setting deployment client", zap.Bool("has_client", client != nil))
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	rm.deployment = client
@@ -152,6 +186,8 @@ func (rm *ResourceManager) SetDeployment(client deploymentClient) {
 
 // SetHosts sets the list of hosts for resource operations
 func (rm *ResourceManager) SetHosts(hosts []string) {
+	log := rm.resourcesLog()
+	log.Debug("ResourceManager.SetHosts: setting hosts", zap.Strings("hosts", hosts))
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
@@ -169,13 +205,16 @@ func (rm *ResourceManager) SetHosts(hosts []string) {
 
 			rm.hostMap[hostname] = ip
 			cleanHosts = append(cleanHosts, ip)
+			log.Debug("ResourceManager.SetHosts: mapped hostname to address", zap.String("node", hostname), zap.String("host", ip))
 		} else {
 			// Format: "hostname"
 			rm.hostMap[host] = host
 			cleanHosts = append(cleanHosts, host)
+			log.Debug("ResourceManager.SetHosts: host is its own address", zap.String("host", host))
 		}
 	}
 	rm.hosts = cleanHosts
+	log.Debug("ResourceManager.SetHosts: hosts set", zap.Int("count", len(cleanHosts)))
 }
 
 // GetHosts returns the list of hosts
@@ -186,8 +225,12 @@ func (rm *ResourceManager) GetHosts() []string {
 }
 
 func (rm *ResourceManager) resourceHosts(ctx context.Context, resource string) ([]string, error) {
+	log := rm.resourcesLog()
+	log.Debug("resourceHosts: resolving hosts", zap.String("resource", resource))
 	if rm.controller.db != nil {
 		dbRes, err := rm.controller.db.GetResource(ctx, resource)
+		log.Debug("resourceHosts: database lookup", zap.String("resource", resource),
+			zap.Bool("found", dbRes != nil), zap.Error(err))
 		if err == nil && dbRes != nil {
 			var hosts []string
 			for _, node := range strings.Split(dbRes.Nodes, ",") {
@@ -195,19 +238,27 @@ func (rm *ResourceManager) resourceHosts(ctx context.Context, resource string) (
 				if node == "" {
 					continue
 				}
-				hosts = append(hosts, rm.controller.ResolveHost(node))
+				host := rm.controller.ResolveHost(node)
+				log.Debug("resourceHosts: member node", zap.String("resource", resource), zap.String("node", node), zap.String("host", host))
+				hosts = append(hosts, host)
 			}
 			if len(hosts) > 0 {
+				log.Debug("resourceHosts: hosts from database", zap.String("resource", resource), zap.Strings("hosts", hosts))
 				return hosts, nil
 			}
+			log.Debug("resourceHosts: record lists no nodes; falling back to configured hosts", zap.String("resource", resource))
 		}
+	} else {
+		log.Debug("resourceHosts: no database; using configured hosts", zap.String("resource", resource))
 	}
 
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 	if len(rm.hosts) == 0 {
+		log.Debug("resourceHosts: no hosts configured", zap.String("resource", resource))
 		return nil, fmt.Errorf("no hosts configured")
 	}
+	log.Debug("resourceHosts: configured hosts", zap.String("resource", resource), zap.Strings("hosts", rm.hosts))
 	return append([]string(nil), rm.hosts...), nil
 }
 
@@ -218,11 +269,15 @@ func (rm *ResourceManager) resourceHosts(ctx context.Context, resource string) (
 // though, so teardown and every change to the volume set must reach them —
 // see disklessParticipantHosts.
 func (rm *ResourceManager) disklessHosts(ctx context.Context, resource string) []string {
+	log := rm.resourcesLog()
 	if rm.controller.db == nil {
+		log.Debug("disklessHosts: no database; no tiebreakers known", zap.String("resource", resource))
 		return nil
 	}
 	dbRes, err := rm.controller.db.GetResource(ctx, resource)
 	if err != nil || dbRes == nil || dbRes.DisklessNodes == "" {
+		log.Debug("disklessHosts: no tiebreakers", zap.String("resource", resource),
+			zap.Bool("found", dbRes != nil), zap.Error(err))
 		return nil
 	}
 	var hosts []string
@@ -231,7 +286,9 @@ func (rm *ResourceManager) disklessHosts(ctx context.Context, resource string) [
 		if node == "" {
 			continue
 		}
-		hosts = append(hosts, rm.controller.ResolveHost(node))
+		host := rm.controller.ResolveHost(node)
+		log.Debug("disklessHosts: tiebreaker node", zap.String("resource", resource), zap.String("node", node), zap.String("host", host))
+		hosts = append(hosts, host)
 	}
 	return hosts
 }
@@ -278,6 +335,10 @@ func (v resolvedVolume) backingDevice(storageType string) string {
 // over CreateResourceWithVolumes retained for existing callers (CLI, self-HA,
 // CSI) that only ever create one volume.
 func (rm *ResourceManager) CreateResource(ctx context.Context, name string, port uint32, nodes []string, protocol string, sizeGB uint32, pool string, storageType string, drbdOptions map[string]string) error {
+	rm.resourcesLog().Debug("CreateResource: creating single-volume resource", zap.String("resource", name),
+		zap.Uint32("port", port), zap.Strings("nodes", nodes), zap.String("protocol", protocol),
+		zap.Uint32("size_gb", sizeGB), zap.String("pool", pool), zap.String("storage_type", storageType),
+		zap.Int("drbd_options", len(drbdOptions)))
 	// LAN path: WAN is nil, so the resource is created exactly as before.
 	return rm.CreateResourceWithVolumes(ctx, name, port, nodes, protocol, storageType, drbdOptions,
 		[]VolumeSpec{{SizeGB: sizeGB, Pool: pool}}, nil)
@@ -320,6 +381,8 @@ type ResourceMetadata struct {
 // (volume 0..N) atomically across the given nodes. All volumes share the
 // resource's storage type; each may target its own pool.
 func (rm *ResourceManager) CreateResourceWithVolumes(ctx context.Context, name string, port uint32, nodes []string, protocol string, storageType string, drbdOptions map[string]string, volumes []VolumeSpec, wan *WANSpec) error {
+	rm.resourcesLog().Debug("CreateResourceWithVolumes: creating resource without metadata", zap.String("resource", name),
+		zap.Uint32("port", port), zap.Strings("nodes", nodes), zap.Int("volumes", len(volumes)), zap.Bool("wan", wan != nil))
 	return rm.CreateResourceWithVolumesMetadata(ctx, name, port, nodes, protocol, storageType, drbdOptions, volumes, wan, ResourceMetadata{})
 }
 

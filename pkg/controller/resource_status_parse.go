@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Helper functions for parsing DRBD status output
@@ -65,10 +67,12 @@ func parseRoleFromStatus(output string) string {
 			role := strings.TrimSuffix(strings.TrimPrefix(field, "role:"), ",")
 			switch role {
 			case "Primary", "Secondary":
+				zap.L().Debug("parseRoleFromStatus: parsed role", zap.String("role", role))
 				return role
 			}
 		}
 	}
+	zap.L().Debug("parseRoleFromStatus: no role found", zap.Int("bytes", len(output)))
 	return "Unknown"
 }
 
@@ -210,6 +214,8 @@ func parseNodeStatesFromStatus(output string, nodeAddresses []string) map[string
 		}
 	}
 
+	zap.L().Debug("parseNodeStatesFromStatus: parsed node states", zap.String("role", localRole), zap.String("disk", localDiskState),
+		zap.Int("nodes", len(nodeAddresses)), zap.Int("states", len(nodeStates)), zap.Int("lines", len(lines)))
 	return nodeStates
 }
 
@@ -264,6 +270,7 @@ func parseVolumesFromStatus(output string) []volumeInfo {
 		seen[volumeID] = true
 	}
 
+	zap.L().Debug("parseVolumesFromStatus: parsed volumes", zap.Int("count", len(volumes)))
 	return volumes
 }
 
@@ -344,14 +351,20 @@ func parseNodeStatesFromJSON(output, localNode string) (map[string]*ResourceNode
 	}
 	var resources []drbdsetupStatus
 	if err := json.Unmarshal([]byte(trimmed), &resources); err != nil {
+		zap.L().Debug("parseNodeStatesFromJSON: unparseable status", zap.String("node", localNode), zap.Error(err))
 		return nil, fmt.Errorf("decode drbdsetup status json: %w", err)
 	}
 	if len(resources) == 0 {
+		zap.L().Debug("parseNodeStatesFromJSON: no resources in status", zap.String("node", localNode))
 		return nil, fmt.Errorf("drbdsetup status json contained no resources")
 	}
 	res := resources[0]
 
 	states := make(map[string]*ResourceNodeState)
+	defer func() {
+		zap.L().Debug("parseNodeStatesFromJSON: parsed node states", zap.String("resource", res.Name), zap.String("node", localNode),
+			zap.String("role", res.Role), zap.Int("devices", len(res.Devices)), zap.Int("peers", len(res.Connections)))
+	}()
 
 	// Local node: role + disk from the top-level resource. A node has no
 	// replication relationship to itself, so it is fully in sync (100).

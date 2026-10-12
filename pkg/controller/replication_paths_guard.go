@@ -3,6 +3,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 // The path guard. DRBD's TCP transport will not connect at all while any one
@@ -70,11 +73,16 @@ WantedBy=timers.target
 
 // setPathsGuard installs (on) or removes (off) the guard on host.
 func (rm *ResourceManager) setPathsGuard(ctx context.Context, host string, on bool) error {
+	log := rm.resourcesLog()
+	log.Debug("setPathsGuard: start", zap.String("host", host), zap.Bool("on", on))
 	hosts := []string{host}
 	if !on {
-		_, err := rm.deployment.Exec(ctx, hosts, fmt.Sprintf(
+		start := time.Now()
+		res, err := rm.deployment.Exec(ctx, hosts, fmt.Sprintf(
 			"sudo systemctl disable --now %[1]s.timer >/dev/null 2>&1; sudo rm -f /etc/systemd/system/%[1]s.timer /etc/systemd/system/%[1]s.service %[2]s; sudo systemctl daemon-reload; true",
 			pathsGuardUnit, pathsGuardScript))
+		log.Debug("setPathsGuard: removed guard", zap.String("host", host), zap.Array("failed_hosts", resourcesFailedHosts{res}),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return err
 	}
 	for path, content := range map[string]string{
@@ -82,10 +90,18 @@ func (rm *ResourceManager) setPathsGuard(ctx context.Context, host string, on bo
 		"/etc/systemd/system/" + pathsGuardUnit + ".service": pathsGuardService,
 		"/etc/systemd/system/" + pathsGuardUnit + ".timer":   pathsGuardTimer,
 	} {
-		if _, err := rm.deployment.DistributeConfig(ctx, hosts, content, path); err != nil {
+		start := time.Now()
+		_, err := rm.deployment.DistributeConfig(ctx, hosts, content, path)
+		log.Debug("setPathsGuard: installed file", zap.String("host", host), zap.String("path", path),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			return fmt.Errorf("install %s: %w", path, err)
 		}
 	}
-	return execFailure(rm.deployment.Exec(ctx, hosts,
-		"sudo systemctl daemon-reload && sudo systemctl enable --now "+pathsGuardUnit+".timer"))
+	start := time.Now()
+	res, err := rm.deployment.Exec(ctx, hosts,
+		"sudo systemctl daemon-reload && sudo systemctl enable --now "+pathsGuardUnit+".timer")
+	log.Debug("setPathsGuard: enabled timer", zap.String("host", host), zap.Array("failed_hosts", resourcesFailedHosts{res}),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return execFailure(res, err)
 }
