@@ -75,16 +75,15 @@ nav:
       - Evacuating VMware vSAN: vsan-evacuation.md
       - Prometheus and Grafana: monitoring.md
       - AI assistants (MCP): mcp.md
-  - Design notes:
-      - WAN replication: design/wan-replication.md
-      - Thin pool capacity: design/thin-pool-capacity-reporting.md
-      - Proxmox storage plugin: design/proxmox-storage-plugin.md
-      - Resync progress: design/realtime-sync-progress.md
-      - HA promoter editor: design/ha-ocf-agents-toml-editor.md
   - 中文: zh.md
 
 not_in_nav: |
   /img/*
+
+# Design notes are for the people working on Haify; they stay in the
+# repository and are not published.
+exclude_docs: |
+  /design/
 
 validation:
   links:

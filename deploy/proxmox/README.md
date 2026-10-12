@@ -5,7 +5,7 @@ get synchronous replication, HA restart on a surviving node, and RAM-only live
 migration: the disk is already on every node, so migration copies no data.
 
 This is the Proxmox counterpart of the Kubernetes CSI driver in `deploy/k8s`.
-The design is in `docs/design/proxmox-storage-plugin.md`. For moving VMs off
+For moving VMs off
 VMware vSAN onto this storage, see
 [Evacuating VMware vSAN](../../docs/vsan-evacuation.md).
 

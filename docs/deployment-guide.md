@@ -595,8 +595,7 @@ haify resource dr-failover data --yes
 ```
 
 `haify wan set-endpoint` and `haify wan repair` change or rebuild the
-tunnels. The design is described in
-[`docs/design/wan-replication.md`](./design/wan-replication.md).
+tunnels.
 
 ---
 
