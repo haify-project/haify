@@ -65,7 +65,8 @@ func TestResourceMinorPortAndBackingHelpers(t *testing.T) {
 	require.Error(t, ctrl.resources.deleteBackingVolume(ctx, []string{"n1"}, &database.Volume{}))
 	require.NoError(t, ctrl.resources.deleteBackingVolume(ctx, []string{"n1"}, &database.Volume{ResourceName: "r", Pool: "vg", VolumeName: "data", Device: "/dev/vg/data"}))
 	require.NoError(t, ctrl.resources.deleteBackingVolume(ctx, []string{"n1"}, &database.Volume{ResourceName: "r", Pool: "tank", VolumeName: "data", Device: "/dev/zvol/tank/data"}))
-	assert.Contains(t, dep.execCalls[len(dep.execCalls)-1].cmd, "zfs destroy tank/data")
+	// A zvol's snapshots go with it, but not datasets cloned from them (-R).
+	assert.Contains(t, dep.execCalls[len(dep.execCalls)-1].cmd, "zfs destroy -r tank/data")
 
 	dep.execFunc = func(_ context.Context, hosts []string, _ string, _ ...deployment.ExecOption) (*deployment.ExecResult, error) {
 		return failedResult(hosts, "does not exist"), nil

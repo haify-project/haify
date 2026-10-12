@@ -230,7 +230,11 @@ func (rm *ResourceManager) deleteBackingVolume(ctx context.Context, hosts []stri
 
 	var cmd string
 	if strings.HasPrefix(volume.Device, "/dev/zvol/") {
-		cmd = fmt.Sprintf("sudo zfs destroy %s/%s", volume.Pool, volume.VolumeName)
+		// -r takes the zvol's own snapshots with it, as the LVM branch removes
+		// an LV's; without it a zvol with any snapshot outlives its resource.
+		// Not -R: that would also destroy datasets cloned from those
+		// snapshots, which can belong to other resources.
+		cmd = fmt.Sprintf("sudo zfs destroy -r %s/%s", volume.Pool, volume.VolumeName)
 	} else {
 		// Two things block removal of the origin LV: (1) any LVM snapshot of it
 		// (e.g. scheduled snapshots) must go first, or lvremove reports the
