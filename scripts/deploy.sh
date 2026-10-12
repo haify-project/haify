@@ -51,19 +51,22 @@ log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # Parse args
 CLI_ONLY=false
+AI=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         --hosts) HOSTS="$2"; shift 2 ;;
         --build) BUILD=true; shift ;;
         --cli-only) CLI_ONLY=true; shift ;;
+        --ai) AI=1; shift ;;
         --target-os) TARGET_OS="$2"; shift 2 ;;
         --target-arch) TARGET_ARCH="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [--hosts HOST1,HOST2] [--build] [--cli-only] [--target-os OS] [--target-arch ARCH]"
+            echo "Usage: $0 [--hosts HOST1,HOST2] [--build] [--cli-only] [--ai] [--target-os OS] [--target-arch ARCH]"
             echo ""
             echo "  --hosts HOSTS       Comma-separated hosts (required)"
             echo "  --build             Build before deploying (cross-compiles for ${TARGET_OS}/${TARGET_ARCH})"
             echo "  --cli-only          Only deploy the CLI binary"
+            echo "  --ai                Build the web UI with the AI Copilot and install haify-ai + haify-mcp"
             echo "  --target-os OS      Build GOOS (default: $TARGET_OS, or \$TARGET_OS)"
             echo "  --target-arch ARCH  Build only this GOARCH (default: each host's own, or \$TARGET_ARCH)"
             exit 0
@@ -113,9 +116,10 @@ if [ "$BUILD" = true ]; then
     [ -n "$archs" ] || archs=$(printf '%s\n' "${HOST_ARCH[@]}" | sort -u)
     for arch in $archs; do
         log_step "Building binaries for ${TARGET_OS}/${arch}..."
-        GOOS="$TARGET_OS" GOARCH="$arch" CGO_ENABLED=0 make build 2>&1 | tail -3
+        GOOS="$TARGET_OS" GOARCH="$arch" CGO_ENABLED=0 make build AI="$AI" 2>&1 | tail -3
         mkdir -p "bin/${TARGET_OS}-${arch}"
         cp bin/haify-controller bin/haify "bin/${TARGET_OS}-${arch}/"
+        if [ "$AI" = 1 ]; then cp bin/haify-ai bin/haify-mcp "bin/${TARGET_OS}-${arch}/"; fi
     done
 fi
 
@@ -129,8 +133,8 @@ bin_dir() {
 # fine and then fails to start, under Self-HA at the worst moment.
 for host in ${HOSTS//,/ }; do
     dir=$(bin_dir "$host")
-    for b in haify-controller haify; do
-        [ "$CLI_ONLY" = true ] && [ "$b" = haify-controller ] && continue
+    for b in haify-controller haify $([ "$AI" = 1 ] && echo haify-ai haify-mcp); do
+        [ "$CLI_ONLY" = true ] && [ "$b" != haify ] && continue
         got=$(elf_goarch "$dir/$b")
         if [ "$got" != "${HOST_ARCH[$host]}" ]; then
             echo "error: $dir/$b is built for $got but $host is ${HOST_ARCH[$host]}; run with --build" >&2
@@ -160,6 +164,16 @@ for host in ${HOSTS//,/ }; do
             ssh "$host" "sudo install -m755 /tmp/haify-controller $unit_bin"
         fi
         ssh "$host" "rm -f /tmp/haify-controller"
+    fi
+
+    if [ "$AI" = 1 ] && [ "$CLI_ONLY" = false ]; then
+        # Not restarted here: haify-ai runs in the haify-meta promoter, so a
+        # restart is a failover. The new binary runs from the next move.
+        for b in haify-ai haify-mcp; do
+            scp -q "$(bin_dir "$host")/$b" "$host:/tmp/$b"
+            ssh "$host" "[ ! -f /opt/haify/bin/$b ] || sudo cp -p /opt/haify/bin/$b /opt/haify/bin/$b.prev; sudo install -m755 /tmp/$b /opt/haify/bin/$b && rm -f /tmp/$b"
+        done
+        log_info "$host: haify-ai and haify-mcp installed in /opt/haify/bin; they take effect at the next 'haify ha evict haify-meta'"
     fi
 
     scp -q "$(bin_dir "$host")/haify" "$host:/tmp/haify"

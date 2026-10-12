@@ -27,6 +27,11 @@ export default defineConfig({
     entry: {
       index: './src/index.tsx',
     },
+    // The Copilot is built in only with HAIFY_AI=1 (`make build AI=1`).
+    // A literal false lets the bundler drop its code, not just hide it.
+    define: {
+      __HAIFY_AI__: JSON.stringify(process.env.HAIFY_AI === '1'),
+    },
   },
   output: {
     distPath: {

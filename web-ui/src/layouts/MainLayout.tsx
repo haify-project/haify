@@ -20,6 +20,7 @@ import {
   Monitor,
   Cpu,
 } from 'lucide-react';
+import { AI_ENABLED } from '@/features';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
 import { isPveManaged } from '@/pages/proxmox/pve';
@@ -52,9 +53,9 @@ function writeCollapsed(value: boolean) {
 // The Copilot pulls in the whole Markdown/streaming rendering stack — by far
 // the heaviest thing in the bundle, and most sessions never open it. Load it
 // on first use instead of making every page wait for it.
-const AICopilot = lazy(() =>
-  import('@/components/AICopilot').then((m) => ({ default: m.AICopilot })),
-);
+const AICopilot = AI_ENABLED
+  ? lazy(() => import('@/components/AICopilot').then((m) => ({ default: m.AICopilot })))
+  : null;
 
 // PageFallback stands in while a lazily-loaded route chunk arrives. It fills
 // the content area only: the sidebar and header are already rendered and must
@@ -104,7 +105,8 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       { name: 'Notifications', href: '/notifications', icon: BellRing },
       { name: 'Access', href: '/access', icon: Lock },
       { name: 'Logs', href: '/logs', icon: ScrollText },
-      { name: 'Settings', href: '/settings', icon: SlidersHorizontal },
+      // Settings holds only the Copilot's model.
+      ...(AI_ENABLED ? [{ name: 'Settings', href: '/settings', icon: SlidersHorizontal }] : []),
     ],
   },
 ];
@@ -220,7 +222,8 @@ function SidebarContent({
       {/* No `mt-auto`: the sibling <nav> already carries `flex-1` in this
           flex-col and pushes the footer down. One mechanism, not two. */}
       <div className="flex flex-col gap-2.5 pt-4">
-        {collapsed ? (
+        {AI_ENABLED &&
+          (collapsed ? (
           // All three Copilot toggles (here, the expanded card below, and the
           // header button) answer to the same name, so a screen-reader or
           // voice-control user has one word for one control.
@@ -258,7 +261,7 @@ function SidebarContent({
               Ask about pools, quorum or a failover.
             </span>
           </button>
-        )}
+        ))}
         <span
           className={cn(
             'font-mono text-[11px] text-muted-foreground',
@@ -390,6 +393,7 @@ export function MainLayout() {
             )}
           </div>
           <div className="flex items-center gap-1">
+            {AI_ENABLED && (
             <button
               type="button"
               onClick={() => setAiOpen((v) => !v)}
@@ -405,6 +409,7 @@ export function MainLayout() {
               <Sparkles className="h-4 w-4" />
               Copilot
             </button>
+            )}
             <NotificationBell />
             <UserMenu />
           </div>
@@ -416,7 +421,7 @@ export function MainLayout() {
         </main>
       </div>
 
-      {aiRequested.current && (
+      {AICopilot && aiRequested.current && (
         <Suspense fallback={null}>
           <AICopilot
             open={aiOpen}

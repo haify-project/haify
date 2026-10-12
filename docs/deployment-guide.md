@@ -67,6 +67,10 @@ controller embeds it (`go:embed`). It then builds `bin/haify-controller`,
 are built for the build host's OS and architecture, except `service-ip`,
 which is always built for Linux (on the build host's architecture).
 
+The AI Copilot is not built by default. `make build AI=1` builds the web UI with
+the Copilot and its Settings page, and also builds `bin/haify-ai`; without it
+the UI has neither (section 10).
+
 To build for Linux nodes from another OS or architecture, build the UI once and
 cross-compile:
 
@@ -97,7 +101,7 @@ Tagged releases on GitHub carry a linux/amd64 archive with `haify-controller`
 (section 4).
 
 Other binaries:
-- `haify-ai` (`cmd/haify-ai`, its own Go module): `cd cmd/haify-ai && go build .`
+- `haify-ai` (`cmd/haify-ai`, its own Go module): `make build AI=1`, or `cd cmd/haify-ai && go build .`
 - `haify-proxy` (WAN transport) is built from the separate `haify-proxy` repository.
 - The CSI image is built from `Dockerfile.csi` (section 9).
 
@@ -560,6 +564,11 @@ sooner, run the workload as a Deployment or StatefulSet and set a short
 
 `haify-ai` serves the web UI's Copilot. It runs `haify-mcp` as its tool backend
 and needs an OpenAI-compatible LLM and embedder.
+
+The Copilot is only in a web UI built with `AI=1`; the release packages and a
+plain `make build` leave it out. `./scripts/deploy-all.sh <nodes> --ai` builds
+the UI with it and installs `haify-ai` and `haify-mcp` on every node (they run
+from the next `haify ha evict haify-meta`; restarting haify-ai is a failover).
 
 - Install the binaries on every node, since haify-ai follows the controller:
   `/opt/haify/bin/haify-ai` and `/opt/haify/bin/haify-mcp`.

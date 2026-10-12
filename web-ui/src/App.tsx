@@ -5,6 +5,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Toaster } from '@/components/ui/sonner';
 import { AuthTokenDialog } from '@/components/AuthTokenDialog';
 import { MainLayout } from './layouts/MainLayout';
+import { AI_ENABLED } from './features';
 
 // Pages are code-split so the first paint only downloads the shell and the one
 // route being visited. Loading them eagerly meant every visitor paid for every
@@ -49,9 +50,10 @@ const ProxmoxPage = lazy(() =>
   import('./pages/ProxmoxPage').then((m) => ({ default: m.ProxmoxPage })),
 );
 const KvmPage = lazy(() => import('./pages/KvmPage').then((m) => ({ default: m.KvmPage })));
-const SettingsPage = lazy(() =>
-  import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
-);
+// Settings holds only the Copilot's model, so it ships with the Copilot.
+const SettingsPage = AI_ENABLED
+  ? lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+  : () => null;
 // The Suspense boundary lives in MainLayout, around the Outlet, so the sidebar
 // and header stay put while a route's chunk arrives.
 
@@ -102,7 +104,7 @@ function App() {
               />
               <Route path="access" element={<AccessPage />} />
               <Route path="logs" element={<LogsPage />} />
-              <Route path="settings" element={<SettingsPage />} />
+              {AI_ENABLED && <Route path="settings" element={<SettingsPage />} />}
             </Route>
           </Routes>
         </BrowserRouter>

@@ -257,6 +257,19 @@ replication on for one resource.
 `haify-ai` (`cmd/haify-ai`, a separate Go module built on `steward`) serves the web
 UI's Copilot and runs `haify-mcp` as its tool backend.
 
+The Copilot is left out of the web UI unless it is built with `AI=1`: the
+release packages and a plain `make build` have no Copilot button and no
+Settings page. To build and install it with the controller:
+
+```bash
+./scripts/deploy-all.sh node1,node2,node3 --ai
+```
+
+That builds the UI with the Copilot (`make build AI=1`) and installs
+`/opt/haify/bin/haify-ai` and `/opt/haify/bin/haify-mcp` on every node, keeping
+the previous haify-ai as `haify-ai.prev`. It does not restart haify-ai (see the
+last point below). By hand:
+
 ```bash
 cd cmd/haify-ai && GOOS=linux GOARCH=<arch> CGO_ENABLED=0 go build -o haify-ai .
 GOOS=linux GOARCH=<arch> CGO_ENABLED=0 go build -o haify-mcp ./cmd/mcp   # from the repo root

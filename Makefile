@@ -29,6 +29,11 @@ ui-ensure:
 	fi
 	@touch ui/dist/.gitkeep
 
+# AI=1 builds the AI Copilot in: the web UI gets the Copilot (and its
+# settings page), and bin/haify-ai is built. Off by default, so a plain
+# `make build` ships neither.
+AI ?= 0
+
 # Build binaries
 build: ui-sync
 	@echo "Building haify-controller..."
@@ -41,6 +46,10 @@ build: ui-sync
 	go build -o bin/csi-controller ./cmd/csi-controller
 	go build -o bin/csi-node ./cmd/csi-node
 	go build -o bin/haify-docker ./cmd/haify-docker
+ifeq ($(AI),1)
+	@echo "Building haify-ai..."
+	cd cmd/haify-ai && go build -o ../../bin/haify-ai .
+endif
 
 # Run tests
 test: ui-ensure
@@ -180,7 +189,7 @@ web-ui-dev:
 	cd web-ui && npm run dev
 
 web-ui-build:
-	cd web-ui && npm run build
+	cd web-ui && HAIFY_AI=$(AI) npm run build
 
 web-ui-install: web-ui-build
 	@echo "Installing web-ui..."

@@ -15,6 +15,7 @@
 #
 # Environment:
 #   VERSION          version to stamp (default: git describe --tags --always --dirty)
+#   AI               1 builds the web UI with the AI Copilot (default 0: without)
 #   ARCHES           Debian architectures for haify-controller (default "amd64 arm64")
 #   SKIP_UI_BUILD=1  embed the web UI already in ui/dist instead of rebuilding it
 #   MAINTAINER       "Name <email>" for the control files (default: DEBFULLNAME and
@@ -204,7 +205,7 @@ prepare_ui() {
     fi
     [ -d web-ui/node_modules ] || die "web-ui/node_modules is missing: run (cd web-ui && npm ci), or set SKIP_UI_BUILD=1"
     log "building the web UI"
-    make --no-print-directory ui-sync >/dev/null
+    make --no-print-directory ui-sync AI="${AI:-0}" >/dev/null
 }
 
 # build_binaries cross-compiles the four packaged programs the way deploy.sh

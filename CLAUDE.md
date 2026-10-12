@@ -63,8 +63,10 @@ make hooks
 # Run the full CI pipeline locally
 make ci
 
-# Build binaries
+# Build binaries (AI=1 also builds the web UI's Copilot and bin/haify-ai;
+# without it neither is built)
 make build
+make build AI=1
 
 # Run all tests
 make test
@@ -105,6 +107,9 @@ make run-cli ARGS="pool list"
 # is restarted; without it, every listed host gets an enabled, running
 # controller of its own, so list only the controller host.
 ./scripts/deploy-all.sh node1,node2,node3
+# The same plus the AI Copilot: the UI with Copilot, haify-ai and haify-mcp
+# in /opt/haify/bin (not restarted; they run from the next haify-meta move)
+./scripts/deploy-all.sh node1,node2,node3 --ai
 ```
 
 `make build` alone builds for the host it runs on; binaries built on a Mac do
