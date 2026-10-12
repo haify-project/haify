@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -41,6 +42,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = logger.Sync() }()
+	// Load ran before there was a logger to trace it, so say here what it
+	// read. traceLoaded-style fields only: no token or other secret.
+	logger.Debug("main: config loaded", zap.String("config_flag", *configPath),
+		zap.String("file", config.FileUsed()), zap.String("log_level", cfg.Log.Level),
+		zap.String("log_format", cfg.Log.Format), zap.Int("log_ring_size", logbuf.DefaultSize))
 
 	logger.Info("Starting Haify controller",
 		zap.String("version", version),
@@ -49,24 +55,33 @@ func main() {
 		zap.String("metrics_address", fmt.Sprintf("%s:%d", cfg.Metrics.ListenAddress, cfg.Metrics.Port)))
 
 	// Create controller
+	start := time.Now()
 	ctrl, err := controller.New(cfg, logger)
+	logger.Debug("main: controller.New returned", zap.Error(err), zap.Duration("took", time.Since(start)))
 	if err != nil {
 		logger.Fatal("Failed to create controller", zap.Error(err))
 	}
 	ctrl.SetLogRing(logRing)
 
 	// Start controller
-	if err := ctrl.Start(); err != nil {
+	start = time.Now()
+	err = ctrl.Start()
+	logger.Debug("main: controller.Start returned", zap.Error(err), zap.Duration("took", time.Since(start)))
+	if err != nil {
 		logger.Fatal("Failed to start controller", zap.Error(err))
 	}
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	logger.Debug("main: waiting for SIGINT or SIGTERM")
+	sig := <-sigChan
+	logger.Debug("main: signal received", zap.String("signal", sig.String()))
 
 	logger.Info("Shutting down...")
+	start = time.Now()
 	ctrl.Stop()
+	logger.Debug("main: controller stopped", zap.Duration("took", time.Since(start)))
 	logger.Info("Shutdown complete")
 }
 
@@ -91,5 +106,7 @@ func initLogger(cfg *config.Config, ring *logbuf.Ring) (*zap.Logger, error) {
 	if err != nil {
 		return nil, err
 	}
+	logger.Debug("initLogger: logger built", zap.String("format", cfg.Log.Format),
+		zap.String("level", zapConfig.Level.String()), zap.Bool("json", cfg.Log.Format == "json"))
 	return logging.Install(logger), nil
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // ProbeScript gathers everything node-level an inspection needs in one
@@ -179,18 +181,28 @@ func ParseProbe(output string) (*NodeProbe, error) {
 		}
 	}
 	if !seen {
+		zap.L().Debug("ParseProbe: no probe marker in output", zap.Int("bytes", len(output)))
 		return nil, fmt.Errorf("output is not from the inspection probe: %q", firstLine(output))
 	}
+	zap.L().Debug("ParseProbe: parsed", zap.String("hostname", p.Hostname), zap.Bool("complete", p.Complete),
+		zap.String("arch", p.Arch), zap.Int("root_use", p.RootUse), zap.Int("addrs", len(p.Addrs)),
+		zap.Int("lvs", len(p.LVs)), zap.Bool("lvs_ok", p.LVsOK), zap.Int("drbd_resources", len(p.DRBD)),
+		zap.Bool("drbd_ok", p.DRBDOK), zap.Int("reactor_confs", len(p.ReactorConf)), zap.Bool("has_tls_cert", len(p.TLSCert) > 0),
+		zap.Strings("problems", p.Problems))
 	return p, nil
 }
 
 func (p *NodeProbe) parseLVs(b64 string) {
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
+		zap.L().Debug("NodeProbe.parseLVs: base64 decode failed", zap.String("hostname", p.Hostname), zap.Error(err))
 		p.Problems = append(p.Problems, "lvs output unreadable: "+err.Error())
 		return
 	}
 	p.LVsOK = true
+	defer func() {
+		zap.L().Debug("NodeProbe.parseLVs: parsed", zap.String("hostname", p.Hostname), zap.Int("count", len(p.LVs)))
+	}()
 	for _, line := range strings.Split(string(raw), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
 		if len(f) < 6 || f[0] == "" {
@@ -210,14 +222,17 @@ func (p *NodeProbe) parseLVs(b64 string) {
 func (p *NodeProbe) parseDRBD(b64 string) {
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
+		zap.L().Debug("NodeProbe.parseDRBD: base64 decode failed", zap.String("hostname", p.Hostname), zap.Error(err))
 		p.Problems = append(p.Problems, "drbdsetup output unreadable: "+err.Error())
 		return
 	}
 	res, err := ParseDRBDStatus(string(raw))
 	if err != nil {
+		zap.L().Debug("NodeProbe.parseDRBD: status does not parse", zap.String("hostname", p.Hostname), zap.Error(err))
 		p.Problems = append(p.Problems, err.Error())
 		return
 	}
+	zap.L().Debug("NodeProbe.parseDRBD: parsed", zap.String("hostname", p.Hostname), zap.Int("count", len(res)))
 	p.DRBD, p.DRBDOK = res, true
 }
 

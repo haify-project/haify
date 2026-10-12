@@ -3,6 +3,8 @@ package inspect
 import (
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // selfHAPromoter is the promoter config the Self-HA handoff installs.
@@ -12,13 +14,17 @@ const selfHAPromoter = "haify-ha-haify-meta.toml"
 // database, a promoter on every node that may take over, and exactly one
 // controller running, on the node that holds the database.
 func checkSelfHA(in *Input) []Check {
+	log := zap.L()
 	s := in.SelfHA
 	if s == nil {
+		log.Debug("checkSelfHA: Self-HA not enabled")
 		return []Check{pass("selfha.disabled", AreaSelfHA, "Self-HA is not enabled; nothing to check")}
 	}
 	var out []Check
+	log.Debug("checkSelfHA: start", zap.String("resource", s.Resource), zap.Strings("nodes", s.Nodes))
 	r, ok := resourceNamed(in, s.Resource)
 	if !ok {
+		log.Debug("checkSelfHA: meta resource not in the database, using the Self-HA nodes", zap.String("resource", s.Resource))
 		r = Resource{Name: s.Resource, Diskful: s.Nodes}
 	}
 
@@ -27,19 +33,25 @@ func checkSelfHA(in *Input) []Check {
 	for _, n := range r.Diskful {
 		p, ok := in.probe(n)
 		if !ok || !p.DRBDOK {
+			log.Debug("checkSelfHA: no DRBD view from node", zap.String("node", n), zap.Bool("probed", ok))
 			continue
 		}
 		known++
 		v := p.Resource(r.Name)
 		if v == nil {
+			log.Debug("checkSelfHA: meta resource not up on node", zap.String("node", n))
 			ev = append(ev, in.nodeName(n)+": not up")
 			continue
 		}
 		ev = append(ev, fmt.Sprintf("%s: %s, %s", in.nodeName(n), v.Role, strings.Join(v.diskStates(), "/")))
-		if v.worstDisk(false) == "" {
+		worst := v.worstDisk(false)
+		log.Debug("checkSelfHA: meta copy", zap.String("node", n), zap.String("role", v.Role), zap.String("worst_disk", worst))
+		if worst == "" {
 			upToDate++
 		}
 	}
+	log.Debug("checkSelfHA: meta copies counted", zap.Int("up_to_date", upToDate), zap.Int("known", known),
+		zap.Int("diskful", len(r.Diskful)))
 	if known > 0 && upToDate < 2 {
 		out = append(out, Check{ID: "selfha.meta_replicas", Area: AreaSelfHA, Subject: r.Name, Status: StatusFail,
 			Message: fmt.Sprintf("only %d of %d copies of the controller database are UpToDate; one more failure loses the controller",
@@ -55,6 +67,8 @@ func checkSelfHA(in *Input) []Check {
 		if !ok {
 			continue
 		}
+		log.Debug("checkSelfHA: controller on node", zap.String("node", n), zap.String("ctl_active", p.CtlActive),
+			zap.String("ctl_bin", p.CtlBin))
 		if p.CtlActive == "active" {
 			running = append(running, in.nodeName(n))
 		}
@@ -63,6 +77,8 @@ func checkSelfHA(in *Input) []Check {
 		}
 	}
 	prim, _ := primaries(in, r)
+	log.Debug("checkSelfHA: controller placement", zap.Strings("running", running), zap.Strings("primary", prim),
+		zap.Strings("missing_bin", missingBin))
 	switch {
 	case len(in.unanswered(r.Diskful)) > 0 && len(running) < 2:
 		// A node that did not answer may be the one running it.
@@ -96,8 +112,10 @@ func checkSelfHA(in *Input) []Check {
 func otherThan(nodes, keep []string) string {
 	for _, n := range nodes {
 		if !contains(keep, n) {
+			zap.L().Debug("otherThan: chose node", zap.String("node", n))
 			return n
 		}
 	}
+	zap.L().Debug("otherThan: every node kept, using the first", zap.String("node", nodes[0]))
 	return nodes[0]
 }

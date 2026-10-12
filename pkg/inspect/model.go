@@ -17,6 +17,8 @@ package inspect
 import (
 	"sort"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Status is one check's verdict.
@@ -56,11 +58,14 @@ func (s Status) AtLeast(min Status) bool { return s.rank() >= min.rank() }
 func ParseStatus(v string) Status {
 	switch Status(v) {
 	case StatusWarn, StatusFail, StatusError:
+		zap.L().Debug("ParseStatus: known status", zap.String("value", v))
 		return Status(v)
 	}
 	if v == "warning" {
+		zap.L().Debug("ParseStatus: warning taken as warn")
 		return StatusWarn
 	}
+	zap.L().Debug("ParseStatus: unknown or pass, using pass", zap.String("value", v))
 	return StatusPass
 }
 
@@ -153,6 +158,8 @@ func Summarize(checks []Check) Summary {
 			s.Pass++
 		}
 	}
+	zap.L().Debug("Summarize: counted", zap.Int("count", len(checks)), zap.Int("pass", s.Pass), zap.Int("warn", s.Warn),
+		zap.Int("fail", s.Fail), zap.Int("error", s.Error))
 	return s
 }
 
@@ -196,5 +203,6 @@ func ValidArea(s string) bool {
 			return true
 		}
 	}
+	zap.L().Debug("ValidArea: not an area", zap.String("area", s))
 	return false
 }

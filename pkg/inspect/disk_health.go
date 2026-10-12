@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Disk health: the disks under every pool, and what SMART (or the NVMe health
@@ -63,10 +65,12 @@ type Disk struct {
 
 // ParseDiskProbe reads DiskProbeScript's output from node.
 func ParseDiskProbe(node, out string) []Disk {
+	log := zap.L()
 	var disks []Disk
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		f := strings.SplitN(strings.TrimSpace(line), "|", 6)
 		if len(f) != 6 || f[0] == "" || !strings.HasPrefix(f[1], managedPrefix) {
+			log.Debug("ParseDiskProbe: line is not a pool PV, skipping", zap.String("node", node), zap.Int("fields", len(f)))
 			continue
 		}
 		size, _ := strconv.ParseUint(f[2], 10, 64)
@@ -83,8 +87,12 @@ func ParseDiskProbe(node, out string) []Disk {
 				d.Status, d.Detail, d.Model, d.Serial = ParseSmart(raw)
 			}
 		}
+		log.Debug("ParseDiskProbe: disk", zap.String("node", node), zap.String("pool", d.Pool), zap.String("pv", d.PV),
+			zap.String("device", d.Device), zap.Uint64("size_bytes", d.SizeBytes), zap.String("status", d.Status),
+			zap.String("detail", d.Detail))
 		disks = append(disks, d)
 	}
+	log.Debug("ParseDiskProbe: done", zap.String("node", node), zap.Int("count", len(disks)))
 	return disks
 }
 
@@ -119,9 +127,12 @@ type smartReport struct {
 func ParseSmart(raw []byte) (status, detail, model, serial string) {
 	var r smartReport
 	if err := json.Unmarshal(raw, &r); err != nil {
+		zap.L().Debug("ParseSmart: report does not parse", zap.Int("bytes", len(raw)), zap.Error(err))
 		return DiskUnknown, "unreadable smartctl report", "", ""
 	}
 	model, serial = r.ModelName, r.SerialNumber
+	zap.L().Debug("ParseSmart: report", zap.String("model", model), zap.String("serial", serial),
+		zap.Bool("has_smart_status", r.SmartStatus != nil), zap.Bool("nvme", r.NVMe != nil), zap.Bool("ata", r.ATA != nil))
 	if r.SmartStatus == nil {
 		why := "the device reports no SMART data (a virtual disk?)"
 		if len(r.Smartctl.Messages) > 0 {
@@ -160,6 +171,7 @@ func ParseSmart(raw []byte) (status, detail, model, serial string) {
 			}
 		}
 	}
+	zap.L().Debug("ParseSmart: judged", zap.String("model", model), zap.Strings("fails", fails), zap.Strings("warns", warns))
 	switch {
 	case len(fails) > 0:
 		return DiskFail, strings.Join(append(fails, warns...), "; "), model, serial
@@ -172,12 +184,16 @@ func ParseSmart(raw []byte) (status, detail, model, serial string) {
 // checkDisks reports every disk under a pool whose health is not ok. A disk
 // without SMART (virtual disks) is not a finding: there is nothing to act on.
 func checkDisks(in *Input) []Check {
+	log := zap.L()
 	if !in.DisksProbed {
+		log.Debug("checkDisks: disks were not probed")
 		return nil
 	}
+	log.Debug("checkDisks: start", zap.Int("disks", len(in.Disks)))
 	var out []Check
 	failing := 0
 	for _, d := range in.Disks {
+		log.Debug("checkDisks: disk", zap.String("node", d.Node), zap.String("device", d.Device), zap.String("status", d.Status))
 		var st Status
 		switch d.Status {
 		case DiskFail:

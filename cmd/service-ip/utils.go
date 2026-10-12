@@ -3,6 +3,7 @@
 package main
 
 import (
+	"log/slog"
 	"strings"
 )
 
@@ -20,6 +21,7 @@ func ParseInstanceID(instance string) (string, string) {
 
 	// Convert 192.168.1.1-24 -> 192.168.1.1/24
 	ipCIDR := strings.ReplaceAll(ipDashed, "-", "/")
+	slog.Debug("ParseInstanceID: parsed", "instance", instance, "ip", ipCIDR, "dev", dev, "has_dev", len(parts) > 1)
 
 	return ipCIDR, dev
 }

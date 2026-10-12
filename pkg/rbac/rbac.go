@@ -11,13 +11,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"regexp"
 	"sort"
-	"strings"
 	"sync"
+	"time"
 
 	"github.com/casbin/casbin/v2"
 	"github.com/casbin/casbin/v2/model"
+	"go.uber.org/zap"
 )
 
 // modelText is the Casbin model: role-based access control over (object,
@@ -123,12 +123,16 @@ type Engine struct {
 // and policies are then applied on top as a pinned baseline, so the operators
 // declared in controller.toml always exist with the role stated there.
 func New(store Store, users []User, policies []Policy) (*Engine, error) {
+	log := zap.L()
+	log.Debug("New: start", zap.Bool("has_store", store != nil), zap.Int("users", len(users)), zap.Int("policies", len(policies)))
 	m, err := model.NewModelFromString(modelText)
 	if err != nil {
+		log.Debug("New: model does not load", zap.Error(err))
 		return nil, fmt.Errorf("rbac: load model: %w", err)
 	}
 	e, err := casbin.NewSyncedEnforcer(m)
 	if err != nil {
+		log.Debug("New: enforcer creation failed", zap.Error(err))
 		return nil, fmt.Errorf("rbac: new enforcer: %w", err)
 	}
 	e.EnableAutoSave(false)
@@ -141,59 +145,82 @@ func New(store Store, users []User, policies []Policy) (*Engine, error) {
 	}
 
 	for _, p := range defaultPolicies() {
+		log.Debug("New: seeding default policy", zap.String("role", p.Role), zap.String("object", p.Object), zap.String("action", p.Action))
 		if _, err := e.AddPolicy(p.Role, p.Object, p.Action); err != nil {
+			log.Debug("New: seeding default policy failed", zap.String("role", p.Role), zap.Error(err))
 			return nil, fmt.Errorf("rbac: seed default policy: %w", err)
 		}
 	}
 
 	// Restore runtime-managed state (users an admin added, etc.).
 	if store != nil {
+		start := time.Now()
 		snap, err := store.Load()
+		log.Debug("New: store.Load returned", zap.Bool("found", snap != nil), zap.Error(err), zap.Duration("took", time.Since(start)))
 		if err != nil {
 			return nil, fmt.Errorf("rbac: load persisted state: %w", err)
 		}
 		if snap != nil {
+			log.Debug("New: restoring persisted state", zap.Int("policies", len(snap.Policies)),
+				zap.Int("groupings", len(snap.Groupings)), zap.Int("tokens", len(snap.Tokens)))
 			for _, p := range snap.Policies {
 				if len(p) >= 3 {
+					log.Debug("New: restoring policy", zap.Strings("policy", p))
 					_, _ = e.AddPolicy(p[0], p[1], p[2])
+				} else {
+					log.Debug("New: skipping short policy row", zap.Strings("policy", p))
 				}
 			}
 			for _, g := range snap.Groupings {
 				if len(g) >= 2 {
+					log.Debug("New: restoring role assignment", zap.String("user", g[0]), zap.String("role", g[1]))
 					_, _ = e.AddGroupingPolicy(g[0], g[1])
+				} else {
+					log.Debug("New: skipping short grouping row", zap.Strings("grouping", g))
 				}
 			}
 			for h, n := range snap.Tokens {
+				log.Debug("New: restoring token for user", zap.String("user", n))
 				eng.tokens[h] = n
 			}
 		}
+	} else {
+		log.Debug("New: no store, nothing persisted to restore")
 	}
 
 	// Config policies (additive on top of defaults).
 	for _, p := range policies {
+		log.Debug("New: adding config policy", zap.String("role", p.Role), zap.String("object", p.Object), zap.String("action", p.Action))
 		if p.Role == "" || p.Object == "" || p.Action == "" {
+			log.Debug("New: config policy incomplete")
 			return nil, fmt.Errorf("rbac: policy must set role, object and action")
 		}
 		if _, err := e.AddPolicy(p.Role, p.Object, p.Action); err != nil {
+			log.Debug("New: adding config policy failed", zap.String("role", p.Role), zap.Error(err))
 			return nil, fmt.Errorf("rbac: add policy: %w", err)
 		}
 	}
 
 	// Config users: pinned baseline, config wins for their token and role.
 	for _, u := range users {
+		log.Debug("New: pinning config user", zap.String("user", u.Name), zap.String("role", u.Role), zap.Bool("has_token", u.Token != ""))
 		if u.Name == "" || u.Token == "" || u.Role == "" {
+			log.Debug("New: config user incomplete", zap.String("user", u.Name))
 			return nil, fmt.Errorf("rbac: user must set name, token and role")
 		}
 		eng.pinned[u.Name] = true
 		if err := eng.setRoleLocked(u.Name, u.Role); err != nil {
+			log.Debug("New: assigning config role failed", zap.String("user", u.Name), zap.String("role", u.Role), zap.Error(err))
 			return nil, fmt.Errorf("rbac: assign role %q to %q: %w", u.Role, u.Name, err)
 		}
 		eng.setTokenLocked(u.Name, u.Token)
 	}
 
 	if err := eng.persistLocked(); err != nil {
+		log.Debug("New: persisting initial state failed", zap.Error(err))
 		return nil, fmt.Errorf("rbac: persist initial state: %w", err)
 	}
+	log.Debug("New: engine ready", zap.Int("tokens", len(eng.tokens)), zap.Int("pinned", len(eng.pinned)))
 	return eng, nil
 }
 
@@ -206,8 +233,10 @@ func hashToken(token string) string {
 func GenerateToken() (string, error) {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
+		zap.L().Debug("GenerateToken: reading random bytes failed", zap.Error(err))
 		return "", err
 	}
+	zap.L().Debug("GenerateToken: token generated", zap.Int("bytes", len(b)))
 	return hex.EncodeToString(b), nil
 }
 
@@ -221,40 +250,52 @@ func (e *Engine) knownRolesLocked() map[string]bool {
 				roles[row[0]] = true
 			}
 		}
+	} else {
+		zap.L().Debug("Engine.knownRolesLocked: reading policies failed", zap.Error(err))
 	}
+	zap.L().Debug("Engine.knownRolesLocked: roles found", zap.Int("count", len(roles)))
 	return roles
 }
 
 func (e *Engine) userExistsLocked(name string) bool {
 	roles, _ := e.enforcer.GetRolesForUser(name)
+	zap.L().Debug("Engine.userExistsLocked: checked", zap.String("user", name), zap.Strings("roles", roles))
 	return len(roles) > 0
 }
 
 // setRoleLocked replaces all of a user's role assignments with the single role.
 func (e *Engine) setRoleLocked(name, role string) error {
+	log := zap.L()
 	roles, _ := e.enforcer.GetRolesForUser(name)
+	log.Debug("Engine.setRoleLocked: start", zap.String("user", name), zap.String("role", role), zap.Strings("old_roles", roles))
 	for _, r := range roles {
 		if _, err := e.enforcer.RemoveGroupingPolicy(name, r); err != nil {
+			log.Debug("Engine.setRoleLocked: removing old role failed", zap.String("user", name), zap.String("role", r), zap.Error(err))
 			return err
 		}
 	}
 	if _, err := e.enforcer.AddGroupingPolicy(name, role); err != nil {
+		log.Debug("Engine.setRoleLocked: adding role failed", zap.String("user", name), zap.String("role", role), zap.Error(err))
 		return err
 	}
 	return nil
 }
 
 func (e *Engine) setTokenLocked(name, token string) {
+	removed := 0
 	for h, n := range e.tokens {
 		if n == name {
 			delete(e.tokens, h)
+			removed++
 		}
 	}
 	e.tokens[hashToken(token)] = name
+	zap.L().Debug("Engine.setTokenLocked: token replaced", zap.String("user", name), zap.Int("removed", removed))
 }
 
 func (e *Engine) persistLocked() error {
 	if e.store == nil {
+		zap.L().Debug("Engine.persistLocked: no store, nothing to save")
 		return nil
 	}
 	pol, _ := e.enforcer.GetPolicy()
@@ -263,7 +304,11 @@ func (e *Engine) persistLocked() error {
 	for h, n := range e.tokens {
 		toks[h] = n
 	}
-	return e.store.Save(&Snapshot{Policies: pol, Groupings: grp, Tokens: toks})
+	start := time.Now()
+	err := e.store.Save(&Snapshot{Policies: pol, Groupings: grp, Tokens: toks})
+	zap.L().Debug("Engine.persistLocked: store.Save returned", zap.Int("policies", len(pol)), zap.Int("groupings", len(grp)),
+		zap.Int("tokens", len(toks)), zap.Error(err), zap.Duration("took", time.Since(start)))
+	return err
 }
 
 // --- read API ---
@@ -271,25 +316,32 @@ func (e *Engine) persistLocked() error {
 // ResolveUser returns the user name for a bearer token, if known.
 func (e *Engine) ResolveUser(token string) (string, bool) {
 	if token == "" {
+		zap.L().Debug("Engine.ResolveUser: no token")
 		return "", false
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	name, ok := e.tokens[hashToken(token)]
+	zap.L().Debug("Engine.ResolveUser: looked up token", zap.Bool("found", ok), zap.String("user", name))
 	return name, ok
 }
 
 // Enforce reports whether user may perform action on object.
 func (e *Engine) Enforce(user, object, action string) (bool, error) {
-	return e.enforcer.Enforce(user, object, action)
+	ok, err := e.enforcer.Enforce(user, object, action)
+	zap.L().Debug("Engine.Enforce: decided", zap.String("user", user), zap.String("object", object),
+		zap.String("action", action), zap.Bool("allowed", ok), zap.Error(err))
+	return ok, err
 }
 
 // RoleOf returns the (first) role assigned to a user, or "".
 func (e *Engine) RoleOf(user string) string {
 	roles, err := e.enforcer.GetRolesForUser(user)
 	if err != nil || len(roles) == 0 {
+		zap.L().Debug("Engine.RoleOf: no role", zap.String("user", user), zap.Error(err))
 		return ""
 	}
+	zap.L().Debug("Engine.RoleOf: found", zap.String("user", user), zap.String("role", roles[0]), zap.Int("roles", len(roles)))
 	return roles[0]
 }
 
@@ -297,15 +349,19 @@ func (e *Engine) RoleOf(user string) string {
 func (e *Engine) Whoami(token string) (user, role string, ok bool) {
 	name, ok := e.ResolveUser(token)
 	if !ok {
+		zap.L().Debug("Engine.Whoami: token unknown")
 		return "", "", false
 	}
-	return name, e.RoleOf(name), true
+	role = e.RoleOf(name)
+	zap.L().Debug("Engine.Whoami: resolved", zap.String("user", name), zap.String("role", role))
+	return name, role, true
 }
 
 // CanAdmin reports whether a user holds full administrative rights. It is the
 // gate for viewing and changing role and user assignments.
 func (e *Engine) CanAdmin(user string) bool {
 	ok, _ := e.Enforce(user, "system", "write")
+	zap.L().Debug("Engine.CanAdmin: decided", zap.String("user", user), zap.Bool("admin", ok))
 	return ok
 }
 
@@ -323,6 +379,7 @@ func (e *Engine) Users() []UserRole {
 	defer e.mu.RUnlock()
 	g, err := e.enforcer.GetGroupingPolicy()
 	if err != nil {
+		zap.L().Debug("Engine.Users: reading role assignments failed", zap.Error(err))
 		return nil
 	}
 	out := make([]UserRole, 0, len(g))
@@ -332,6 +389,7 @@ func (e *Engine) Users() []UserRole {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	zap.L().Debug("Engine.Users: listed", zap.Int("count", len(out)))
 	return out
 }
 
@@ -340,8 +398,10 @@ func (e *Engine) Users() []UserRole {
 func (e *Engine) EffectivePolicies() []Policy {
 	p, err := e.enforcer.GetPolicy()
 	if err != nil {
+		zap.L().Debug("Engine.EffectivePolicies: reading policies failed", zap.Error(err))
 		return nil
 	}
+	zap.L().Debug("Engine.EffectivePolicies: listing", zap.Int("count", len(p)))
 	out := make([]Policy, 0, len(p))
 	for _, row := range p {
 		if len(row) >= 3 {
@@ -358,175 +418,4 @@ func (e *Engine) EffectivePolicies() []Policy {
 		return out[i].Action < out[j].Action
 	})
 	return out
-}
-
-// --- write API (admin-gated at the transport layer) ---
-
-// CreateUser adds a new user with the given role. If token is empty a secure
-// random token is generated. The (possibly generated) token is returned and is
-// the only time it is ever shown in clear text.
-func (e *Engine) CreateUser(name, token, role string) (string, error) {
-	if name == "" || role == "" {
-		return "", fmt.Errorf("name and role are required")
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.userExistsLocked(name) {
-		return "", fmt.Errorf("user %q already exists", name)
-	}
-	if !e.knownRolesLocked()[role] {
-		return "", fmt.Errorf("unknown role %q", role)
-	}
-	if token == "" {
-		var err error
-		if token, err = GenerateToken(); err != nil {
-			return "", err
-		}
-	}
-	if len(token) < 16 {
-		return "", fmt.Errorf("token must be at least 16 characters")
-	}
-	if _, dup := e.tokens[hashToken(token)]; dup {
-		return "", fmt.Errorf("token is already in use")
-	}
-	if _, err := e.enforcer.AddGroupingPolicy(name, role); err != nil {
-		return "", err
-	}
-	e.tokens[hashToken(token)] = name
-	if err := e.persistLocked(); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
-// SetRole changes a user's role.
-func (e *Engine) SetRole(name, role string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if !e.userExistsLocked(name) {
-		return fmt.Errorf("no such user %q", name)
-	}
-	if !e.knownRolesLocked()[role] {
-		return fmt.Errorf("unknown role %q", role)
-	}
-	if err := e.setRoleLocked(name, role); err != nil {
-		return err
-	}
-	return e.persistLocked()
-}
-
-// DeleteUser removes a runtime-managed user. Config-pinned users are protected.
-func (e *Engine) DeleteUser(name string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.pinned[name] {
-		return fmt.Errorf("user %q is declared in config and cannot be removed here", name)
-	}
-	if !e.userExistsLocked(name) {
-		return fmt.Errorf("no such user %q", name)
-	}
-	roles, _ := e.enforcer.GetRolesForUser(name)
-	for _, r := range roles {
-		if _, err := e.enforcer.RemoveGroupingPolicy(name, r); err != nil {
-			return err
-		}
-	}
-	for h, n := range e.tokens {
-		if n == name {
-			delete(e.tokens, h)
-		}
-	}
-	return e.persistLocked()
-}
-
-// Roles returns the known role names (those that have at least one policy).
-func (e *Engine) Roles() []string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	set := e.knownRolesLocked()
-	out := make([]string, 0, len(set))
-	for r := range set {
-		out = append(out, r)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// appMethodRe matches the database application methods (CreateApp,
-// ListApps, GetAppStatus, ...) and nothing that merely starts with "App",
-// such as the approval methods.
-var appMethodRe = regexp.MustCompile(`^[A-Z][a-z]+(App|Apps|AppStatus)$`)
-
-// readVerbs are method-name prefixes that denote a read-only operation.
-var readVerbs = []string{"List", "Get", "Describe", "Watch", "Stream", "Check"}
-
-// Classify maps a gRPC full method (e.g. "/v1.HaifyController/CreateNFSGateway")
-// to the (object, action) pair used for authorization. Unknown methods map to
-// the "system" object and, unless clearly read-only, the "write" action — so a
-// newly added RPC is locked down by default rather than silently permitted.
-func Classify(fullMethod string) (object, action string) {
-	method := fullMethod
-	if i := strings.LastIndex(fullMethod, "/"); i >= 0 {
-		method = fullMethod[i+1:]
-	}
-	return classifyObject(method), classifyAction(method)
-}
-
-func classifyAction(method string) string {
-	if method == "ApproveRequest" || method == "RejectRequest" {
-		return ActApprove
-	}
-	// An inspection reads the cluster and stores a report; it changes nothing
-	// on it, so whoever may read the cluster may run one.
-	if strings.Contains(method, "Status") || method == "RunInspection" {
-		return ActRead
-	}
-	for _, v := range readVerbs {
-		if strings.HasPrefix(method, v) {
-			return ActRead
-		}
-	}
-	return ActWrite
-}
-
-func classifyObject(method string) string {
-	switch {
-	case method == "ListApprovals" || method == "ApproveRequest" || method == "RejectRequest":
-		return "approval"
-	// Before the snapshot case: SnapshotApp freezes a database and is part of
-	// running it, so whoever may run apps may snapshot them.
-	case appMethodRe.MatchString(method):
-		return "app"
-	// Before the snapshot case: off-cluster backups are their own object, so an
-	// operator who may ship data off-site can be distinguished from one who may
-	// only snapshot in place. Unclassified would land it in "system", where an
-	// operator has read only — a working feature nobody but admin could use.
-	// Shipping a resource to another cluster sends its data off-site just as
-	// a backup does, on both the sending and the receiving controller.
-	case strings.Contains(method, "Backup"), strings.Contains(method, "Ship"):
-		return "backup"
-	case strings.Contains(method, "Snapshot"):
-		return "snapshot"
-	case containsAny(method, "Gateway", "NFS", "ISCSI", "NVMe", "SMB", "Chap", "Export", "Initiator", "LUN", "Host", "Namespace"):
-		return "gateway"
-	case containsAny(method, "Pool", "Disk", "ZFSDataset", "ZFSVolume", "ZFSpool"):
-		return "pool"
-	case containsAny(method, "SelfHa", "Ha"):
-		return "ha"
-	case containsAny(method, "Node", "Register"):
-		return "node"
-	case containsAny(method, "Resource", "Volume", "Filesystem", "Primary", "Secondary", "Mount"):
-		return "resource"
-	default:
-		return "system"
-	}
-}
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 // LegStatus is one primary-site node's WAN leg: the dialer on that node and the
@@ -56,6 +59,8 @@ func (s *MultiStatus) Unhealthy() []LegStatus {
 			out = append(out, l)
 		}
 	}
+	zap.L().Debug("MultiStatus.Unhealthy: counted", zap.String("resource", s.Resource), zap.Int("legs", len(s.Legs)),
+		zap.Int("count", len(out)))
 	return out
 }
 
@@ -73,10 +78,15 @@ func (s *MultiStatus) Unhealthy() []LegStatus {
 // host lists the instances it has for this resource and the result is matched
 // up here.
 func StatusMulti(ctx context.Context, deploy DeploymentClient, m MultiSpec) (*MultiStatus, error) {
+	log := zap.L()
+	log.Debug("StatusMulti: start", zap.String("resource", m.Resource), zap.Strings("primaries", m.PrimaryNodeAddrs),
+		zap.String("dr", m.DRNodeAddr))
 	if deploy == nil {
+		log.Debug("StatusMulti: no deployment client", zap.String("resource", m.Resource))
 		return nil, fmt.Errorf("wanproxy: deployment client is nil")
 	}
 	if err := m.Validate(); err != nil {
+		log.Debug("StatusMulti: spec invalid", zap.String("resource", m.Resource), zap.Error(err))
 		return nil, err
 	}
 
@@ -89,7 +99,10 @@ func StatusMulti(ctx context.Context, deploy DeploymentClient, m MultiSpec) (*Mu
 	cmd := fmt.Sprintf(
 		"systemctl list-units --all --plain --no-legend --no-pager '%s*' 2>/dev/null || true",
 		UnitInstance(m.Resource))
+	start := time.Now()
 	res, err := deploy.Exec(ctx, hosts, cmd)
+	log.Debug("StatusMulti: listed proxy units", zap.String("resource", m.Resource), zap.Strings("hosts", hosts),
+		zap.Error(err), zap.Duration("took", time.Since(start)))
 	if err != nil {
 		return nil, fmt.Errorf("wanproxy: query proxy status: %w", err)
 	}
@@ -100,9 +113,11 @@ func StatusMulti(ctx context.Context, deploy DeploymentClient, m MultiSpec) (*Mu
 	if res != nil {
 		for host, h := range res.Hosts {
 			if h == nil || !h.Success {
+				log.Debug("StatusMulti: host did not answer, its units count as down", zap.String("host", host))
 				continue
 			}
 			active[host] = parseActiveUnits(h.Output)
+			log.Debug("StatusMulti: host units", zap.String("host", host), zap.Int("count", len(active[host])))
 		}
 	}
 
@@ -124,10 +139,17 @@ func StatusMulti(ctx context.Context, deploy DeploymentClient, m MultiSpec) (*Mu
 		// that was expected, which is what an operator needs to go looking for.
 		if !active[leg.PrimaryNodeAddr][unit] {
 			if found := soleUnitFor(active[leg.PrimaryNodeAddr]); found != "" {
+				log.Debug("StatusMulti: expected unit absent, adopting the host's only instance", zap.String("host", leg.PrimaryNodeAddr),
+					zap.String("expected", unit), zap.String("unit", found))
 				unit = found
 				legID = strings.TrimSuffix(strings.TrimPrefix(found, "haify-proxy@"), ".service")
+			} else {
+				log.Debug("StatusMulti: expected unit absent and no sole instance", zap.String("host", leg.PrimaryNodeAddr),
+					zap.String("expected", unit))
 			}
 		}
+		log.Debug("StatusMulti: leg state", zap.String("leg", legID), zap.String("primary", leg.PrimaryNodeAddr),
+			zap.Bool("primary_active", active[leg.PrimaryNodeAddr][unit]), zap.Bool("dr_active", active[m.DRNodeAddr][unit]))
 
 		st.Legs = append(st.Legs, LegStatus{
 			LegID:         legID,
@@ -142,7 +164,11 @@ func StatusMulti(ctx context.Context, deploy DeploymentClient, m MultiSpec) (*Mu
 	// than about the node being down.
 	if probe := reachProbeSpec(m, legs, st); probe != nil {
 		st.WANReachable = Reachable(ctx, deploy, *probe)
+	} else {
+		log.Debug("StatusMulti: no leg to probe from", zap.String("resource", m.Resource))
 	}
+	log.Debug("StatusMulti: done", zap.String("resource", m.Resource), zap.Int("legs", len(st.Legs)),
+		zap.Bool("wan_reachable", st.WANReachable))
 	return st, nil
 }
 
@@ -152,13 +178,18 @@ func StatusMulti(ctx context.Context, deploy DeploymentClient, m MultiSpec) (*Mu
 // which sends people looking at the wrong end of the link.
 func reachProbeSpec(m MultiSpec, legs []ProxySpec, st *MultiStatus) *ProxySpec {
 	if len(legs) == 0 {
+		zap.L().Debug("reachProbeSpec: no legs", zap.String("resource", m.Resource))
 		return nil
 	}
 	for i, l := range st.Legs {
 		if l.PrimaryActive {
+			zap.L().Debug("reachProbeSpec: probing from the first live dialer", zap.String("leg", legs[i].Resource),
+				zap.String("host", legs[i].PrimaryNodeAddr))
 			return &legs[i]
 		}
 	}
+	zap.L().Debug("reachProbeSpec: no live dialer, probing from the first leg", zap.String("leg", legs[0].Resource),
+		zap.String("host", legs[0].PrimaryNodeAddr))
 	return &legs[0]
 }
 
@@ -180,12 +211,15 @@ func soleUnitFor(units map[string]bool) string {
 // unit -> active. Rows are "UNIT LOAD ACTIVE SUB DESCRIPTION...".
 func parseActiveUnits(out string) map[string]bool {
 	units := map[string]bool{}
+	skipped := 0
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
 		if len(fields) < 3 {
+			skipped++
 			continue
 		}
 		units[fields[0]] = fields[2] == "active"
 	}
+	zap.L().Debug("parseActiveUnits: parsed", zap.Int("count", len(units)), zap.Int("skipped", skipped))
 	return units
 }

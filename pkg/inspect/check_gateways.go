@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // checkGateways requires every gateway that is not stopped to have exactly
@@ -13,14 +15,19 @@ func checkGateways(in *Input) []Check {
 	var out []Check
 	gws := append([]Gateway(nil), in.Gateways...)
 	sort.Slice(gws, func(i, j int) bool { return gws[i].Resource < gws[j].Resource })
+	log := zap.L()
+	log.Debug("checkGateways: start", zap.Int("gateways", len(gws)))
 	serving := 0
 	for _, g := range gws {
+		log.Debug("checkGateways: gateway", zap.String("resource", g.Resource), zap.String("type", g.Type),
+			zap.String("status", g.Status), zap.Bool("serving", g.Serving()))
 		if !g.Serving() {
 			continue
 		}
 		serving++
 		r, ok := resourceNamed(in, g.Resource)
 		if !ok {
+			log.Debug("checkGateways: gateway resource missing", zap.String("resource", g.Resource))
 			out = append(out, Check{ID: "gateway.orphan", Area: AreaGateways, Subject: g.Resource, Status: StatusFail,
 				Message: fmt.Sprintf("%s gateway is recorded as %s but its resource %s does not exist", g.Type, g.Status, g.Resource),
 				Fix:     fmt.Sprintf("haify gateway delete --resource %s", g.Resource)})
@@ -34,6 +41,7 @@ func checkGateways(in *Input) []Check {
 		out = append(out, promoterChecks(in, r, AreaGateways, "gateway", fmt.Sprintf("haify-%s-%s.toml", g.Type, g.Resource),
 			fmt.Sprintf("haify gateway start --resource %s", g.Resource))...)
 	}
+	log.Debug("checkGateways: done", zap.Int("serving", serving), zap.Int("findings", len(out)))
 	if len(out) == 0 && serving == 0 {
 		msg := "no gateways"
 		if len(gws) > 0 {
@@ -59,15 +67,20 @@ func checkGateways(in *Input) []Check {
 //
 // fix repairs both; empty means copy the config from a node that has it.
 func promoterChecks(in *Input, r Resource, area Area, prefix, file, fix string) []Check {
+	log := zap.L()
+	log.Debug("promoterChecks: start", zap.String("resource", r.Name), zap.String("file", file), zap.Strings("diskful", r.Diskful),
+		zap.String("dr", r.DR))
 	var out []Check
 	var missing, disabled []string
 	source := ""
 	for _, n := range r.Diskful {
 		p, ok := in.probe(n)
 		if !ok {
+			log.Debug("promoterChecks: node not probed", zap.String("node", n))
 			continue
 		}
 		if n == r.DR {
+			log.Debug("promoterChecks: DR node, must hold no promoter", zap.String("node", n), zap.Bool("has_conf", p.HasReactorConf(file)))
 			if p.HasReactorConf(file) {
 				name := in.nodeName(n)
 				out = append(out, Check{ID: prefix + ".promoter_on_dr", Area: area, Subject: r.Name + "@" + name, Status: StatusWarn,
@@ -80,12 +93,15 @@ func promoterChecks(in *Input, r Resource, area Area, prefix, file, fix string) 
 		}
 		switch {
 		case p.HasReactorConf(file):
+			log.Debug("promoterChecks: promoter active", zap.String("node", n))
 			if source == "" {
 				source = in.nodeName(n)
 			}
 		case p.HasReactorConf(file + ".disabled"):
+			log.Debug("promoterChecks: promoter disabled", zap.String("node", n))
 			disabled = append(disabled, in.nodeName(n))
 		default:
+			log.Debug("promoterChecks: promoter missing", zap.String("node", n))
 			missing = append(missing, in.nodeName(n))
 		}
 	}
@@ -108,6 +124,7 @@ func promoterChecks(in *Input, r Resource, area Area, prefix, file, fix string) 
 			continue
 		}
 		name := in.nodeName(n)
+		log.Debug("promoterChecks: promoter on a diskless node", zap.String("resource", r.Name), zap.String("node", name))
 		out = append(out, Check{ID: prefix + ".promoter_on_diskless", Area: area, Subject: r.Name + "@" + name, Status: StatusWarn,
 			Message: fmt.Sprintf("%s holds no copy of %s but has its promoter config: the service can run there as a diskless Primary, "+
 				"every I/O then crosses the network, and it stops if %s loses its diskful peers. Remove the promoter there if that is not intended",
@@ -132,8 +149,11 @@ func resourceNamed(in *Input, name string) (Resource, bool) {
 // lacks it, when no command was given that repairs it.
 func promoterFix(in *Input, fix, file, source string, lacking []string) string {
 	if fix != "" || source == "" || len(lacking) == 0 {
+		zap.L().Debug("promoterFix: using the given fix or none", zap.Bool("has_fix", fix != ""), zap.String("source", source),
+			zap.Int("lacking", len(lacking)))
 		return fix
 	}
+	zap.L().Debug("promoterFix: copying config from a node that has it", zap.String("source", source), zap.String("node", lacking[0]))
 	path := "/etc/drbd-reactor.d/" + file
 	dst := sshTarget(in, lacking[0])
 	return fmt.Sprintf("ssh %s sudo cat %s | ssh %s sudo tee %s >/dev/null && ssh %s sudo systemctl reload drbd-reactor",

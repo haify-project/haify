@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 var (
@@ -27,6 +29,7 @@ func ParseSize(sizeStr string) (uint64, error) {
 
 	// Handle pure number as bytes
 	if sizeStr == "" {
+		zap.L().Debug("ParseSize: empty size string")
 		return 0, errors.New("size string is empty")
 	}
 
@@ -38,11 +41,13 @@ func ParseSize(sizeStr string) (uint64, error) {
 	// Use regex to parse number and unit
 	matches := sizeRegex.FindStringSubmatch(sizeStr)
 	if matches == nil {
+		zap.L().Debug("ParseSize: not a number with a unit", zap.String("size", sizeStr))
 		return 0, fmt.Errorf("invalid size format: %s", sizeStr)
 	}
 
 	value, err := strconv.ParseFloat(matches[1], 64)
 	if err != nil {
+		zap.L().Debug("ParseSize: number does not parse", zap.String("size", sizeStr), zap.String("number", matches[1]), zap.Error(err))
 		return 0, fmt.Errorf("invalid number: %s", matches[1])
 	}
 
@@ -78,11 +83,14 @@ func ParseSize(sizeStr string) (uint64, error) {
 	case "E", "EIB":
 		multiplier = 1024 * 1024 * 1024 * 1024 * 1024 * 1024
 	default:
+		zap.L().Debug("ParseSize: unknown unit", zap.String("size", sizeStr), zap.String("unit", matches[2]))
 		return 0, fmt.Errorf("unknown unit: %s", matches[2])
 	}
 
 	bytes := uint64(value * multiplier)
 	if float64(bytes) != value*multiplier {
+		zap.L().Debug("ParseSize: size overflows or is fractional bytes", zap.String("size", sizeStr),
+			zap.Float64("value", value), zap.Float64("multiplier", multiplier))
 		return 0, fmt.Errorf("size overflow: %s", sizeStr)
 	}
 

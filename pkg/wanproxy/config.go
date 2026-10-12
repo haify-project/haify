@@ -3,6 +3,8 @@ package wanproxy
 import (
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // haify-proxy config defaults. These mirror config.example.toml so a generated
@@ -57,6 +59,8 @@ const loopback = "127.0.0.1"
 // wan_listen is unused by the dialer role but is still required by the schema,
 // so it is emitted (bound to the WAN port for symmetry with the acceptor).
 func RenderDialerConfig(spec ProxySpec) string {
+	zap.L().Debug("RenderDialerConfig: rendering", zap.String("resource", spec.Resource),
+		zap.String("dr_endpoint", spec.DRPublicEndpoint), zap.Int("wan_port", spec.WANPort), zap.Int("drbd_port", spec.DRBDPort))
 	var b strings.Builder
 	writeKV(&b, "role", roleDialer)
 	// Bind here and accept the local DRBD-A connection (127.0.0.1:P).
@@ -74,7 +78,10 @@ func RenderDialerConfig(spec ProxySpec) string {
 	// interface. Port 0: the kernel picks an ephemeral port, which a reconnect
 	// needs (a fixed port would hit EADDRINUSE during TIME_WAIT).
 	if addr := strings.TrimSpace(spec.PrimaryEgressAddr); addr != "" {
+		zap.L().Debug("RenderDialerConfig: pinning egress source", zap.String("resource", spec.Resource), zap.String("egress", addr))
 		writeKV(&b, "bind_addr", fmt.Sprintf("%s:0", addr))
+	} else {
+		zap.L().Debug("RenderDialerConfig: no egress pin, routing decides", zap.String("resource", spec.Resource))
 	}
 	// Publish runtime counters where `Status` can read them back over SSH. The
 	// backlog figure is the only way to answer how much data a protocol A
@@ -92,6 +99,8 @@ func RenderDialerConfig(spec ProxySpec) string {
 // peer is unused by the acceptor role (the dialer connects to us), but is still
 // required by the schema, so a valid placeholder host:port is emitted.
 func RenderAcceptorConfig(spec ProxySpec) string {
+	zap.L().Debug("RenderAcceptorConfig: rendering", zap.String("resource", spec.Resource),
+		zap.Int("wan_port", spec.WANPort), zap.Int("drbd_port", spec.DRBDPort))
 	var b strings.Builder
 	writeKV(&b, "role", roleAcceptor)
 	// Dial the local DRBD-B endpoint here (DRBD-B listens on 127.0.0.1:P).

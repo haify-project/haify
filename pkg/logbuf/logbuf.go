@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
@@ -48,8 +49,10 @@ const DefaultSize = 2000
 // New creates a ring holding the last size entries.
 func New(size int) *Ring {
 	if size <= 0 {
+		zap.L().Debug("New: size not positive, using the default", zap.Int("size", size), zap.Int("default", DefaultSize))
 		size = DefaultSize
 	}
+	zap.L().Debug("New: creating log ring", zap.Int("size", size))
 	return &Ring{entries: make([]Entry, size)}
 }
 
@@ -79,6 +82,11 @@ const DefaultLimit = 300
 // List returns matching entries newest first, plus whether the buffer has
 // wrapped — that is, whether lines older than these were discarded.
 func (r *Ring) List(f Filter) ([]Entry, bool) {
+	// Traced before the lock is taken and never while it is held: the
+	// controller's logger tees into this ring, so a log line written under
+	// r.mu would wait on r.mu in append.
+	zap.L().Debug("Ring.List: start", zap.Int("limit", f.Limit), zap.Bool("has_level", f.HasLevel),
+		zap.Stringer("min_level", f.MinLevel), zap.String("contains", f.Contains))
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
