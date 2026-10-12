@@ -38,6 +38,23 @@ Options: `size` (default `--size`, 10G), `pool` (default `--pool`), `replicas`
 host that holds no replica of the volume, the plugin joins it as a diskless
 client and the host reads and writes over the network.
 
-Only one host can use a volume at a time. While a container on one host has it,
-starting a container with the same volume on another host is refused. `docker volume
-rm` deletes the volume and its data on every node.
+Containers on the same host can share a volume. Only one host can use a volume
+at a time: while a container on one host has it, starting a container with the
+same volume on another host is refused, with an error naming the host that has
+it. `docker volume rm` deletes the volume and its data on every node.
+
+## Sharing data between hosts
+
+For containers on several hosts that read and write the same files at once,
+put an NFS gateway on a Haify resource and mount it with Docker's own `local`
+driver on each host:
+
+```bash
+haify gateway nfs create --resource shared --service-ip 192.168.1.200/24 --export-path /shared
+docker volume create -d local -o type=nfs -o o=addr=192.168.1.200,rw,nfsvers=4.2 -o device=:/shared shared
+docker run --rm -v shared:/data busybox:1.36 ls /data
+```
+
+When the node serving the gateway goes away, another replica takes over the
+service IP and the containers carry on. Writes pause while that happens,
+for around 15 to 20 seconds.

@@ -126,6 +126,10 @@ looking for the agents under `/usr/lib/ocf/resource.d/heartbeat/`:
   check is there because otherwise the gateway would be created but never
   start, and `ocf.rs@nfsserver_*` would log
   "No init script or systemd unit file detected for nfs server".
+  The gateway starts `nfs-server` on the node it runs on, so Haify switches the
+  distribution's own `nfs-server` off at boot on gateway nodes and stops it,
+  with `nfsdcld` and `fsidd`, where no gateway is serving. A node that also
+  needs NFS exports of its own cannot hold an NFS gateway.
 - NVMe-oF: the `nvmet-*` agents work through configfs
   (`/sys/kernel/config/nvmet`); `nvmetcli` is not used. They need the
   kernel modules, and Ubuntu cloud kernels ship `nvmet-tcp` only in
