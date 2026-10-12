@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // The disks on a node and whether each can be given to a pool. Parsing and
@@ -128,6 +130,8 @@ func parseBlockInventory(out string) *blockInventory {
 			inv.links[f[1]] = f[2]
 		}
 	}
+	zap.L().Debug("parseBlockInventory: parsed", zap.Int("output_bytes", len(out)), zap.Int("devices", len(inv.order)),
+		zap.Int("pvs", len(inv.pvs)), zap.Int("zfs", len(inv.zfs)), zap.Int("drbd", len(inv.drbd)), zap.Int("links", len(inv.links)))
 	return inv
 }
 
@@ -232,11 +236,16 @@ func signatureName(fstype string) string {
 func (inv *blockInventory) classify(node string, r *blockRow) NodeDisk {
 	d := NodeDisk{Node: node, Device: r.name, ByID: stableID(inv.ids[r.name]), Type: r.typ, SizeBytes: r.size,
 		Model: r.model, Serial: r.serial, Transport: r.tran, Rotational: r.rota}
+	log := zap.L()
 	busy := func(format string, a ...any) NodeDisk {
 		d.State, d.Detail = DiskBusy, fmt.Sprintf(format, a...)
+		log.Debug("blockInventory.classify: disk busy", zap.String("node", node), zap.String("device", r.name),
+			zap.String("detail", d.Detail))
 		return d
 	}
 	tree := inv.subtree(r.name)
+	log.Debug("blockInventory.classify: start", zap.String("node", node), zap.String("device", r.name),
+		zap.String("type", r.typ), zap.Uint64("size_bytes", r.size), zap.Int("subtree", len(tree)))
 	for _, t := range tree {
 		if inv.drbd[t.name] {
 			return busy("backing disk of a DRBD resource")
@@ -264,6 +273,8 @@ func (inv *blockInventory) classify(node string, r *blockRow) NodeDisk {
 		if vg, ok := inv.pvs[t.name]; ok && vg != "" {
 			if strings.HasPrefix(vg, managedNamePrefix) {
 				d.State, d.Pool = DiskPool, vg
+				log.Debug("blockInventory.classify: disk in a Haify volume group", zap.String("node", node),
+					zap.String("device", r.name), zap.String("pool", vg))
 				return d
 			}
 			if t.name == r.name {
@@ -274,6 +285,8 @@ func (inv *blockInventory) classify(node string, r *blockRow) NodeDisk {
 		if pool, ok := inv.zfs[t.name]; ok {
 			if strings.HasPrefix(pool, managedNamePrefix) {
 				d.State, d.Pool = DiskPool, pool
+				log.Debug("blockInventory.classify: disk in a Haify ZFS pool", zap.String("node", node),
+					zap.String("device", r.name), zap.String("pool", pool))
 				return d
 			}
 			return busy("in ZFS pool %s", pool)
@@ -317,9 +330,12 @@ func (inv *blockInventory) classify(node string, r *blockRow) NodeDisk {
 	}
 	if len(found) > 0 {
 		d.State, d.Detail, d.partitions = DiskWipe, strings.Join(found, "; "), parts
+		log.Debug("blockInventory.classify: disk holds old signatures", zap.String("node", node),
+			zap.String("device", r.name), zap.String("detail", d.Detail), zap.Strings("partitions", parts))
 		return d
 	}
 	d.State = DiskFree
+	log.Debug("blockInventory.classify: disk free", zap.String("node", node), zap.String("device", r.name))
 	return d
 }
 
@@ -327,18 +343,25 @@ func (inv *blockInventory) classify(node string, r *blockRow) NodeDisk {
 // or only hold old signatures — a disk whose other partitions are in use
 // (the system disk) can still have a spare one.
 func (inv *blockInventory) disks(node string) []NodeDisk {
+	log := zap.L()
+	log.Debug("blockInventory.disks: start", zap.String("node", node), zap.Int("devices", len(inv.order)))
 	var out []NodeDisk
 	for _, name := range inv.order {
 		r := inv.rows[name]
 		if !diskTypes[r.typ] || isPseudoDisk(name) || r.size < minPoolDiskBytes {
+			log.Debug("blockInventory.disks: not a candidate disk", zap.String("node", node), zap.String("device", name),
+				zap.String("type", r.typ), zap.Uint64("size_bytes", r.size))
 			continue
 		}
 		d := inv.classify(node, r)
 		if r.typ == "part" && d.State != DiskFree && d.State != DiskWipe {
+			log.Debug("blockInventory.disks: partition in use, not listed", zap.String("node", node),
+				zap.String("device", name), zap.String("state", d.State))
 			continue
 		}
 		out = append(out, d)
 	}
+	log.Debug("blockInventory.disks: done", zap.String("node", node), zap.Int("count", len(out)))
 	return out
 }
 
@@ -346,16 +369,22 @@ func (inv *blockInventory) disks(node string) []NodeDisk {
 // /dev/disk/by-id (or by-path) link.
 func (inv *blockInventory) find(device string) *blockRow {
 	if r := inv.rows[device]; r != nil {
+		zap.L().Debug("blockInventory.find: found by device path", zap.String("device", device))
 		return r
 	}
 	if target, ok := inv.links[device]; ok {
+		zap.L().Debug("blockInventory.find: found by link", zap.String("device", device), zap.String("target", target),
+			zap.Bool("listed", inv.rows[target] != nil))
 		return inv.rows[target]
 	}
+	zap.L().Debug("blockInventory.find: no such device", zap.String("device", device))
 	return nil
 }
 
 // checkPoolDisk says whether device on node may join a pool, and returns it.
 func (inv *blockInventory) checkPoolDisk(node, device string, wipe bool) (NodeDisk, error) {
+	log := zap.L()
+	log.Debug("blockInventory.checkPoolDisk: start", zap.String("node", node), zap.String("device", device), zap.Bool("wipe", wipe))
 	r := inv.find(device)
 	if r == nil || isPseudoDisk(r.name) || r.size == 0 {
 		var free []string
@@ -368,26 +397,42 @@ func (inv *blockInventory) checkPoolDisk(node, device string, wipe bool) (NodeDi
 		if len(free) > 0 {
 			hint = "empty disks there: " + strings.Join(free, ", ")
 		}
+		log.Debug("blockInventory.checkPoolDisk: refusing, not a disk", zap.String("node", node),
+			zap.String("device", device), zap.Strings("free", free))
 		return NodeDisk{}, fmt.Errorf("%s is not a disk on %s; %s", device, node, hint)
 	}
 	if !diskTypes[r.typ] {
+		log.Debug("blockInventory.checkPoolDisk: refusing, wrong device type", zap.String("node", node),
+			zap.String("device", device), zap.String("type", r.typ))
 		return NodeDisk{}, fmt.Errorf("%s on %s is a %s, not a disk or partition", device, node, r.typ)
 	}
 	if r.size < minPoolDiskBytes {
+		log.Debug("blockInventory.checkPoolDisk: refusing, too small", zap.String("node", node),
+			zap.String("device", device), zap.Uint64("size_bytes", r.size))
 		return NodeDisk{}, fmt.Errorf("%s on %s is only %s; a pool disk must be at least 1 GiB",
 			device, node, formatBytes(r.size))
 	}
 	d := inv.classify(node, r)
 	switch d.State {
 	case DiskPool:
+		log.Debug("blockInventory.checkPoolDisk: refusing, already in a pool", zap.String("node", node),
+			zap.String("device", device), zap.String("pool", d.Pool))
 		return d, fmt.Errorf("%s on %s is already in pool %s", device, node, d.Pool)
 	case DiskBusy:
+		log.Debug("blockInventory.checkPoolDisk: refusing, in use", zap.String("node", node),
+			zap.String("device", device), zap.String("detail", d.Detail))
 		return d, fmt.Errorf("%s on %s is in use: %s", device, node, d.Detail)
 	case DiskWipe:
 		if !wipe {
+			log.Debug("blockInventory.checkPoolDisk: refusing, holds signatures and wipe not asked", zap.String("node", node),
+				zap.String("device", device), zap.String("detail", d.Detail))
 			return d, fmt.Errorf("%s on %s holds %s. If nothing on it is needed, retry with --wipe, which erases it",
 				device, node, d.Detail)
 		}
+		log.Debug("blockInventory.checkPoolDisk: holds signatures, will be wiped", zap.String("node", node),
+			zap.String("device", device), zap.String("detail", d.Detail))
 	}
+	log.Debug("blockInventory.checkPoolDisk: accepted", zap.String("node", node), zap.String("device", d.Device),
+		zap.String("state", d.State), zap.String("by_id", d.ByID))
 	return d, nil
 }

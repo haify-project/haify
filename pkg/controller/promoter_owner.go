@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 // Resources whose Primary another system decides.
@@ -49,43 +52,62 @@ var pveDefaultNameRe = regexp.MustCompile(`^pve-\d+-[A-Za-z0-9][A-Za-z0-9_-]*$`)
 // externallyPromoted names the system that decides where a resource is
 // Primary, or "" when haify itself may.
 func externallyPromoted(name string, labels map[string]string) string {
+	owner := ""
 	switch {
 	case labels[pveManagedByLabel] == "pve", labels[pveManagedByLabel] == "" && pveDefaultNameRe.MatchString(name):
-		return "Proxmox VE"
+		owner = "Proxmox VE"
 	case labels[csiManagedByLabel] == "csi":
-		return "the CSI driver"
+		owner = "the CSI driver"
 	case labels[cinderManagedByLabel] == "cinder":
-		return "OpenStack Cinder"
+		owner = "OpenStack Cinder"
 	case labels[xcpManagedByLabel] == "xcp-ng":
-		return "XCP-ng"
+		owner = "XCP-ng"
 	}
-	return ""
+	zap.L().Debug("externallyPromoted: decided", zap.String("resource", name), zap.String("owner", owner))
+	return owner
 }
 
 // assertPromoterAllowed refuses to put a drbd-reactor promoter on resource;
 // what names the operation for the error ("ha create", "an NFS gateway").
 func (c *Controller) assertPromoterAllowed(ctx context.Context, resource, what string) error {
+	log := loggerOfController(c)
+	log.Debug("Controller.assertPromoterAllowed: start", zap.String("resource", resource), zap.String("what", what))
 	if c.db == nil {
+		log.Debug("Controller.assertPromoterAllowed: no database, allowed", zap.String("resource", resource))
 		return nil
 	}
+	start := time.Now()
 	res, err := c.db.GetResource(ctx, resource)
+	log.Debug("Controller.assertPromoterAllowed: database read resource", zap.String("resource", resource),
+		zap.Bool("found", err == nil && res != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil || res == nil {
 		// Not found is the operation's own error to report.
 		return nil
 	}
 	if owner := externallyPromoted(res.Name, res.Labels); owner != "" {
+		log.Debug("Controller.assertPromoterAllowed: refused, promoted externally", zap.String("resource", resource),
+			zap.String("owner", owner))
 		return fmt.Errorf("%s is refused on %s: %s decides where it is Primary, and a drbd-reactor promoter "+
 			"would fight it for the role", what, resource, owner)
 	}
 	if clients := splitCSV(res.DisklessClients); len(clients) > 0 {
+		log.Debug("Controller.assertPromoterAllowed: refused, has diskless clients", zap.String("resource", resource),
+			zap.Strings("clients", clients))
 		return fmt.Errorf("%s is refused on %s: it has diskless clients (%v) that use it from nodes a promoter "+
 			"does not run on; detach them first", what, resource, clients)
 	}
 	// drbd-reactor runs one promoter per resource; an app's is already there.
-	if app, err := c.db.GetAppByResource(ctx, resource); err == nil && app != nil {
+	start = time.Now()
+	app, err := c.db.GetAppByResource(ctx, resource)
+	log.Debug("Controller.assertPromoterAllowed: database read app", zap.String("resource", resource),
+		zap.Bool("found", err == nil && app != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err == nil && app != nil {
+		log.Debug("Controller.assertPromoterAllowed: refused, an app runs on it", zap.String("resource", resource),
+			zap.String("app", app.Name), zap.String("engine", app.Engine))
 		return fmt.Errorf("%s is refused on %s: the %s app %s runs on it; delete the app first (haify app delete %s)",
 			what, resource, app.Engine, app.Name, app.Name)
 	}
+	log.Debug("Controller.assertPromoterAllowed: allowed", zap.String("resource", resource))
 	return nil
 }
 

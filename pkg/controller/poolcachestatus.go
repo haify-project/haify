@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -88,6 +89,7 @@ func parseCacheReport(output string) map[string][]lvsCacheRow {
 		}
 		byVG[vg] = append(byVG[vg], row)
 	}
+	zap.L().Debug("parseCacheReport: parsed", zap.Int("count", len(byVG)))
 	return byVG
 }
 
@@ -138,6 +140,7 @@ func summarizeCache(rows []lvsCacheRow) *PoolCacheInfo {
 		}
 	}
 	if origin == nil {
+		zap.L().Debug("summarizeCache: no cached LV in group", zap.Int("rows", len(rows)))
 		return nil
 	}
 
@@ -163,6 +166,9 @@ func summarizeCache(rows []lvsCacheRow) *PoolCacheInfo {
 	info.DirtyPercent = percentOf(origin.DirtyBlocks, origin.TotalBlocks)
 	hits := origin.ReadHits + origin.WriteHits
 	info.HitPercent = percentOf(hits, hits+origin.ReadMisses+origin.WriteMisses)
+	zap.L().Debug("summarizeCache: cache found", zap.String("origin_lv", info.OriginLV), zap.String("mode", info.Mode),
+		zap.String("device", info.Device), zap.Uint64("size_bytes", info.SizeBytes), zap.Bool("has_cvol", cvol != nil),
+		zap.Bool("degraded", info.Degraded), zap.Uint32("dirty_percent", info.DirtyPercent))
 	return info
 }
 
@@ -198,16 +204,26 @@ func percentOf(part, whole uint64) uint32 {
 
 // readPoolCache reads the cache state of one volume group on one host.
 func (sm *StorageManager) readPoolCache(ctx context.Context, address, vgName string) (*PoolCacheInfo, error) {
+	log := loggerOfController(sm.controller)
+	start := time.Now()
 	res, err := sm.controller.deployment.LVSCacheReport(ctx, []string{address}, vgName)
 	if err != nil {
+		log.Debug("readPoolCache: lvs cache report failed", zap.String("host", address), zap.String("pool", vgName),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, fmt.Errorf("read cache state of %s: %w", vgName, err)
 	}
 	for _, r := range res.Hosts {
 		if !r.Success {
+			log.Debug("readPoolCache: lvs cache report failed on host", zap.String("host", r.Host),
+				zap.String("pool", vgName), zap.Duration("took", time.Since(start)))
 			return nil, fmt.Errorf("read cache state of %s: %s", vgName, strings.TrimSpace(r.Output))
 		}
-		return summarizeCache(parseCacheReport(r.Output)[vgName]), nil
+		info := summarizeCache(parseCacheReport(r.Output)[vgName])
+		log.Debug("readPoolCache: read", zap.String("host", r.Host), zap.String("pool", vgName),
+			zap.Bool("cached", info != nil), zap.Duration("took", time.Since(start)))
+		return info, nil
 	}
+	log.Debug("readPoolCache: no host result", zap.String("host", address), zap.String("pool", vgName))
 	return nil, fmt.Errorf("read cache state of %s: no result", vgName)
 }
 
@@ -219,17 +235,23 @@ func (sm *StorageManager) readPoolCache(ctx context.Context, address, vgName str
 // A host that cannot answer is left out rather than failing the listing — a
 // missing cache badge is a much smaller problem than a pool list that errors.
 func (sm *StorageManager) cacheByPool(ctx context.Context, hosts []string) map[string]map[string]*PoolCacheInfo {
+	log := loggerOfController(sm.controller)
 	out := make(map[string]map[string]*PoolCacheInfo)
 	if len(hosts) == 0 {
+		log.Debug("cacheByPool: no hosts")
 		return out
 	}
+	start := time.Now()
 	res, err := sm.controller.deployment.LVSCacheReport(ctx, hosts, "")
+	log.Debug("cacheByPool: lvs cache report", zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)),
+		zap.Error(err))
 	if err != nil {
 		sm.controller.logger.Warn("Failed to read pool cache state", zap.Error(err))
 		return out
 	}
 	for host, r := range res.Hosts {
 		if !r.Success {
+			log.Debug("cacheByPool: host failed, left out", zap.String("host", host))
 			continue
 		}
 		normalized := sm.controller.NormalizeHost(host)
@@ -246,6 +268,8 @@ func (sm *StorageManager) cacheByPool(ctx context.Context, hosts []string) map[s
 			}
 			out[normalized][vg] = info
 		}
+		log.Debug("cacheByPool: host read", zap.String("host", host), zap.String("node", normalized),
+			zap.Int("count", len(out[normalized])))
 	}
 	return out
 }

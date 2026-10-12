@@ -36,15 +36,22 @@ var localNode = sync.OnceValue(func() string {
 // there is no database to write to (the controller runs without persistence
 // rather than refusing to start, so this is a real case).
 func (c *Controller) auditSink() auditSink {
+	log := loggerOfController(c)
 	if c.db == nil {
+		log.Debug("auditSink: no database, audit events are not persisted")
 		return nil
 	}
 	node := localNode()
+	log.Debug("auditSink: persisting audit events", zap.String("node", node))
 	return func(ev *database.AuditEvent) {
 		ev.Node = node
 		// The trail must never be able to fail a request. A write error is
 		// worth knowing about, but the call it describes already succeeded.
-		if err := c.db.AppendAuditEvent(context.Background(), ev); err != nil {
+		start := time.Now()
+		err := c.db.AppendAuditEvent(context.Background(), ev)
+		log.Debug("auditSink: appended audit event", zap.String("method", ev.Method),
+			zap.String("result", ev.Result), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			c.logger.Warn("Failed to persist audit event",
 				zap.String("method", ev.Method), zap.Error(err))
 		}
@@ -53,13 +60,19 @@ func (c *Controller) auditSink() auditSink {
 
 // ListAuditEvents returns the persisted audit trail, newest first.
 func (s *Server) ListAuditEvents(ctx context.Context, req *pb.ListAuditEventsRequest) (*pb.ListAuditEventsResponse, error) {
+	log := loggerOfController(s.ctrl)
+	log.Debug("ListAuditEvents: listing", zap.Int32("limit", req.GetLimit()), zap.String("method", req.GetMethod()),
+		zap.String("target", req.GetTarget()), zap.String("user", req.GetUser()),
+		zap.Bool("failures_only", req.GetFailuresOnly()), zap.Int64("since_unix_ms", req.GetSinceUnixMs()))
 	if s.ctrl.db == nil {
+		log.Debug("ListAuditEvents: no database")
 		return &pb.ListAuditEventsResponse{
 			Success: false,
 			Message: "audit trail unavailable: controller is running without persistence",
 		}, nil
 	}
 	if !s.ctrl.config.Audit.Enabled {
+		log.Debug("ListAuditEvents: audit log disabled")
 		// An empty list would read as "nothing has happened", which is a very
 		// different statement from "nothing is being recorded".
 		return &pb.ListAuditEventsResponse{
@@ -79,7 +92,10 @@ func (s *Server) ListAuditEvents(ctx context.Context, req *pb.ListAuditEventsReq
 		filter.Since = time.UnixMilli(ms)
 	}
 
+	start := time.Now()
 	events, total, err := s.ctrl.db.ListAuditEvents(ctx, filter)
+	log.Debug("ListAuditEvents: read audit events", zap.Int("count", len(events)), zap.Int("total", total),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return &pb.ListAuditEventsResponse{Success: false, Message: err.Error()}, nil
 	}
@@ -109,6 +125,12 @@ func (s *Server) ListAuditEvents(ctx context.Context, req *pb.ListAuditEventsReq
 
 // ListControllerLogs returns recent lines from the controller's own log.
 func (s *Server) ListControllerLogs(ctx context.Context, req *pb.ListControllerLogsRequest) (*pb.ListControllerLogsResponse, error) {
+	// One trace per request, written before the ring is read: a trace per
+	// served line would grow the ring while it is being read.
+	log := loggerOfController(s.ctrl)
+	log.Debug("ListControllerLogs: listing", zap.Int32("limit", req.GetLimit()),
+		zap.String("level", req.GetLevel()), zap.Bool("has_contains", req.GetContains() != ""),
+		zap.Bool("has_ring", s.ctrl.logRing != nil))
 	if s.ctrl.logRing == nil {
 		return &pb.ListControllerLogsResponse{
 			Success: false,
@@ -123,6 +145,7 @@ func (s *Server) ListControllerLogs(ctx context.Context, req *pb.ListControllerL
 	if lvl := req.GetLevel(); lvl != "" {
 		var parsed zapcore.Level
 		if err := parsed.UnmarshalText([]byte(lvl)); err != nil {
+			log.Debug("ListControllerLogs: unknown level", zap.String("level", lvl), zap.Error(err))
 			return &pb.ListControllerLogsResponse{
 				Success: false,
 				Message: "unknown level " + lvl + " (want debug, info, warn or error)",

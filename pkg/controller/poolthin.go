@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -86,6 +87,7 @@ func parseThinReport(output string) map[string]*PoolThinInfo {
 				info.VirtualBytes = v
 			}
 		}
+		zap.L().Debug("parseThinReport: parsed", zap.Int("count", len(byVG)), zap.Int("groups_with_thin_volumes", len(virtual)))
 	}()
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -186,16 +188,33 @@ func parseThinPercent(field string) float64 {
 // readThinUsage reads the thin pool utilisation of one volume group on one
 // host. Returns nil without error when the group holds no thin pool.
 func (sm *StorageManager) readThinUsage(ctx context.Context, address, vgName string) (*PoolThinInfo, error) {
+	log := loggerOfController(sm.controller)
+	start := time.Now()
 	res, err := sm.controller.deployment.LVSThinReport(ctx, []string{address}, vgName)
 	if err != nil {
+		log.Debug("readThinUsage: lvs thin report failed", zap.String("host", address), zap.String("pool", vgName),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, fmt.Errorf("read thin pool usage of %s: %w", vgName, err)
 	}
 	for _, r := range res.Hosts {
 		if !r.Success {
+			log.Debug("readThinUsage: lvs thin report failed on host", zap.String("host", r.Host),
+				zap.String("pool", vgName), zap.Duration("took", time.Since(start)))
 			return nil, fmt.Errorf("read thin pool usage of %s: %s", vgName, strings.TrimSpace(r.Output))
 		}
-		return parseThinReport(r.Output)[vgName], nil
+		info := parseThinReport(r.Output)[vgName]
+		if info != nil {
+			log.Debug("readThinUsage: read", zap.String("host", r.Host), zap.String("pool", vgName),
+				zap.String("thin_pool", info.PoolLV), zap.Float64("data_percent", info.DataPercent),
+				zap.Float64("meta_percent", info.MetaPercent), zap.Bool("out_of_space", info.OutOfSpace),
+				zap.Duration("took", time.Since(start)))
+		} else {
+			log.Debug("readThinUsage: group holds no thin pool", zap.String("host", r.Host), zap.String("pool", vgName),
+				zap.Duration("took", time.Since(start)))
+		}
+		return info, nil
 	}
+	log.Debug("readThinUsage: no host result", zap.String("host", address), zap.String("pool", vgName))
 	return nil, fmt.Errorf("read thin pool usage of %s: no result", vgName)
 }
 
@@ -208,17 +227,23 @@ func (sm *StorageManager) readThinUsage(ctx context.Context, address, vgName str
 // out rather than failing the listing — a pool card missing its utilisation is
 // a smaller problem than a pool list that errors.
 func (sm *StorageManager) thinUsageByPool(ctx context.Context, hosts []string) map[string]map[string]*PoolThinInfo {
+	log := loggerOfController(sm.controller)
 	out := make(map[string]map[string]*PoolThinInfo)
 	if len(hosts) == 0 {
+		log.Debug("thinUsageByPool: no hosts")
 		return out
 	}
+	start := time.Now()
 	res, err := sm.controller.deployment.LVSThinReport(ctx, hosts, "")
+	log.Debug("thinUsageByPool: lvs thin report", zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)),
+		zap.Error(err))
 	if err != nil {
 		sm.controller.logger.Warn("Failed to read thin pool usage", zap.Error(err))
 		return out
 	}
 	for host, r := range res.Hosts {
 		if !r.Success {
+			log.Debug("thinUsageByPool: host failed, left out", zap.String("host", host))
 			continue
 		}
 		normalized := sm.controller.NormalizeHost(host)
@@ -231,6 +256,8 @@ func (sm *StorageManager) thinUsageByPool(ctx context.Context, hosts []string) m
 			}
 			out[normalized][vg] = info
 		}
+		log.Debug("thinUsageByPool: host read", zap.String("host", host), zap.String("node", normalized),
+			zap.Int("count", len(out[normalized])))
 	}
 	return out
 }

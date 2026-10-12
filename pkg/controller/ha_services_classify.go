@@ -5,6 +5,8 @@ import (
 	"path"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Naming the units of an HA chain.
@@ -114,8 +116,13 @@ func unitBaseName(unit string) string {
 // classifyHaUnit says what unit is and labels it. facts may be nil when the
 // node could not describe the unit.
 func classifyHaUnit(unit string, facts *haUnitFacts) (kind, label string) {
+	defer func() {
+		zap.L().Debug("classifyHaUnit: classified", zap.String("unit", unit), zap.Bool("has_facts", facts != nil),
+			zap.String("kind", kind), zap.String("label", label))
+	}()
 	if facts != nil && facts.Env != nil {
 		if agent := facts.Env["AGENT"]; agent != "" {
+			zap.L().Debug("classifyHaUnit: OCF unit, classifying by its agent", zap.String("unit", unit), zap.String("agent", agent))
 			return classifyOCFAgent(agent, facts.Env)
 		}
 	}
@@ -188,6 +195,9 @@ func describesDatabase(desc string) bool {
 // classifyHaifyApp labels haify-app-<name>.service, whose own description is
 // "Haify app <name> (<engine>)" (apptemplate.Unit).
 func classifyHaifyApp(name, desc string) (kind, label string) {
+	defer func() {
+		zap.L().Debug("classifyHaifyApp: classified", zap.String("app", name), zap.String("kind", kind), zap.String("label", label))
+	}()
 	engine := ""
 	if i := strings.LastIndexByte(desc, '('); i >= 0 && strings.HasSuffix(desc, ")") {
 		engine = strings.ToLower(desc[i+1 : len(desc)-1])
@@ -205,6 +215,11 @@ func classifyHaifyApp(name, desc string) (kind, label string) {
 // classifyOCFAgent labels an OCF agent's unit by the agent and the
 // parameters that say what this instance is for.
 func classifyOCFAgent(agentPath string, env map[string]string) (kind, label string) {
+	// The parameters are not logged as a whole: an agent's can hold a password.
+	defer func() {
+		zap.L().Debug("classifyOCFAgent: classified", zap.String("agent", agentPath), zap.Int("params", len(env)),
+			zap.String("kind", kind), zap.String("label", label))
+	}()
 	agent := path.Base(agentPath)
 	p := func(k string) string { return env[k] }
 	switch agent {
@@ -366,9 +381,11 @@ func systemdWords(s string) []string {
 // still holds an escape is unescaped here.
 func parseOCFEnv(s string) map[string]string {
 	env := map[string]string{}
+	skipped := 0
 	for _, w := range systemdWords(s) {
 		k, v, ok := strings.Cut(w, "=")
 		if !ok {
+			skipped++
 			continue
 		}
 		v = unescapeHexOnly(v)
@@ -379,6 +396,9 @@ func parseOCFEnv(s string) map[string]string {
 			env[strings.TrimPrefix(k, "OCF_RESKEY_")] = v
 		}
 	}
+	// Values are not logged: an OCF parameter can be a password.
+	zap.L().Debug("parseOCFEnv: parsed", zap.String("agent", env["AGENT"]), zap.Int("entries", len(env)),
+		zap.Int("skipped", skipped))
 	return env
 }
 

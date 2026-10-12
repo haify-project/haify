@@ -45,12 +45,15 @@ func clockJump(wall, lock time.Time) time.Duration {
 // watchLockClock reports a jump of the wall clock once, and again only after
 // it has come back.
 func (c *Controller) watchLockClock(ctx context.Context) {
+	log := loggerOfController(c)
+	log.Debug("watchLockClock: started", zap.Duration("threshold", clockJumpThreshold))
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
 	reported := false
 	for {
 		select {
 		case <-ctx.Done():
+			log.Debug("watchLockClock: stopped", zap.Error(ctx.Err()))
 			return
 		case <-t.C:
 		}
@@ -58,8 +61,11 @@ func (c *Controller) watchLockClock(ctx context.Context) {
 		if d < 0 {
 			d = -d
 		}
+		log.Debug("watchLockClock: tick", zap.Duration("drift", d), zap.Bool("reported", reported))
 		switch {
 		case d > clockJumpThreshold && !reported:
+			log.Debug("watchLockClock: wall clock jumped, reporting", zap.Duration("drift", d),
+				zap.Bool("has_events", c.events != nil))
 			reported = true
 			msg := fmt.Sprintf("the system clock moved %s away from the time this controller counts since it started; "+
 				"snapshot and backup locks keep using the counted time", clockJump(time.Now(), lockNow()).Round(time.Second))
@@ -69,6 +75,8 @@ func (c *Controller) watchLockClock(ctx context.Context) {
 					Status: event.StatusFiring, Message: msg})
 			}
 		case d <= clockJumpThreshold && reported:
+			log.Debug("watchLockClock: wall clock back in agreement, resolving", zap.Duration("drift", d),
+				zap.Bool("has_events", c.events != nil))
 			reported = false
 			if c.events != nil {
 				c.events.Publish(event.Event{Type: event.TypeClockJumped, Severity: event.SeverityWarning,

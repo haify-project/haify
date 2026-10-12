@@ -5,9 +5,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const managedNamePrefix = "haify_"
+
+// loggerOfController is c's logger, or zap's global one when c or its logger
+// is nil, as in structs that tests build by hand. Traces reach the logger
+// through it wherever the receiver may come from such a test.
+func loggerOfController(c *Controller) *zap.Logger {
+	if c == nil || c.logger == nil {
+		return zap.L()
+	}
+	return c.logger
+}
 
 func normalizeManagedName(name string) string {
 	name = strings.TrimSpace(name)
@@ -18,14 +30,19 @@ func normalizeManagedName(name string) string {
 }
 
 func normalizeLVMPoolType(poolType string) (string, error) {
+	log := zap.L()
 	switch strings.ToLower(strings.TrimSpace(poolType)) {
 	case "", "vg", "lvm":
+		log.Debug("normalizeLVMPoolType: thick volume group", zap.String("type", poolType))
 		return "vg", nil
 	case "lvm-thin", "thin-pool", "thin_pool":
+		log.Debug("normalizeLVMPoolType: thin pool", zap.String("type", poolType))
 		return "thin_pool", nil
 	case "lvm-thin-vdo", "thin-vdo", "thin_vdo":
+		log.Debug("normalizeLVMPoolType: thin pool on VDO", zap.String("type", poolType))
 		return vdoPoolType, nil
 	default:
+		log.Debug("normalizeLVMPoolType: unsupported type", zap.String("type", poolType))
 		return "", fmt.Errorf("unsupported LVM pool type: %s", poolType)
 	}
 }
@@ -49,7 +66,9 @@ func normalizeManagedZFSPath(path string) string {
 	}
 
 	parts[0] = normalizeManagedName(parts[0])
-	return strings.Join(parts, "/") + suffix
+	out := strings.Join(parts, "/") + suffix
+	zap.L().Debug("normalizeManagedZFSPath: normalized", zap.String("path", path), zap.String("normalized", out))
+	return out
 }
 
 func parseByteCount(raw string) (uint64, error) {
@@ -57,14 +76,17 @@ func parseByteCount(raw string) (uint64, error) {
 	value = strings.TrimSuffix(value, "B")
 	value = strings.TrimSuffix(value, "b")
 	if value == "" {
+		zap.L().Debug("parseByteCount: empty value", zap.String("raw", raw))
 		return 0, fmt.Errorf("empty byte count")
 	}
 
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil {
+		zap.L().Debug("parseByteCount: not a number", zap.String("raw", raw), zap.Error(err))
 		return 0, err
 	}
 	if parsed < 0 {
+		zap.L().Debug("parseByteCount: negative value", zap.String("raw", raw))
 		return 0, fmt.Errorf("negative byte count: %s", raw)
 	}
 
@@ -75,23 +97,28 @@ func parseByteCount(raw string) (uint64, error) {
 // The optional 4th field (pv_name) lets a single vgs call also report the
 // physical devices backing the VG (one row per PV); pv is "" when absent.
 func parseLVMPoolLine(line string) (name string, total, free uint64, pv string, ok bool) {
+	log := zap.L()
 	fields := strings.Split(strings.TrimSpace(line), "|")
 	if len(fields) < 3 {
+		log.Debug("parseLVMPoolLine: skipped, too few fields", zap.Int("fields", len(fields)))
 		return "", 0, 0, "", false
 	}
 
 	name = strings.TrimSpace(fields[0])
 	if name == "" {
+		log.Debug("parseLVMPoolLine: skipped, no volume group name")
 		return "", 0, 0, "", false
 	}
 
 	total, err := parseByteCount(fields[1])
 	if err != nil {
+		log.Debug("parseLVMPoolLine: skipped, unreadable size", zap.String("pool", name), zap.Error(err))
 		return "", 0, 0, "", false
 	}
 
 	free, err = parseByteCount(fields[2])
 	if err != nil {
+		log.Debug("parseLVMPoolLine: skipped, unreadable free space", zap.String("pool", name), zap.Error(err))
 		return "", 0, 0, "", false
 	}
 
@@ -110,11 +137,13 @@ func parseLVMPoolLine(line string) (name string, total, free uint64, pv string, 
 func parseZFSSnapshotLine(line string) (string, string, string, bool) {
 	fields := strings.Fields(strings.TrimSpace(line))
 	if len(fields) < 4 {
+		zap.L().Debug("parseZFSSnapshotLine: skipped, too few fields", zap.Int("fields", len(fields)))
 		return "", "", "", false
 	}
 
 	parts := strings.SplitN(fields[0], "@", 2)
 	if len(parts) != 2 {
+		zap.L().Debug("parseZFSSnapshotLine: skipped, not a snapshot name", zap.String("name", fields[0]))
 		return "", "", "", false
 	}
 

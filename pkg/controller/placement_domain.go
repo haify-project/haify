@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Fault domains. Two replicas on two VMs of the same physical host are one
@@ -26,9 +28,11 @@ const defaultFaultDomainLabel = "host"
 func (rm *ResourceManager) faultDomainKey() string {
 	if rm.controller != nil && rm.controller.config != nil {
 		if k := strings.TrimSpace(rm.controller.config.Resource.FaultDomainLabel); k != "" {
+			loggerOfController(rm.controller).Debug("ResourceManager.faultDomainKey: configured label", zap.String("key", k))
 			return k
 		}
 	}
+	loggerOfController(rm.controller).Debug("ResourceManager.faultDomainKey: default label", zap.String("key", defaultFaultDomainLabel))
 	return defaultFaultDomainLabel
 }
 
@@ -61,6 +65,7 @@ func withDomainLabels(nodes []placementNode, key string) []placementNode {
 		n.labels = labels
 		out[i] = n
 	}
+	zap.L().Debug("withDomainLabels: filled in fault domain labels", zap.String("key", key), zap.Int("count", len(out)))
 	return out
 }
 
@@ -68,22 +73,31 @@ func withDomainLabels(nodes []placementNode, key string) []placementNode {
 // a selection in which no two replicas share a fault domain. warning is set
 // when the preference could not be met.
 func spreadAcrossDomains(nodes []placementNode, replicas int, c placementConstraints, key string) ([]string, string, error) {
+	log := zap.L()
+	log.Debug("spreadAcrossDomains: start", zap.Int("candidates", len(nodes)), zap.Int("replicas", replicas),
+		zap.String("key", key), zap.Strings("on_different", c.onDifferent), zap.Strings("on_same", c.onSame))
 	spread := c
 	if !containsString(c.onDifferent, key) {
 		spread.onDifferent = append(append([]string(nil), c.onDifferent...), key)
 	}
-	if picked, err := selectConstrained(withDomainLabels(nodes, key), replicas, spread); err == nil {
+	picked, err := selectConstrained(withDomainLabels(nodes, key), replicas, spread)
+	if err == nil {
+		log.Debug("spreadAcrossDomains: replicas spread over distinct fault domains", zap.Strings("nodes", picked))
 		return picked, "", nil
 	}
-	picked, err := selectConstrained(nodes, replicas, c)
+	log.Debug("spreadAcrossDomains: cannot spread, falling back to the hard constraints only", zap.Error(err))
+	picked, err = selectConstrained(nodes, replicas, c)
 	if err != nil {
+		log.Debug("spreadAcrossDomains: hard constraints cannot be met either", zap.Error(err))
 		return nil, "", err
 	}
 	labels := make(map[string]map[string]string, len(nodes))
 	for _, n := range nodes {
 		labels[n.node] = n.labels
 	}
-	return picked, sharedDomainWarning(picked, labels, key), nil
+	warning := sharedDomainWarning(picked, labels, key)
+	log.Debug("spreadAcrossDomains: placed with shared fault domains", zap.Strings("nodes", picked), zap.String("warning", warning))
+	return picked, warning, nil
 }
 
 // sharedDomainWarning describes replicas that ended up in one fault domain.
@@ -100,9 +114,11 @@ func sharedDomainWarning(nodes []string, labels map[string]map[string]string, ke
 		}
 	}
 	if len(parts) == 0 {
+		zap.L().Debug("sharedDomainWarning: every replica in its own fault domain", zap.Strings("nodes", nodes))
 		return ""
 	}
 	sort.Strings(parts)
+	zap.L().Debug("sharedDomainWarning: replicas share fault domains", zap.Strings("shared", parts))
 	return fmt.Sprintf("replicas %s: one failure there loses every copy on it; no candidate set spans more %q values",
 		strings.Join(parts, "; "), key)
 }
@@ -113,7 +129,9 @@ func sharedDomainWarning(nodes []string, labels map[string]map[string]string, ke
 // their own domains and never trip it, so it only speaks once the operator has
 // said which nodes fail together.
 func faultDomainRisk(diskful, tiebreakers []string, labels map[string]map[string]string, key string) string {
+	log := zap.L()
 	if len(diskful) < 2 {
+		log.Debug("faultDomainRisk: fewer than two diskful replicas, nothing to judge", zap.Strings("diskful", diskful))
 		return ""
 	}
 	voters := map[string]int{}
@@ -133,10 +151,14 @@ func faultDomainRisk(diskful, tiebreakers []string, labels map[string]map[string
 			continue
 		}
 		if data[d] == len(diskful) || 2*v >= total {
+			log.Debug("faultDomainRisk: domain holds every copy or half the voters", zap.String("domain", d),
+				zap.Int("data", data[d]), zap.Int("voters", v), zap.Int("total", total))
 			risky = append(risky, d)
 		}
 	}
 	sort.Strings(risky)
+	log.Debug("faultDomainRisk: done", zap.Strings("diskful", diskful), zap.Strings("tiebreakers", tiebreakers),
+		zap.Strings("risky", risky))
 	return strings.Join(risky, ",")
 }
 
@@ -144,10 +166,12 @@ func faultDomainRisk(diskful, tiebreakers []string, labels map[string]map[string
 func (rm *ResourceManager) labelsByNode(ctx context.Context) map[string]map[string]string {
 	out := map[string]map[string]string{}
 	if rm.controller == nil || rm.controller.nodes == nil {
+		zap.L().Debug("ResourceManager.labelsByNode: no node manager, no labels")
 		return out
 	}
 	nodes, err := rm.controller.nodes.ListNodes(ctx)
 	if err != nil {
+		loggerOfController(rm.controller).Debug("ResourceManager.labelsByNode: listing nodes failed", zap.Error(err))
 		return out
 	}
 	for _, n := range nodes {

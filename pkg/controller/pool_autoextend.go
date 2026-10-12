@@ -41,18 +41,26 @@ type thinAutoextender struct {
 }
 
 func newThinAutoextender(c *Controller) *thinAutoextender {
+	loggerOfController(c).Debug("newThinAutoextender: created")
 	return &thinAutoextender{c: c, busy: map[string]bool{}, last: map[string]time.Time{}, warnedVG: map[string]bool{}}
 }
 
 // Observed implements alert.Observer. It must not block the poll, so the
 // growing itself runs in its own goroutine.
 func (a *thinAutoextender) Observed(obs alert.Observation) {
+	log := loggerOfController(a.c)
 	cfg := a.c.config.Storage.Thin
 	if cfg.AutoextendThreshold <= 0 || !obs.Pools.Enabled || !obs.Pools.OK {
+		log.Debug("thinAutoextender.Observed: skipped", zap.Int("threshold", cfg.AutoextendThreshold),
+			zap.Bool("pools_enabled", obs.Pools.Enabled), zap.Bool("pools_ok", obs.Pools.OK))
 		return
 	}
+	log.Debug("thinAutoextender.Observed: checking pools", zap.Int("count", len(obs.Pools.Items)),
+		zap.Int("threshold", cfg.AutoextendThreshold))
 	for _, p := range obs.Pools.Items {
 		if p.ThinPool == "" || p.VDO {
+			log.Debug("thinAutoextender.Observed: not a plain thin pool, skipped", zap.String("node", p.Node),
+				zap.String("pool", p.Name), zap.Bool("vdo", p.VDO))
 			continue
 		}
 		data := p.DataPercent >= float64(cfg.AutoextendThreshold)
@@ -62,14 +70,22 @@ func (a *thinAutoextender) Observed(obs alert.Observation) {
 		if !data && !meta {
 			delete(a.warnedVG, key)
 			a.mu.Unlock()
+			log.Debug("thinAutoextender.Observed: below threshold", zap.String("pool", key),
+				zap.Float64("data_percent", p.DataPercent), zap.Float64("meta_percent", p.MetaPercent))
 			continue
 		}
 		if a.busy[key] || time.Since(a.last[key]) < autoextendCooldown {
+			busy := a.busy[key]
 			a.mu.Unlock()
+			log.Debug("thinAutoextender.Observed: busy or cooling down", zap.String("pool", key),
+				zap.Bool("busy", busy))
 			continue
 		}
 		a.busy[key] = true
 		a.mu.Unlock()
+		log.Debug("thinAutoextender.Observed: growing pool", zap.String("pool", key),
+			zap.Bool("grow_data", data), zap.Bool("grow_meta", meta),
+			zap.Float64("data_percent", p.DataPercent), zap.Float64("meta_percent", p.MetaPercent))
 		go func(p alert.PoolStatusInfo) {
 			defer func() {
 				a.mu.Lock()
@@ -100,16 +116,27 @@ func extendPlan(dataBytes, metaBytes, free uint64, growData, growMeta bool, perc
 			dataAdd = 0
 		}
 	}
+	zap.L().Debug("extendPlan: planned", zap.Uint64("data_bytes", dataBytes), zap.Uint64("meta_bytes", metaBytes),
+		zap.Uint64("free_bytes", free), zap.Bool("grow_data", growData), zap.Bool("grow_meta", growMeta),
+		zap.Int("percent", percent), zap.Uint64("data_add_bytes", dataAdd), zap.Uint64("new_meta_bytes", newMeta))
 	return dataAdd, newMeta
 }
 
 func (a *thinAutoextender) extend(ctx context.Context, p alert.PoolStatusInfo, growData, growMeta bool, key string) {
 	c := a.c
+	log := loggerOfController(c)
 	host := c.ResolveHost(p.Node)
+	log.Debug("thinAutoextender.extend: start", zap.String("pool", key), zap.String("host", host),
+		zap.String("thin_pool", p.ThinPool), zap.Bool("grow_data", growData), zap.Bool("grow_meta", growMeta))
 	dep := c.deployment
+	start := time.Now()
 	data, err1 := dep.LVSizeBytes(ctx, host, p.Name, p.ThinPool)
 	meta, err2 := dep.LVSizeBytes(ctx, host, p.Name, p.ThinPool+"_tmeta")
 	free, err3 := dep.VGFreeBytes(ctx, host, p.Name)
+	log.Debug("thinAutoextender.extend: sized pool", zap.String("pool", key), zap.String("host", host),
+		zap.Uint64("data_bytes", data), zap.Uint64("meta_bytes", meta), zap.Uint64("free_bytes", free),
+		zap.Duration("took", time.Since(start)), zap.NamedError("data_error", err1),
+		zap.NamedError("meta_error", err2), zap.NamedError("free_error", err3))
 	if err1 != nil || err2 != nil || err3 != nil {
 		c.logger.Warn("Thin autoextend: could not size the pool", zap.String("pool", key))
 		return
@@ -120,6 +147,8 @@ func (a *thinAutoextender) extend(ctx context.Context, p alert.PoolStatusInfo, g
 		warned := a.warnedVG[key]
 		a.warnedVG[key] = true
 		a.mu.Unlock()
+		log.Debug("thinAutoextender.extend: no room to grow", zap.String("pool", key),
+			zap.Uint64("free_bytes", free), zap.Bool("already_warned", warned))
 		if !warned {
 			a.publish(p, event.SeverityWarning, fmt.Sprintf("thin pool %s/%s on %s is at %.0f%% data / %.0f%% metadata and its volume group "+
 				"has %s left, too little to grow it: add a disk with `haify pool add --pool %s --nodes %s --devices <disk>`",
@@ -129,7 +158,11 @@ func (a *thinAutoextender) extend(ctx context.Context, p alert.PoolStatusInfo, g
 	}
 	var did []string
 	if newMeta > 0 {
-		if _, err := dep.LVExtendThinPoolMetadata(ctx, []string{host}, p.Name, p.ThinPool, newMeta); err != nil {
+		start := time.Now()
+		_, err := dep.LVExtendThinPoolMetadata(ctx, []string{host}, p.Name, p.ThinPool, newMeta)
+		log.Debug("thinAutoextender.extend: extend metadata", zap.String("pool", key), zap.String("host", host),
+			zap.Uint64("new_meta_bytes", newMeta), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			c.logger.Warn("Thin autoextend: metadata", zap.String("pool", key), zap.Error(err))
 		} else {
 			did = append(did, fmt.Sprintf("metadata %s → %s (was %.0f%% used)", formatBytes(meta), formatBytes(newMeta), p.MetaPercent))
@@ -137,8 +170,13 @@ func (a *thinAutoextender) extend(ctx context.Context, p alert.PoolStatusInfo, g
 	}
 	if dataAdd > 0 {
 		cmd := fmt.Sprintf("sudo lvextend -y -L +%dB %s/%s", dataAdd, p.Name, p.ThinPool)
+		start := time.Now()
 		res, err := dep.Exec(ctx, []string{host}, cmd, deployment.WithExecTimeout(2*time.Minute))
-		if err == nil && res.AllSuccess() {
+		ok := err == nil && res.AllSuccess()
+		log.Debug("thinAutoextender.extend: lvextend data", zap.String("pool", key), zap.String("host", host),
+			zap.Uint64("data_add_bytes", dataAdd), zap.Bool("success", ok), zap.Duration("took", time.Since(start)),
+			zap.Error(err))
+		if ok {
 			did = append(did, fmt.Sprintf("data %s → %s (was %.0f%% used)", formatBytes(data), formatBytes(data+dataAdd), p.DataPercent))
 		} else {
 			out := ""
@@ -157,9 +195,13 @@ func (a *thinAutoextender) extend(ctx context.Context, p alert.PoolStatusInfo, g
 		}
 	}
 	if len(did) == 0 {
+		log.Debug("thinAutoextender.extend: nothing grown", zap.String("pool", key))
 		return
 	}
-	left, _ := dep.VGFreeBytes(ctx, host, p.Name)
+	start = time.Now()
+	left, lerr := dep.VGFreeBytes(ctx, host, p.Name)
+	log.Debug("thinAutoextender.extend: free space after growing", zap.String("pool", key), zap.String("host", host),
+		zap.Uint64("free_bytes", left), zap.Duration("took", time.Since(start)), zap.Error(lerr))
 	a.publish(p, event.SeverityInfo, fmt.Sprintf("grew thin pool %s/%s on %s before it filled: %s; %s of its volume group left",
 		p.Name, p.ThinPool, p.Node, strings.Join(did, ", "), formatBytes(left)))
 }
@@ -167,7 +209,11 @@ func (a *thinAutoextender) extend(ctx context.Context, p alert.PoolStatusInfo, g
 func (a *thinAutoextender) publish(p alert.PoolStatusInfo, sev event.Severity, msg string) {
 	a.c.logger.Info(msg)
 	if a.c.events != nil {
+		loggerOfController(a.c).Debug("thinAutoextender.publish: publishing event", zap.String("node", p.Node),
+			zap.String("pool", p.Name), zap.String("severity", string(sev)))
 		a.c.events.Publish(event.Event{Type: event.TypePoolExtended, Severity: sev, Status: event.StatusInfo,
 			Node: p.Node, Message: msg, Details: map[string]string{"pool": p.Name, "thin_pool": p.ThinPool}})
+	} else {
+		loggerOfController(a.c).Debug("thinAutoextender.publish: no event bus", zap.String("pool", p.Name))
 	}
 }

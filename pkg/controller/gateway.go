@@ -29,8 +29,10 @@ import (
 func loopbackTarget(cfg *config.Config) string {
 	port := cfg.Server.Port
 	if port == 0 {
+		zap.L().Debug("loopbackTarget: no gRPC port configured, using the default", zap.Int("port", defaultGRPCPort))
 		port = defaultGRPCPort
 	}
+	zap.L().Debug("loopbackTarget: dialling loopback", zap.Int("port", port))
 	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
@@ -52,6 +54,7 @@ func loopbackDialOptions(setup *tlsSetup) []grpc.DialOption {
 	if setup != nil {
 		creds = setup.loopbackCreds
 	}
+	zap.L().Debug("loopbackDialOptions: building dial options", zap.Bool("tls", setup != nil))
 	return []grpc.DialOption{
 		grpc.WithTransportCredentials(creds),
 		grpc.WithNoProxy(),
@@ -80,6 +83,7 @@ type GatewayServer struct {
 
 // NewGatewayServer creates a new gRPC-Gateway HTTP server
 func NewGatewayServer(grpcServer *grpc.Server, grpcAddr string, port int, logger *zap.Logger) *GatewayServer {
+	logger.Debug("NewGatewayServer: start", zap.String("grpc_addr", grpcAddr), zap.Int("port", port))
 	mux := runtime.NewServeMux(
 		runtime.WithIncomingHeaderMatcher(func(key string) (string, bool) {
 			// Allow all headers to pass through
@@ -93,10 +97,12 @@ func NewGatewayServer(grpcServer *grpc.Server, grpcAddr string, port int, logger
 
 	// Register all services from the grpc server
 	// Note: The gateway will connect to the gRPC server via the local address
+	start := time.Now()
 	if err := haifypb.RegisterHaifyControllerHandlerFromEndpoint(context.Background(), mux, grpcAddr, opts); err != nil {
 		logger.Error("Failed to register gateway handler", zap.Error(err))
 		return nil
 	}
+	logger.Debug("NewGatewayServer: handler registered", zap.String("grpc_addr", grpcAddr), zap.Duration("took", time.Since(start)))
 
 	return &GatewayServer{
 		grpcServer: grpcServer,
@@ -114,6 +120,7 @@ func (g *GatewayServer) Start() error {
 
 // Handler returns the HTTP handler for the gateway
 func (g *GatewayServer) Handler() http.Handler {
+	g.logger.Debug("GatewayServer.Handler: building the REST mux", zap.String("grpc_addr", g.grpcAddr))
 	mux := runtime.NewServeMux(
 		runtime.WithIncomingHeaderMatcher(func(key string) (string, bool) {
 			return key, true
@@ -124,21 +131,27 @@ func (g *GatewayServer) Handler() http.Handler {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
 
+	start := time.Now()
 	if err := haifypb.RegisterHaifyControllerHandlerFromEndpoint(context.Background(), mux, g.grpcAddr, opts); err != nil {
 		g.logger.Error("Failed to register gateway handler", zap.Error(err))
 		return nil
 	}
+	g.logger.Debug("GatewayServer.Handler: handler registered", zap.Duration("took", time.Since(start)))
 
 	return mux
 }
 
 // RegisterGatewayHandler registers the gRPC-Gateway handler with the given HTTP serve mux
 func RegisterGatewayHandler(ctx context.Context, mux *runtime.ServeMux, grpcAddr string, logger *zap.Logger) error {
+	logger.Debug("RegisterGatewayHandler: start", zap.String("grpc_addr", grpcAddr))
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	}
 
+	start := time.Now()
 	if err := haifypb.RegisterHaifyControllerHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
+		logger.Debug("RegisterGatewayHandler: registration failed", zap.String("grpc_addr", grpcAddr),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to register gateway handler: %w", err)
 	}
 
