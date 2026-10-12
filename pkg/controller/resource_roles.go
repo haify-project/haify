@@ -293,6 +293,14 @@ func (rm *ResourceManager) PromoteForNode(ctx context.Context, resource, node st
 		rm.controller.logger.Warn("Normal promote failed; evaluating quorum before any force-promote",
 			zap.String("resource", resource), zap.String("node", node), zap.Error(err))
 
+		// A connected peer that is Primary is not a failed one: the volume is
+		// simply in use there. Saying so beats the failover verdicts below,
+		// which read a diskless client's copy as one missing writes.
+		if peer := rm.connectedPrimaryPeer(ctx, resource, node); peer != "" {
+			return fmt.Errorf("%s is in use on %s, which has it Primary; release it there first (promote error: %v)",
+				resource, peer, err)
+		}
+
 		// (b) The promote failed — most likely a hard failover where the old
 		// Primary was never demoted. Decide whether forcing is safe by checking
 		// whether THIS node currently holds DRBD quorum.
@@ -362,6 +370,34 @@ func (rm *ResourceManager) nodeHasQuorum(ctx context.Context, resource, node str
 		return localNodeHasQuorum(r.Output)
 	}
 	return false, fmt.Errorf("no drbd status result returned for %s", node)
+}
+
+// connectedPrimaryPeer names a peer that node is connected to and sees as
+// Primary for resource, or returns "" (also when the status cannot be read,
+// leaving the verdict to the checks that follow).
+func (rm *ResourceManager) connectedPrimaryPeer(ctx context.Context, resource, node string) string {
+	if rm.deployment == nil {
+		return ""
+	}
+	res, err := rm.deployment.DRBDStatusJSON(ctx, []string{rm.controller.ResolveHost(node)}, resource)
+	if err != nil {
+		return ""
+	}
+	for _, r := range res.Hosts {
+		if !r.Success {
+			return ""
+		}
+		var resources []drbdsetupStatus
+		if json.Unmarshal([]byte(strings.TrimSpace(r.Output)), &resources) != nil || len(resources) == 0 {
+			return ""
+		}
+		for _, c := range resources[0].Connections {
+			if c.ConnectionState == "Connected" && c.PeerRole == "Primary" {
+				return c.Name
+			}
+		}
+	}
+	return ""
 }
 
 // nodeStaleDisk returns the disk state of node's copy of resource when it is

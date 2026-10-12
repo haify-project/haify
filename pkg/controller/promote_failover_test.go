@@ -181,3 +181,22 @@ func TestPromoteForNode_OutdatedCopyRefusesEvenWithQuorum(t *testing.T) {
 		assert.Equal(t, []bool{false}, forces, "%s: no forced promote", state)
 	}
 }
+
+func TestPromoteForNode_PeerInUseNamesIt(t *testing.T) {
+	var forces []bool
+	dep := &fakeDeploymentClient{
+		drbdPrimaryFunc: func(_ context.Context, host, resource string, force bool) (*deployment.HostResult, error) {
+			forces = append(forces, force)
+			return &deployment.HostResult{Host: host, Success: false, Output: "State change failed: (-1) Multiple primaries not allowed by config"}, nil
+		},
+		drbdStatusJSONFunc: func(_ context.Context, hosts []string, resource string) (*deployment.ExecResult, error) {
+			return successExecResult(hosts, fmt.Sprintf(
+				`[{"name":%q,"role":"Secondary","devices":[{"volume":0,"disk-state":"Diskless","quorum":true}],"connections":[{"name":"node2","connection-state":"Connected","peer-role":"Primary"},{"name":"node3","connection-state":"Connected","peer-role":"Secondary"}]}]`, resource)), nil
+		},
+	}
+	err := newBasicTestController(dep).resources.PromoteForNode(context.Background(), "data", "node1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "data is in use on node2")
+	assert.NotContains(t, err.Error(), "writes it lacks")
+	assert.Equal(t, []bool{false}, forces, "no forced promote past a connected Primary")
+}
