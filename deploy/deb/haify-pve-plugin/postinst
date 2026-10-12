@@ -14,6 +14,8 @@ SHARE=/usr/share/haify-pve-plugin
 
 restart_pve() {
     if [ -d /run/systemd/system ]; then
+        # Picks up the drop-in that orders DRBD's disconnect after the guests.
+        systemctl daemon-reload || true
         systemctl try-restart pvedaemon pveproxy pvestatd pvescheduler pve-ha-crm pve-ha-lrm || true
     fi
 }

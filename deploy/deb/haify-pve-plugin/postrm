@@ -11,6 +11,7 @@ set -e
 case "$1" in
 remove)
     if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
         systemctl try-restart pvedaemon pveproxy pvestatd pvescheduler pve-ha-crm pve-ha-lrm || true
     fi
     ;;

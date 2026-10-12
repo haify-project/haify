@@ -162,6 +162,10 @@ build_pve_plugin() {
     install -D -m 0644 "$PVE_SRC/gui/haify-storage.js" "$root/usr/share/pve-manager/js/haify-storage.js"
     install -D -m 0644 "$PVE_SRC/gui/90haify-pve-gui" "$root/etc/apt/apt.conf.d/90haify-pve-gui"
     echo /etc/apt/apt.conf.d/90haify-pve-gui > "$root/DEBIAN/conffiles"
+    # DRBD disconnects only after the guests stop, so a reboot cannot split a
+    # running guest's disk (install.sh explains).
+    install -D -m 0644 "$PVE_SRC/drbd-shutdown-order.conf" \
+        "$root/usr/lib/systemd/system/drbd-graceful-disconnect.service.d/haify-pve.conf"
     copyright "$doc/copyright"
 
     finish_package haify-pve-plugin "$root" "$OUT_DIR/haify-pve-plugin_${DEB_VERSION}_all.deb" <<EOF
@@ -179,8 +183,9 @@ Description: Haify storage plugin for Proxmox VE
  node and live migration that copies only RAM.
  .
  Installs what deploy/proxmox/install.sh installs, adds the LVM filter that
- keeps the host's LVM off DRBD devices (HAIFY_SKIP_LVM_FILTER=1 skips it) and
- restarts pvedaemon and pveproxy, which does not disturb running guests.
+ keeps the host's LVM off DRBD devices (HAIFY_SKIP_LVM_FILTER=1 skips it),
+ orders DRBD's shutdown disconnect after the guests stop, and restarts the PVE
+ daemons that load storage plugins, which does not disturb running guests.
  The node also needs the DRBD 9 kernel module.
 EOF
 }

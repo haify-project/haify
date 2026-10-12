@@ -46,15 +46,11 @@ PVE_DAEMONS="pvedaemon pveproxy pvestatd pvescheduler pve-ha-crm pve-ha-lrm"
 # A VM still running on the node then keeps writing to a resource whose peers
 # were just told they are Outdated, and when HA starts it elsewhere the two
 # copies split. Ordering the disconnect after the guests stop closes that.
+# The package installs the same drop-in under /usr/lib/systemd/system.
 DRBD_ORDER=/etc/systemd/system/drbd-graceful-disconnect.service.d/haify-pve.conf
 
 order_drbd_shutdown() {
-    mkdir -p "$(dirname "$DRBD_ORDER")"
-    cat >"$DRBD_ORDER" <<'UNIT'
-# Installed by the Haify PVE plugin: disconnect DRBD only after the guests stop.
-[Unit]
-Before=pve-guests.service pve-ha-lrm.service
-UNIT
+    install -D -m 0644 "$SRC_DIR/drbd-shutdown-order.conf" "$DRBD_ORDER"
     systemctl daemon-reload
 }
 
