@@ -20,6 +20,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Type identifies what happened. Values are dotted "<subject>.<condition>" so a
@@ -313,8 +315,10 @@ type Bus struct {
 // DefaultHistory.
 func NewBus(history int) *Bus {
 	if history <= 0 {
+		zap.L().Debug("NewBus: history not set, using default", zap.Int("requested", history), zap.Int("history", DefaultHistory))
 		history = DefaultHistory
 	}
+	zap.L().Debug("NewBus: creating event bus", zap.Int("history", history))
 	return &Bus{
 		hist: make([]Event, history),
 		subs: make(map[uint64]*subscription),
@@ -352,20 +356,41 @@ func (b *Bus) Publish(e Event) Event {
 		b.histWrap = true
 	}
 
-	for _, s := range b.subs {
+	log := zap.L()
+	log.Debug("Bus.Publish: publishing event",
+		zap.Uint64("id", e.ID), zap.String("type", string(e.Type)),
+		zap.String("severity", string(e.Severity)), zap.String("status", string(e.Status)),
+		zap.String("resource", e.Resource), zap.String("node", e.Node),
+		zap.Int("details", len(e.Details)), zap.Int("subscribers", len(b.subs)))
+
+	delivered, skipped, lost := 0, 0, 0
+	for id, s := range b.subs {
 		if !s.filter.Match(e) {
+			skipped++
 			continue
 		}
 		select {
 		case s.ch <- e:
+			delivered++
 		default:
 			s.dropped++
 			b.dropped++
+			lost++
+			log.Debug("Bus.Publish: subscriber buffer full, event dropped for it",
+				zap.Uint64("id", e.ID), zap.Uint64("subscriber", id),
+				zap.Uint64("subscriber_dropped", s.dropped), zap.Uint64("bus_dropped", b.dropped))
 		}
 	}
 	if b.persist != nil {
+		start := time.Now()
 		b.persist(e)
+		log.Debug("Bus.Publish: event persisted", zap.Uint64("id", e.ID), zap.Duration("took", time.Since(start)))
+	} else {
+		log.Debug("Bus.Publish: no persister, event kept in memory only", zap.Uint64("id", e.ID))
 	}
+	log.Debug("Bus.Publish: event delivered",
+		zap.Uint64("id", e.ID), zap.Int("delivered", delivered),
+		zap.Int("filtered_out", skipped), zap.Int("dropped", lost))
 	return e
 }
 
@@ -374,6 +399,7 @@ func (b *Bus) Publish(e Event) Event {
 func (b *Bus) SetPersister(fn func(Event)) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	zap.L().Debug("Bus.SetPersister: setting event persister", zap.Bool("has_persister", fn != nil))
 	b.persist = fn
 }
 
@@ -384,10 +410,15 @@ func (b *Bus) SetPersister(fn func(Event)) {
 func (b *Bus) Restore(events []Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	log := zap.L()
+	log.Debug("Bus.Restore: restoring event history", zap.Int("count", len(events)), zap.Uint64("next_id", b.nextID))
+	restored := 0
 	for _, e := range events {
 		if e.ID == 0 {
+			log.Debug("Bus.Restore: skipping event without an ID", zap.String("type", string(e.Type)))
 			continue
 		}
+		restored++
 		b.hist[b.histNext] = e
 		b.histNext++
 		if b.histNext == len(b.hist) {
@@ -398,6 +429,7 @@ func (b *Bus) Restore(events []Event) {
 			b.nextID = e.ID
 		}
 	}
+	log.Debug("Bus.Restore: history restored", zap.Int("restored", restored), zap.Uint64("next_id", b.nextID))
 }
 
 // Subscribe returns a channel of events matching filter and a cancel function.
@@ -411,6 +443,10 @@ func (b *Bus) Subscribe(filter Filter) (<-chan Event, func()) {
 	id := b.nextSub
 	s := &subscription{ch: make(chan Event, subscriberBuffer), filter: filter}
 	b.subs[id] = s
+	zap.L().Debug("Bus.Subscribe: subscriber added",
+		zap.Uint64("subscriber", id), zap.String("min_severity", string(filter.MinSeverity)),
+		zap.Int("types", len(filter.Types)), zap.String("resource", filter.Resource),
+		zap.Int("subscribers", len(b.subs)))
 
 	var once sync.Once
 	cancel := func() {
@@ -420,6 +456,9 @@ func (b *Bus) Subscribe(filter Filter) (<-chan Event, func()) {
 			if _, ok := b.subs[id]; ok {
 				delete(b.subs, id)
 				close(s.ch)
+				zap.L().Debug("Bus.Subscribe: subscriber cancelled",
+					zap.Uint64("subscriber", id), zap.Uint64("dropped", s.dropped),
+					zap.Int("subscribers", len(b.subs)))
 			}
 		})
 	}
@@ -450,8 +489,13 @@ func (b *Bus) Recent(filter Filter, sinceID uint64, limit int) []Event {
 	// Trim from the front: when more events match than the caller asked for,
 	// the newest are the useful ones.
 	if limit > 0 && len(out) > limit {
+		zap.L().Debug("Bus.Recent: trimming to newest events", zap.Int("matched", len(out)), zap.Int("limit", limit))
 		out = out[len(out)-limit:]
 	}
+	zap.L().Debug("Bus.Recent: history queried",
+		zap.Uint64("since_id", sinceID), zap.Int("limit", limit),
+		zap.String("min_severity", string(filter.MinSeverity)), zap.String("resource", filter.Resource),
+		zap.Int("count", len(out)))
 	return out
 }
 

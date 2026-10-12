@@ -14,6 +14,7 @@ import (
 
 func (m *Monitor) checkResources(ctx context.Context, sc *pollScope, obs *Observation) {
 	if m.resources == nil {
+		m.log.Debug("Monitor.checkResources: no resource lister, resource checks skipped")
 		return
 	}
 	obs.Resources.Enabled = true
@@ -21,6 +22,8 @@ func (m *Monitor) checkResources(ctx context.Context, sc *pollScope, obs *Observ
 	start := time.Now()
 	resources, err := m.resources.GetResourceStatusList(ctx)
 	obs.Resources.Duration = time.Since(start)
+	m.log.Debug("Monitor.checkResources: listed resources",
+		zap.Int("count", len(resources)), zap.Duration("took", obs.Resources.Duration), zap.Error(err))
 	if err != nil {
 		obs.Resources.Err = err
 		m.log.Warn("alert monitor: list resources failed", zap.Error(err))
@@ -32,6 +35,9 @@ func (m *Monitor) checkResources(ctx context.Context, sc *pollScope, obs *Observ
 
 	for _, res := range resources {
 		sc.live[res.Name] = true
+		m.log.Debug("Monitor.checkResources: checking resource",
+			zap.String("resource", res.Name), zap.Int("replicas", len(res.NodeStates)),
+			zap.Bool("wan_enabled", res.WANEnabled), zap.Bool("idle_without_primary", res.IdleWithoutPrimary))
 		m.checkReplicas(res, sc)
 		m.checkPrimary(res, sc)
 		m.checkWAN(res, sc)
@@ -41,6 +47,7 @@ func (m *Monitor) checkResources(ctx context.Context, sc *pollScope, obs *Observ
 	m.mu.Lock()
 	for name := range m.primaries {
 		if !sc.live[name] {
+			m.log.Debug("Monitor.checkResources: resource gone, forgetting its Primary", zap.String("resource", name))
 			delete(m.primaries, name)
 			delete(m.lastPrimary, name)
 		}
@@ -55,7 +62,14 @@ func (m *Monitor) checkReplicas(res ResourceStatusInfo, sc *pollScope) {
 	for node, state := range res.NodeStates {
 		degraded, reason := isDegraded(state)
 		severity := event.SeverityWarning
+		m.log.Debug("Monitor.checkReplicas: checking replica",
+			zap.String("resource", res.Name), zap.String("node", node),
+			zap.String("disk_state", state.DiskState), zap.String("repl_state", state.ReplicationState),
+			zap.String("connection", state.Connection), zap.String("role", state.Role),
+			zap.Bool("degraded", degraded), zap.String("reason", reason), zap.Bool("stranded", stranded))
 		if stranded && state.DiskState == "Outdated" {
+			m.log.Debug("Monitor.checkReplicas: every replica Outdated, raising as critical",
+				zap.String("resource", res.Name), zap.String("node", node))
 			// Outdated is only "older than its peers" while a peer holds
 			// current data. When every replica is Outdated none can be
 			// promoted, so nothing serves the resource: say so, and say what
@@ -102,6 +116,9 @@ func strandedOutdated(res ResourceStatusInfo) bool {
 func (m *Monitor) checkOutOfSync(res ResourceStatusInfo, sc *pollScope) {
 	for node, state := range res.NodeStates {
 		active := state.connected() && state.ReplicationState == "Established" && state.OutOfSyncKiB > 0
+		m.log.Debug("Monitor.checkOutOfSync: checking replica",
+			zap.String("resource", res.Name), zap.String("node", node),
+			zap.Uint64("out_of_sync_kib", state.OutOfSyncKiB), zap.Bool("out_of_sync", active))
 		m.level(event.Event{
 			Type:     event.TypeResourceOutOfSync,
 			Severity: event.SeverityWarning,
@@ -162,6 +179,11 @@ func (m *Monitor) checkPrimary(res ResourceStatusInfo, sc *pollScope) {
 	// A false CRITICAL on "the control plane lost its Primary" is worse than a
 	// late true one: it is the alert people stop believing.
 	partialView := !fullyConnected(res)
+	m.log.Debug("Monitor.checkPrimary: Primary observed",
+		zap.String("resource", res.Name), zap.String("primary", cur), zap.String("previous", prev),
+		zap.Bool("known", known), zap.String("last_primary", demoted), zap.Bool("expect_primary", expectPrimary),
+		zap.Bool("partial_view", partialView), zap.Bool("recovering", recovering),
+		zap.Bool("idle_without_primary", res.IdleWithoutPrimary))
 
 	m.level(noPrimary, sc, sourceResources, expectPrimary && cur == "" && !partialView && !res.IdleWithoutPrimary,
 		fmt.Sprintf("resource %s has no Primary: %s was demoted and nothing took over", res.Title(), demoted),
@@ -170,20 +192,27 @@ func (m *Monitor) checkPrimary(res ResourceStatusInfo, sc *pollScope) {
 	// First sighting: record where the Primary is without claiming it just moved
 	// there. See the package comment.
 	if !known || prev == cur {
+		m.log.Debug("Monitor.checkPrimary: no Primary transition to report",
+			zap.String("resource", res.Name), zap.Bool("first_sighting", !known))
 		return
 	}
 
 	switch {
 	case cur == "":
 		// Reported by the level condition above.
+		m.log.Debug("Monitor.checkPrimary: Primary lost, left to the no-Primary condition",
+			zap.String("resource", res.Name), zap.String("previous", prev))
 	case prev == "":
 		// A resource taking a Primary for the first time is worth saying. The
 		// same transition arriving as the end of an outage is not: the
 		// no_primary condition just resolved and named the same node, and two
 		// events for one change is how a feed stops being read.
 		if recovering {
+			m.log.Debug("Monitor.checkPrimary: promotion ends a no-Primary outage, already reported",
+				zap.String("resource", res.Name), zap.String("primary", cur))
 			return
 		}
+		m.log.Debug("Monitor.checkPrimary: resource promoted", zap.String("resource", res.Name), zap.String("primary", cur))
 		m.publish(event.Event{
 			Type:     event.TypeResourcePromoted,
 			Severity: event.SeverityInfo,
@@ -199,6 +228,8 @@ func (m *Monitor) checkPrimary(res ResourceStatusInfo, sc *pollScope) {
 		// a pod rescheduled, an instance started elsewhere. Calling that a
 		// failover, at warning, would put one for every migration in the feed.
 		// A node failure behind a move is reported by its own alerts.
+		m.log.Debug("Monitor.checkPrimary: externally managed resource moved, reported as info",
+			zap.String("resource", res.Name), zap.String("from", prev), zap.String("to", cur))
 		m.publish(event.Event{
 			Type:     event.TypeResourcePromoted,
 			Severity: event.SeverityInfo,
@@ -214,6 +245,8 @@ func (m *Monitor) checkPrimary(res ResourceStatusInfo, sc *pollScope) {
 		// leave it outstanding forever in any receiver that pairs firing with
 		// resolved — the wall of un-clearable alerts that makes people stop
 		// reading them. no_primary is different and does resolve, via promoted.
+		m.log.Debug("Monitor.checkPrimary: Primary moved, reporting failover",
+			zap.String("resource", res.Name), zap.String("from", prev), zap.String("to", cur))
 		m.publish(event.Event{
 			Type:     event.TypeResourceFailover,
 			Severity: event.SeverityWarning,
@@ -231,8 +264,11 @@ func (m *Monitor) checkPrimary(res ResourceStatusInfo, sc *pollScope) {
 // local replica looks healthy.
 func (m *Monitor) checkWAN(res ResourceStatusInfo, sc *pollScope) {
 	if !res.WANEnabled {
+		m.log.Debug("Monitor.checkWAN: no WAN replication, skipped", zap.String("resource", res.Name))
 		return
 	}
+	m.log.Debug("Monitor.checkWAN: checking WAN link",
+		zap.String("resource", res.Name), zap.Bool("wan_healthy", res.WANHealthy), zap.String("message", res.WANMessage))
 	m.level(event.Event{
 		Type:     event.TypeWANDegraded,
 		Severity: event.SeverityCritical,

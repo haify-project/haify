@@ -98,6 +98,7 @@ type Metrics struct {
 // registration, and the metrics were never served from that registry anyway
 // since Handler reads the private one.
 func New(logger *zap.Logger) (*Metrics, error) {
+	logger.Debug("New: registering Prometheus metrics", zap.String("namespace", namespace))
 	registry := prometheus.NewRegistry()
 	auto := promauto.With(registry)
 
@@ -265,13 +266,35 @@ func New(logger *zap.Logger) (*Metrics, error) {
 	m.registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
 	logger.Info("Prometheus metrics initialized")
+	logger.Debug("New: metrics registered",
+		zap.Int("replica_families", len(m.replicaSeries())))
 	return m, nil
 }
 
-// Handler returns the HTTP handler for the /metrics endpoint
+// log returns the instance's logger, or the process-wide one for a Metrics
+// built without one.
+func (m *Metrics) log() *zap.Logger {
+	if m.logger == nil {
+		return zap.L()
+	}
+	return m.logger
+}
+
+// Handler returns the HTTP handler for the /metrics endpoint. Each scrape is
+// traced once at Debug, with who scraped and how long the gather took; the
+// samples themselves are never logged.
 func (m *Metrics) Handler() http.Handler {
-	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{
+	m.log().Debug("Metrics.Handler: building /metrics handler", zap.Bool("open_metrics", true))
+	inner := promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		inner.ServeHTTP(w, r)
+		m.log().Debug("Metrics.Handler: scrape served",
+			zap.String("remote", r.RemoteAddr),
+			zap.String("accept", r.Header.Get("Accept")),
+			zap.Duration("took", time.Since(start)))
 	})
 }
 
@@ -284,6 +307,10 @@ func (m *Metrics) RecordOperation(operation, result string, duration float64) {
 
 	m.operationsTotal.WithLabelValues(operation, result).Inc()
 	m.operationDuration.WithLabelValues(operation).Observe(duration)
+	m.log().Debug("Metrics.RecordOperation: operation recorded",
+		zap.String("operation", operation),
+		zap.String("result", result),
+		zap.Float64("duration_seconds", duration))
 }
 
 // RecordObservation records one attempt to read one cluster data source.
@@ -301,11 +328,17 @@ func (m *Metrics) RecordObservation(source string, ok bool, duration float64) {
 	m.RecordOperation("observe_"+source, result, duration)
 
 	if !ok {
+		m.log().Debug("Metrics.RecordObservation: source failed, keeping last observation time",
+			zap.String("source", source), zap.Float64("duration_seconds", duration))
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.observedAt.WithLabelValues(source).Set(float64(time.Now().Unix()))
+	now := time.Now().Unix()
+	m.observedAt.WithLabelValues(source).Set(float64(now))
+	m.log().Debug("Metrics.RecordObservation: source observed",
+		zap.String("source", source), zap.Int64("observed_at", now),
+		zap.Float64("duration_seconds", duration))
 }
 
 // RecordResourceCount sets how many resources are in one health state. Callers
@@ -316,6 +349,8 @@ func (m *Metrics) RecordResourceCount(state string, count float64) {
 	defer m.mu.Unlock()
 
 	m.resources.WithLabelValues(state).Set(count)
+	m.log().Debug("Metrics.RecordResourceCount: resource count set",
+		zap.String("state", state), zap.Float64("count", count))
 }
 
 // RecordNodeState records the count of nodes in a specific state.
@@ -324,6 +359,8 @@ func (m *Metrics) RecordNodeState(state string, count float64) {
 	defer m.mu.Unlock()
 
 	m.nodes.WithLabelValues(state).Set(count)
+	m.log().Debug("Metrics.RecordNodeState: node count set",
+		zap.String("state", state), zap.Float64("count", count))
 }
 
 // PoolCapacity is one storage pool's capacity, in bytes.
@@ -351,6 +388,7 @@ func (m *Metrics) SetPoolCapacities(pools []PoolCapacity) {
 	defer m.mu.Unlock()
 
 	m.storageCapacity.begin()
+	unknownFree := 0
 	for _, p := range pools {
 		labels := func(state string) prometheus.Labels {
 			return prometheus.Labels{"pool": p.Pool, "node": p.Node, "state": state}
@@ -361,9 +399,15 @@ func (m *Metrics) SetPoolCapacities(pools []PoolCapacity) {
 		// minus used would render an unknown capacity as a fully free one.
 		if p.Total >= p.Used {
 			m.storageCapacity.set(labels("free"), float64(p.Total-p.Used))
+		} else {
+			unknownFree++
 		}
 	}
 	m.storageCapacity.commit()
+	m.log().Debug("Metrics.SetPoolCapacities: pool capacity view replaced",
+		zap.Int("count", len(pools)),
+		zap.Int("free_unknown", unknownFree),
+		zap.Int("series", len(m.storageCapacity.live)))
 }
 
 // GatewayCount is the number of gateways of one type in one state.
@@ -386,6 +430,9 @@ func (m *Metrics) SetGatewayCounts(counts []GatewayCount) {
 		m.gateways.set(prometheus.Labels{"type": c.Type, "state": c.State}, c.Count)
 	}
 	m.gateways.commit()
+	m.log().Debug("Metrics.SetGatewayCounts: gateway view replaced",
+		zap.Int("count", len(counts)),
+		zap.Int("series", len(m.gateways.live)))
 }
 
 // RecordGRPCRequest records a gRPC request with method, status, and duration
@@ -395,10 +442,15 @@ func (m *Metrics) RecordGRPCRequest(method, status string, duration float64) {
 
 	m.grpcRequestsTotal.WithLabelValues(method, status).Inc()
 	m.grpcRequestDuration.WithLabelValues(method).Observe(duration)
+	m.log().Debug("Metrics.RecordGRPCRequest: request recorded",
+		zap.String("method", method),
+		zap.String("status", status),
+		zap.Float64("duration_seconds", duration))
 }
 
 // ResetMetrics resets all metrics to zero (useful for testing)
 func (m *Metrics) ResetMetrics() {
+	m.log().Debug("Metrics.ResetMetrics: dropping every series")
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

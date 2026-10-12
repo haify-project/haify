@@ -5,7 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
@@ -54,56 +56,82 @@ func NewMounter() Mounter {
 }
 
 func (s *safeMounter) FormatAndMount(source, target, fsType string, options []string) error {
-	return s.m.FormatAndMount(source, target, fsType, options)
+	start := time.Now()
+	err := s.m.FormatAndMount(source, target, fsType, options)
+	zap.L().Debug("safeMounter.FormatAndMount: done", zap.String("device", source), zap.String("target", target),
+		zap.String("fs_type", fsType), zap.Strings("options", options), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 func (s *safeMounter) Mount(source, target, fsType string, options []string) error {
-	return s.m.Mount(source, target, fsType, options)
+	start := time.Now()
+	err := s.m.Mount(source, target, fsType, options)
+	zap.L().Debug("safeMounter.Mount: done", zap.String("source", source), zap.String("target", target),
+		zap.String("fs_type", fsType), zap.Strings("options", options), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 func (s *safeMounter) Unmount(target string) error {
 	mounted, err := s.IsMountPoint(target)
 	if err != nil || !mounted {
+		zap.L().Debug("safeMounter.Unmount: not mounted, nothing to do", zap.String("target", target),
+			zap.Bool("mounted", mounted), zap.Error(err))
 		return nil
 	}
-	return s.m.Unmount(target)
+	start := time.Now()
+	err = s.m.Unmount(target)
+	zap.L().Debug("safeMounter.Unmount: done", zap.String("target", target), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 func (s *safeMounter) IsMountPoint(target string) (bool, error) {
 	notMnt, err := s.m.IsLikelyNotMountPoint(target)
 	if os.IsNotExist(err) {
+		zap.L().Debug("safeMounter.IsMountPoint: path does not exist", zap.String("target", target))
 		return false, nil
 	}
 	if err != nil {
+		zap.L().Debug("safeMounter.IsMountPoint: check failed", zap.String("target", target), zap.Error(err))
 		return false, err
 	}
+	zap.L().Debug("safeMounter.IsMountPoint: checked", zap.String("target", target), zap.Bool("mounted", !notMnt))
 	return !notMnt, nil
 }
 
 func (s *safeMounter) EnsureDir(target string) error {
-	return os.MkdirAll(target, 0o750)
+	err := os.MkdirAll(target, 0o750)
+	zap.L().Debug("safeMounter.EnsureDir: done", zap.String("target", target), zap.Error(err))
+	return err
 }
 
 func (s *safeMounter) ResizeFS(devicePath, mountPath string) error {
+	start := time.Now()
 	r := mount.NewResizeFs(utilexec.New())
-	_, err := r.Resize(devicePath, mountPath)
+	resized, err := r.Resize(devicePath, mountPath)
+	zap.L().Debug("safeMounter.ResizeFS: done", zap.String("device", devicePath), zap.String("path", mountPath),
+		zap.Bool("resized", resized), zap.Duration("took", time.Since(start)), zap.Error(err))
 	return err
 }
 
 func (s *safeMounter) EnsureFile(target string) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		zap.L().Debug("safeMounter.EnsureFile: mkdir parent failed", zap.String("target", target), zap.Error(err))
 		return err
 	}
 	f, err := os.OpenFile(target, os.O_CREATE|os.O_RDONLY, 0o640)
 	if err != nil {
+		zap.L().Debug("safeMounter.EnsureFile: create failed", zap.String("target", target), zap.Error(err))
 		return err
 	}
-	return f.Close()
+	err = f.Close()
+	zap.L().Debug("safeMounter.EnsureFile: done", zap.String("target", target), zap.Error(err))
+	return err
 }
 
 func (s *safeMounter) FSStats(path string) (FSStats, error) {
 	var st unix.Statfs_t
 	if err := unix.Statfs(path, &st); err != nil {
+		zap.L().Debug("safeMounter.FSStats: statfs failed", zap.String("path", path), zap.Error(err))
 		return FSStats{}, err
 	}
 	bs := int64(st.Bsize)
@@ -123,6 +151,7 @@ func (s *safeMounter) FSStats(path string) (FSStats, error) {
 func (s *safeMounter) BlockSize(path string) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
+		zap.L().Debug("safeMounter.BlockSize: open failed", zap.String("path", path), zap.Error(err))
 		return 0, err
 	}
 	// Opened read-only to seek: nothing was written, so a failed close cannot
@@ -132,7 +161,9 @@ func (s *safeMounter) BlockSize(path string) (int64, error) {
 	// one, so it cannot be used here.
 	n, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
+		zap.L().Debug("safeMounter.BlockSize: seek failed", zap.String("path", path), zap.Error(err))
 		return 0, fmt.Errorf("seek %s: %w", path, err)
 	}
+	zap.L().Debug("safeMounter.BlockSize: measured", zap.String("path", path), zap.Int64("size_bytes", n))
 	return n, nil
 }

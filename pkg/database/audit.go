@@ -9,6 +9,7 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 // The audit trail lives in the database rather than only in the process log
@@ -82,34 +83,45 @@ func (db *DB) auditRetention() int {
 // already take orders of magnitude longer, and a trail that can lose its most
 // recent entries in a crash is worth much less than one that cannot.
 func (db *DB) AppendAuditEvent(ctx context.Context, ev *AuditEvent) error {
+	db.log().Debug("DB.AppendAuditEvent: appending audit event",
+		zap.String("method", ev.Method), zap.String("user", ev.User), zap.String("target", ev.Target),
+		zap.String("result", ev.Result), zap.Bool("granted", ev.Granted))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	data, err := json.Marshal(ev)
 	if err != nil {
+		db.log().Debug("DB.AppendAuditEvent: marshal failed", zap.String("method", ev.Method), zap.Error(err))
 		return fmt.Errorf("failed to marshal audit event: %w", err)
 	}
 
 	retention := db.auditRetention()
-	return db.db.Update(func(tx *bolt.Tx) error {
+	var seq uint64
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(auditBucket))
 		if err != nil {
 			return err
 		}
-		seq, err := b.NextSequence()
+		seq, err = b.NextSequence()
 		if err != nil {
 			return err
 		}
 		if err := b.Put(seqKey(seq), data); err != nil {
 			return err
 		}
-		if auditLen(b, seq) > retention+pruneSlack {
+		if n := auditLen(b, seq); n > retention+pruneSlack {
+			db.log().Debug("DB.AppendAuditEvent: trail past cap, pruning",
+				zap.Int("count", n), zap.Int("retention", retention))
 			dropped, err := pruneAudit(b, retention, db.auditCutoff())
 			db.auditTruncated.Add(uint64(dropped))
 			return err
 		}
 		return nil
 	})
+	db.log().Debug("DB.AppendAuditEvent: put", zap.String("bucket", auditBucket), zap.Uint64("seq", seq),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // auditLen is how many entries the trail holds when last is its newest key.
@@ -133,13 +145,16 @@ func auditLen(b *bolt.Bucket, last uint64) int {
 // deleting during the walk removes a scattered subset — it leaves the trail
 // full of holes and discards newer entries while keeping older ones.
 func pruneAudit(b *bolt.Bucket, retention int, cutoff time.Time) (int, error) {
+	zap.L().Debug("pruneAudit: pruning", zap.Int("retention", retention), zap.Time("cutoff", cutoff))
 	c := b.Cursor()
 	last, _ := c.Last()
 	if last == nil {
+		zap.L().Debug("pruneAudit: bucket empty, nothing to prune")
 		return 0, nil
 	}
 	excess := auditLen(b, binary.BigEndian.Uint64(last)) - retention
 	if excess <= 0 {
+		zap.L().Debug("pruneAudit: within retention, nothing to prune", zap.Int("excess", excess))
 		return 0, nil
 	}
 
@@ -157,9 +172,11 @@ func pruneAudit(b *bolt.Bucket, retention int, cutoff time.Time) (int, error) {
 	}
 	for _, k := range doomed {
 		if err := b.Delete(k); err != nil {
+			zap.L().Debug("pruneAudit: delete failed", zap.Uint64("seq", binary.BigEndian.Uint64(k)), zap.Error(err))
 			return young, err
 		}
 	}
+	zap.L().Debug("pruneAudit: pruned", zap.Int("count", len(doomed)), zap.Int("younger_than_cutoff", young))
 	return young, nil
 }
 
@@ -189,20 +206,26 @@ func (f *AuditFilter) matches(ev *AuditEvent) bool {
 // than to the size of the trail — except when a filter matches nothing, which
 // is bounded by the retention cap.
 func (db *DB) ListAuditEvents(ctx context.Context, filter AuditFilter) ([]*AuditEvent, int, error) {
+	db.log().Debug("DB.ListAuditEvents: listing audit events",
+		zap.Int("limit", filter.Limit), zap.String("method", filter.Method), zap.String("target", filter.Target),
+		zap.String("user", filter.User), zap.Bool("failures_only", filter.FailuresOnly), zap.Time("since", filter.Since))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	limit := filter.Limit
 	if limit <= 0 {
+		db.log().Debug("DB.ListAuditEvents: no limit given, using default", zap.Int("limit", DefaultAuditLimit))
 		limit = DefaultAuditLimit
 	}
 
 	var events []*AuditEvent
-	var total int
+	var total, scanned, unreadable int
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(auditBucket))
 		if b == nil {
 			// No call has been audited yet; an empty trail is not an error.
+			db.log().Debug("DB.ListAuditEvents: audit bucket absent", zap.String("bucket", auditBucket))
 			return nil
 		}
 		if k, _ := b.Cursor().Last(); k != nil {
@@ -211,9 +234,11 @@ func (db *DB) ListAuditEvents(ctx context.Context, filter AuditFilter) ([]*Audit
 
 		c := b.Cursor()
 		for k, v := c.Last(); k != nil && len(events) < limit; k, v = c.Prev() {
+			scanned++
 			var ev AuditEvent
 			if err := json.Unmarshal(v, &ev); err != nil {
 				// One unreadable record must not hide the rest of the trail.
+				unreadable++
 				continue
 			}
 			if filter.matches(&ev) {
@@ -222,6 +247,9 @@ func (db *DB) ListAuditEvents(ctx context.Context, filter AuditFilter) ([]*Audit
 		}
 		return nil
 	})
+	db.log().Debug("DB.ListAuditEvents: scan", zap.String("bucket", auditBucket), zap.Int("total", total),
+		zap.Int("scanned", scanned), zap.Int("unreadable", unreadable), zap.Int("count", len(events)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	return events, total, err
 }

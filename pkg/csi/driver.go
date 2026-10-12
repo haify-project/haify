@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	haifypb "github.com/haify-project/haify/api/proto/v1"
@@ -87,64 +88,90 @@ func NewDriver(endpoint string, log *zap.Logger, id csi.IdentityServer, ctrl csi
 	if log == nil {
 		log = zap.NewNop()
 	}
+	log.Debug("NewDriver: building CSI driver", zap.String("endpoint", endpoint),
+		zap.Bool("identity", id != nil), zap.Bool("controller", ctrl != nil), zap.Bool("node", node != nil))
 	return &Driver{endpoint: endpoint, log: log, identity: id, controller: ctrl, node: node}
 }
 
 // Run listens on the unix socket and serves until the context is cancelled.
 func (d *Driver) Run(ctx context.Context) error {
+	d.log.Debug("Driver.Run: starting", zap.String("endpoint", d.endpoint))
 	proto, addr, err := parseEndpoint(d.endpoint)
 	if err != nil {
+		d.log.Debug("Driver.Run: endpoint rejected", zap.String("endpoint", d.endpoint), zap.Error(err))
 		return err
 	}
 	if proto == "unix" {
-		_ = os.Remove(addr) // clear a stale socket
+		rmErr := os.Remove(addr) // clear a stale socket
+		d.log.Debug("Driver.Run: cleared stale unix socket", zap.String("path", addr),
+			zap.Bool("existed", rmErr == nil))
 	}
+	start := time.Now()
 	lis, err := net.Listen(proto, addr)
 	if err != nil {
+		d.log.Debug("Driver.Run: listen failed", zap.String("proto", proto), zap.String("addr", addr),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("listen %s: %w", d.endpoint, err)
 	}
+	d.log.Debug("Driver.Run: listening", zap.String("proto", proto), zap.String("addr", addr),
+		zap.Duration("took", time.Since(start)))
 	d.srv = grpc.NewServer()
 	if d.identity != nil {
+		d.log.Debug("Driver.Run: registering identity service")
 		csi.RegisterIdentityServer(d.srv, d.identity)
 	}
 	if d.controller != nil {
+		d.log.Debug("Driver.Run: registering controller service")
 		csi.RegisterControllerServer(d.srv, d.controller)
 	}
 	if d.node != nil {
+		d.log.Debug("Driver.Run: registering node service")
 		csi.RegisterNodeServer(d.srv, d.node)
 	}
 	stopped := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
+			d.log.Debug("Driver.Run: context cancelled, stopping gracefully", zap.Error(ctx.Err()))
 			d.srv.GracefulStop()
 		case <-stopped:
+			d.log.Debug("Driver.Run: server stopped on its own")
 		}
 	}()
 	d.log.Info("CSI driver serving", zap.String("endpoint", d.endpoint))
+	served := time.Now()
 	err = d.srv.Serve(lis)
 	close(stopped)
+	d.log.Debug("Driver.Run: serve returned", zap.Duration("served_for", time.Since(served)), zap.Error(err))
 	if proto == "unix" {
-		_ = os.Remove(addr)
+		rmErr := os.Remove(addr)
+		d.log.Debug("Driver.Run: removed unix socket", zap.String("path", addr), zap.Bool("removed", rmErr == nil))
 	}
 	return err
 }
 
 // parseEndpoint splits "unix:///path" or "tcp://host:port" into proto + addr.
 func parseEndpoint(ep string) (string, string, error) {
+	log := zap.L()
+	log.Debug("parseEndpoint: parsing", zap.String("endpoint", ep))
 	u, err := url.Parse(ep)
 	if err != nil {
+		log.Debug("parseEndpoint: not a URL", zap.String("endpoint", ep), zap.Error(err))
 		return "", "", fmt.Errorf("invalid endpoint %q: %w", ep, err)
 	}
 	switch u.Scheme {
 	case "unix":
 		if u.Host != "" {
+			log.Debug("parseEndpoint: unix endpoint has a host", zap.String("endpoint", ep), zap.String("host", u.Host))
 			return "", "", fmt.Errorf("invalid unix endpoint %q (host must be empty)", ep)
 		}
+		log.Debug("parseEndpoint: unix socket", zap.String("path", u.Path))
 		return "unix", u.Path, nil
 	case "tcp":
+		log.Debug("parseEndpoint: tcp", zap.String("addr", u.Host))
 		return "tcp", u.Host, nil
 	default:
+		log.Debug("parseEndpoint: unsupported scheme", zap.String("endpoint", ep), zap.String("scheme", u.Scheme))
 		return "", "", fmt.Errorf("invalid endpoint %q (want unix:// or tcp://)", ep)
 	}
 }

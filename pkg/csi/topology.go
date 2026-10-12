@@ -7,6 +7,7 @@ import (
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 )
 
 // managedPoolPrefix mirrors the controller's normalizeManagedName: Haify-managed
@@ -58,14 +59,21 @@ type replicaCandidate struct {
 func poolFreeBytes(p *haifypb.PoolInfo) uint64 {
 	if p.GetThinPoolLv() != "" && p.GetThinSizeBytes() > 0 {
 		used := float64(p.GetThinSizeBytes()) * p.GetThinDataPercent() / 100
-		if free := float64(p.GetThinSizeBytes()) - used; free > 0 {
+		free := float64(p.GetThinSizeBytes()) - used
+		zap.L().Debug("poolFreeBytes: thin pool utilisation", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()),
+			zap.Uint64("thin_size_bytes", p.GetThinSizeBytes()), zap.Float64("data_percent", p.GetThinDataPercent()))
+		if free > 0 {
 			return uint64(free)
 		}
 		return 0
 	}
 	if b := p.GetFreeBytes(); b > 0 {
+		zap.L().Debug("poolFreeBytes: exact free bytes", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()),
+			zap.Uint64("free_bytes", b))
 		return b
 	}
+	zap.L().Debug("poolFreeBytes: rounded free GiB", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()),
+		zap.Uint64("free_gb", p.GetFreeGb()))
 	return p.GetFreeGb() * giB
 }
 
@@ -76,7 +84,10 @@ func poolFreeBytes(p *haifypb.PoolInfo) uint64 {
 // by node address. This keeps replica placement pool-aware so volumes never
 // land on a node lacking the backing pool.
 func nodesWithPool(nodes []*haifypb.NodeInfo, pools []*haifypb.PoolInfo, pool, domainLabel string) []replicaCandidate {
+	log := zap.L()
 	want := managedPoolName(pool)
+	log.Debug("nodesWithPool: start", zap.String("pool", want), zap.Int("nodes", len(nodes)), zap.Int("pools", len(pools)),
+		zap.String("fault_domain_label", domainLabel))
 	freeByKey := map[string]uint64{}
 	for _, p := range pools {
 		key := p.GetNode()
@@ -91,19 +102,28 @@ func nodesWithPool(nodes []*haifypb.NodeInfo, pools []*haifypb.PoolInfo, pool, d
 	for _, n := range nodes {
 		// A drained node (haify node drain) takes no new replicas.
 		if n.GetState() == nodeStateMaintenance {
+			log.Debug("nodesWithPool: skipping drained node", zap.String("node", n.GetName()))
 			continue
 		}
+		hosts := false
 		for _, key := range []string{n.GetAddress(), n.GetName()} {
 			if free, ok := freeByKey[key]; ok {
 				domain := "node:" + n.GetName()
 				if v := n.GetLabels()[domainLabel]; v != "" && domainLabel != "" {
 					domain = domainLabel + "=" + v
 				}
+				log.Debug("nodesWithPool: candidate", zap.String("node", n.GetName()), zap.Uint64("free_bytes", free),
+					zap.String("domain", domain))
 				out = append(out, replicaCandidate{node: n.GetName(), freeBytes: free, domain: domain})
+				hosts = true
 				break
 			}
 		}
+		if !hosts {
+			log.Debug("nodesWithPool: node does not host the pool", zap.String("node", n.GetName()), zap.String("pool", want))
+		}
 	}
+	log.Debug("nodesWithPool: done", zap.String("pool", want), zap.Int("candidates", len(out)))
 	return out
 }
 
@@ -131,6 +151,8 @@ func requisiteNodes(req *csi.TopologyRequirement) []string {
 	}
 	add(req.GetPreferred())
 	add(req.GetRequisite())
+	zap.L().Debug("requisiteNodes: extracted", zap.Int("preferred", len(req.GetPreferred())),
+		zap.Int("requisite", len(req.GetRequisite())), zap.Strings("nodes", out))
 	return out
 }
 
@@ -158,6 +180,9 @@ func (c replicaCandidate) fits(needBytes uint64) bool {
 //
 // Pass needBytes 0 to place without a capacity requirement.
 func selectReplicaNodes(candidates []replicaCandidate, pinned []string, replicas int, needBytes uint64) ([]string, error) {
+	log := zap.L()
+	log.Debug("selectReplicaNodes: start", zap.Int("candidates", len(candidates)), zap.Strings("pinned", pinned),
+		zap.Int("replicas", replicas), zap.Uint64("need_bytes", needBytes))
 	byName := make(map[string]replicaCandidate, len(candidates))
 	unique := make([]replicaCandidate, 0, len(candidates))
 	for _, c := range candidates {
@@ -177,6 +202,8 @@ func selectReplicaNodes(candidates []replicaCandidate, pinned []string, replicas
 		}
 		c, hosts := byName[n]
 		if !hosts || used[n] {
+			log.Debug("selectReplicaNodes: pin skipped", zap.String("node", n), zap.Bool("hosts_pool", hosts),
+				zap.Bool("already_picked", used[n]))
 			continue
 		}
 		// A pin that cannot fit the volume is refused rather than quietly
@@ -185,9 +212,12 @@ func selectReplicaNodes(candidates []replicaCandidate, pinned []string, replicas
 		// lets the scheduler try another node. Placing the volume elsewhere
 		// instead would strand the Pod on a node with no replica.
 		if !c.fits(needBytes) {
+			log.Debug("selectReplicaNodes: pinned node too small", zap.String("node", c.node),
+				zap.Uint64("free_bytes", c.freeBytes), zap.Uint64("need_bytes", needBytes))
 			return nil, fmt.Errorf("node %q must hold a replica but its pool has only %dGiB free, need %dGiB",
 				c.node, c.freeBytes/giB, needBytes/giB)
 		}
+		log.Debug("selectReplicaNodes: seated pinned node", zap.String("node", n), zap.String("domain", c.domain))
 		picked = append(picked, n)
 		used[n] = true
 		domains[c.domain] = true
@@ -213,6 +243,8 @@ func selectReplicaNodes(candidates []replicaCandidate, pinned []string, replicas
 			if used[c.node] || (apart && c.domain != "" && domains[c.domain]) {
 				continue
 			}
+			log.Debug("selectReplicaNodes: picked by free space", zap.String("node", c.node),
+				zap.Uint64("free_bytes", c.freeBytes), zap.String("domain", c.domain), zap.Bool("new_domain", apart))
 			picked = append(picked, c.node)
 			used[c.node] = true
 			domains[c.domain] = true
@@ -220,9 +252,12 @@ func selectReplicaNodes(candidates []replicaCandidate, pinned []string, replicas
 	}
 
 	if len(picked) < replicas {
+		log.Debug("selectReplicaNodes: not enough nodes", zap.Int("picked", len(picked)), zap.Int("replicas", replicas),
+			zap.Int("roomy", len(roomy)), zap.Int("unique", len(unique)))
 		return nil, fmt.Errorf("need %d replica node(s) with %dGiB free, only %d of %d node(s) hosting the pool qualify",
 			replicas, needBytes/giB, len(picked), len(unique))
 	}
+	log.Debug("selectReplicaNodes: done", zap.Strings("nodes", picked[:replicas]))
 	return picked[:replicas], nil
 }
 

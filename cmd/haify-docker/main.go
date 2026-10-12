@@ -36,13 +36,19 @@ func main() {
 
 	log := logging.Production()
 	defer func() { _ = log.Sync() }()
+	log.Debug("main: starting", zap.String("controller", *controller), zap.String("node", *node),
+		zap.String("socket", *socket), zap.String("root", *root), zap.String("pool", *pool),
+		zap.String("size", *size), zap.Uint("replicas", *replicas), zap.String("fs", *fs))
 
 	sizeBytes, err := util.ParseSize(*size)
 	if err != nil {
 		log.Fatal("--size", zap.Error(err))
 	}
 	// HAIFY_TOKEN, else ~/.haify/token or /etc/haify/token.
-	haify, err := client.NewHaifyClient(*controller, client.WithToken(client.ResolveToken("")))
+	token := client.ResolveToken("")
+	log.Debug("main: connecting to the controller", zap.String("controller", *controller),
+		zap.Bool("has_token", token != ""))
+	haify, err := client.NewHaifyClient(*controller, client.WithToken(token))
 	if err != nil {
 		log.Fatal("connect to the controller", zap.Error(err))
 	}
@@ -60,6 +66,7 @@ func main() {
 	defer stop()
 	go func() {
 		<-ctx.Done()
+		log.Debug("main: signal received, shutting down", zap.String("socket", *socket))
 		shut, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shut)
@@ -68,4 +75,5 @@ func main() {
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatal("serve", zap.Error(err))
 	}
+	log.Debug("main: server stopped", zap.String("socket", *socket))
 }

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Chat services do not accept an arbitrary JSON document. Each defines its own
@@ -48,10 +50,13 @@ const (
 func ParseKind(s string) (Kind, error) {
 	switch k := Kind(strings.ToLower(strings.TrimSpace(s))); k {
 	case "":
+		zap.L().Debug("ParseKind: empty kind, using generic")
 		return KindGeneric, nil
 	case KindGeneric, KindFeishu, KindSlack, KindWeCom, KindDingTalk:
+		zap.L().Debug("ParseKind: kind recognised", zap.String("kind", string(k)))
 		return k, nil
 	default:
+		zap.L().Debug("ParseKind: unknown kind rejected", zap.String("kind", s))
 		return "", fmt.Errorf("event: unknown receiver kind %q (want generic, feishu, slack, wecom or dingtalk)", s)
 	}
 }
@@ -90,19 +95,25 @@ var wellKnownHosts = map[string]Kind{
 func KindForURL(rawURL string) (Kind, bool) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Host == "" {
+		zap.L().Debug("KindForURL: URL has no parsable host", zap.Bool("parse_failed", err != nil))
 		return "", false
 	}
 	host := strings.ToLower(u.Hostname())
 	for suffix, kind := range wellKnownHosts {
 		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			zap.L().Debug("KindForURL: host is a known chat service",
+				zap.String("host", host), zap.String("suffix", suffix), zap.String("kind", string(kind)))
 			return kind, true
 		}
 	}
+	zap.L().Debug("KindForURL: host not a known chat service", zap.String("host", host))
 	return "", false
 }
 
 // Render builds the request body for one event in this kind's format.
 func (k Kind) Render(e Event) ([]byte, error) {
+	zap.L().Debug("Kind.Render: rendering event body",
+		zap.String("kind", string(k)), zap.Uint64("event_id", e.ID), zap.String("type", string(e.Type)))
 	switch k {
 	case KindFeishu:
 		return json.Marshal(map[string]any{
@@ -145,10 +156,13 @@ func (k Kind) Render(e Event) ([]byte, error) {
 // allowlist instead, both of which need nothing from us.
 func (k Kind) SignedURL(rawURL, secret string, now time.Time) (string, error) {
 	if k != KindDingTalk || secret == "" {
+		zap.L().Debug("Kind.SignedURL: no signing needed",
+			zap.String("kind", string(k)), zap.Bool("has_secret", secret != ""))
 		return rawURL, nil
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
+		zap.L().Debug("Kind.SignedURL: parsing the webhook URL failed", zap.String("kind", string(k)), zap.Error(err))
 		return "", fmt.Errorf("event: parse webhook url: %w", err)
 	}
 	ms := strconv.FormatInt(now.UnixMilli(), 10)
@@ -160,6 +174,7 @@ func (k Kind) SignedURL(rawURL, secret string, now time.Time) (string, error) {
 	q.Set("timestamp", ms)
 	q.Set("sign", sig)
 	u.RawQuery = q.Encode()
+	zap.L().Debug("Kind.SignedURL: URL signed", zap.String("kind", string(k)), zap.String("host", u.Host), zap.String("timestamp", ms))
 	return u.String(), nil
 }
 
@@ -177,7 +192,9 @@ func (k Kind) SignedURL(rawURL, secret string, now time.Time) (string, error) {
 func (k Kind) CheckResponse(body []byte) error {
 	switch k {
 	case KindFeishu, KindWeCom, KindDingTalk:
+		zap.L().Debug("Kind.CheckResponse: inspecting reply body", zap.String("kind", string(k)), zap.Int("reply_bytes", len(body)))
 	default:
+		zap.L().Debug("Kind.CheckResponse: kind trusts the status code, body not inspected", zap.String("kind", string(k)))
 		return nil
 	}
 	var r struct {
@@ -191,6 +208,7 @@ func (k Kind) CheckResponse(body []byte) error {
 	if err := json.Unmarshal(body, &r); err != nil {
 		// A body that is not JSON is not a reply this service produces. Report
 		// it rather than assuming success — it is usually a proxy error page.
+		zap.L().Debug("Kind.CheckResponse: reply is not JSON", zap.String("kind", string(k)), zap.Error(err))
 		return fmt.Errorf("unexpected reply from the webhook: %s", truncate(string(body), 200))
 	}
 	code := 0
@@ -201,12 +219,15 @@ func (k Kind) CheckResponse(body []byte) error {
 		code = *r.ErrCode
 	}
 	if code == 0 {
+		zap.L().Debug("Kind.CheckResponse: service accepted the message", zap.String("kind", string(k)))
 		return nil
 	}
 	msg := r.Msg
 	if msg == "" {
 		msg = r.ErrMsg
 	}
+	zap.L().Debug("Kind.CheckResponse: service rejected the message",
+		zap.String("kind", string(k)), zap.Int("code", code), zap.String("msg", msg))
 	return fmt.Errorf("the webhook rejected the message: code %d: %s", code, msg)
 }
 

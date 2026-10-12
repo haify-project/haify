@@ -7,6 +7,7 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 // ==================== HA CONFIG ====================
@@ -51,6 +52,11 @@ type HaStartItem struct {
 
 // SaveHaConfig saves or updates an HA configuration
 func (db *DB) SaveHaConfig(ctx context.Context, cfg *HaConfig) error {
+	// OCF agent params can carry passwords: only counts are traced.
+	db.log().Debug("DB.SaveHaConfig: saving HA config",
+		zap.String("resource", cfg.Resource), zap.String("vip", cfg.VIP), zap.String("mount_point", cfg.MountPoint),
+		zap.Strings("services", cfg.Services), zap.Int("ocf_agents", len(cfg.OcfAgents)),
+		zap.Int("start_items", len(cfg.StartItems)), zap.Strings("preferred_nodes", cfg.PreferredNodes))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -62,29 +68,41 @@ func (db *DB) SaveHaConfig(ctx context.Context, cfg *HaConfig) error {
 
 	data, err := json.Marshal(cfg)
 	if err != nil {
+		db.log().Debug("DB.SaveHaConfig: marshal failed", zap.String("resource", cfg.Resource), zap.Error(err))
 		return fmt.Errorf("failed to marshal ha config: %w", err)
 	}
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(haConfigsBucket))
 		return b.Put([]byte(cfg.Resource), data)
 	})
+	db.log().Debug("DB.SaveHaConfig: put", zap.String("bucket", haConfigsBucket), zap.String("key", cfg.Resource),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // GetHaConfig retrieves an HA configuration by resource name
 func (db *DB) GetHaConfig(ctx context.Context, resource string) (*HaConfig, error) {
+	db.log().Debug("DB.GetHaConfig: reading HA config", zap.String("resource", resource))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var cfg HaConfig
+	found, size := false, 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(haConfigsBucket))
 		data := b.Get([]byte(resource))
 		if data == nil {
 			return fmt.Errorf("ha config not found")
 		}
+		found, size = true, len(data)
 		return json.Unmarshal(data, &cfg)
 	})
+	db.log().Debug("DB.GetHaConfig: get", zap.String("bucket", haConfigsBucket), zap.String("key", resource),
+		zap.Bool("found", found), zap.Int("size_bytes", size),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	if err != nil {
 		return nil, err
@@ -94,32 +112,42 @@ func (db *DB) GetHaConfig(ctx context.Context, resource string) (*HaConfig, erro
 
 // ListHaConfigs lists all HA configurations
 func (db *DB) ListHaConfigs(ctx context.Context) ([]*HaConfig, error) {
+	db.log().Debug("DB.ListHaConfigs: listing HA configs")
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var configs []*HaConfig
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(haConfigsBucket))
 		return b.ForEach(func(k, v []byte) error {
 			var cfg HaConfig
 			if err := json.Unmarshal(v, &cfg); err != nil {
+				db.log().Debug("DB.ListHaConfigs: decoding entry failed", zap.ByteString("key", k), zap.Error(err))
 				return err
 			}
 			configs = append(configs, &cfg)
 			return nil
 		})
 	})
+	db.log().Debug("DB.ListHaConfigs: scan", zap.String("bucket", haConfigsBucket),
+		zap.Int("count", len(configs)), zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	return configs, err
 }
 
 // DeleteHaConfig deletes an HA configuration by resource name
 func (db *DB) DeleteHaConfig(ctx context.Context, resource string) error {
+	db.log().Debug("DB.DeleteHaConfig: deleting HA config", zap.String("resource", resource))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(haConfigsBucket))
 		return b.Delete([]byte(resource))
 	})
+	db.log().Debug("DB.DeleteHaConfig: delete", zap.String("bucket", haConfigsBucket), zap.String("key", resource),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }

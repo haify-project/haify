@@ -8,6 +8,7 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 // ==================== RESOURCE ====================
@@ -85,6 +86,8 @@ type ResourceProfile struct {
 
 // SaveResourceProfile saves or updates a resource profile.
 func (db *DB) SaveResourceProfile(ctx context.Context, profile *ResourceProfile) error {
+	db.log().Debug("DB.SaveResourceProfile: saving profile",
+		zap.String("profile", profile.Name), zap.String("pool", profile.Pool), zap.Int("replicas", profile.Replicas))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -96,27 +99,39 @@ func (db *DB) SaveResourceProfile(ctx context.Context, profile *ResourceProfile)
 
 	data, err := json.Marshal(profile)
 	if err != nil {
+		db.log().Debug("DB.SaveResourceProfile: marshal failed", zap.String("profile", profile.Name), zap.Error(err))
 		return fmt.Errorf("failed to marshal resource profile: %w", err)
 	}
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(profilesBucket)).Put([]byte(profile.Name), data)
 	})
+	db.log().Debug("DB.SaveResourceProfile: put", zap.String("bucket", profilesBucket), zap.String("key", profile.Name),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // GetResourceProfile retrieves a resource profile by name.
 func (db *DB) GetResourceProfile(ctx context.Context, name string) (*ResourceProfile, error) {
+	db.log().Debug("DB.GetResourceProfile: reading profile", zap.String("profile", name))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var profile ResourceProfile
+	found, size := false, 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		data := tx.Bucket([]byte(profilesBucket)).Get([]byte(name))
 		if data == nil {
 			return fmt.Errorf("resource profile not found")
 		}
+		found, size = true, len(data)
 		return json.Unmarshal(data, &profile)
 	})
+	db.log().Debug("DB.GetResourceProfile: get", zap.String("bucket", profilesBucket), zap.String("key", name),
+		zap.Bool("found", found), zap.Int("size_bytes", size),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -125,20 +140,25 @@ func (db *DB) GetResourceProfile(ctx context.Context, name string) (*ResourcePro
 
 // ListResourceProfiles lists all resource profiles.
 func (db *DB) ListResourceProfiles(ctx context.Context) ([]*ResourceProfile, error) {
+	db.log().Debug("DB.ListResourceProfiles: listing profiles")
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	profiles := make([]*ResourceProfile, 0)
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte(profilesBucket)).ForEach(func(_, value []byte) error {
+		return tx.Bucket([]byte(profilesBucket)).ForEach(func(key, value []byte) error {
 			var profile ResourceProfile
 			if err := json.Unmarshal(value, &profile); err != nil {
+				db.log().Debug("DB.ListResourceProfiles: decoding entry failed", zap.ByteString("key", key), zap.Error(err))
 				return err
 			}
 			profiles = append(profiles, &profile)
 			return nil
 		})
 	})
+	db.log().Debug("DB.ListResourceProfiles: scan", zap.String("bucket", profilesBucket),
+		zap.Int("count", len(profiles)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -147,16 +167,24 @@ func (db *DB) ListResourceProfiles(ctx context.Context) ([]*ResourceProfile, err
 
 // DeleteResourceProfile deletes a resource profile by name.
 func (db *DB) DeleteResourceProfile(ctx context.Context, name string) error {
+	db.log().Debug("DB.DeleteResourceProfile: deleting profile", zap.String("profile", name))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(profilesBucket)).Delete([]byte(name))
 	})
+	db.log().Debug("DB.DeleteResourceProfile: delete", zap.String("bucket", profilesBucket), zap.String("key", name),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // SaveResource saves or updates a resource
 func (db *DB) SaveResource(ctx context.Context, resource *Resource) error {
+	db.log().Debug("DB.SaveResource: saving resource",
+		zap.String("resource", resource.Name), zap.String("nodes", resource.Nodes),
+		zap.Int("port", resource.Port), zap.Int("replicas", resource.Replicas), zap.Bool("wan", resource.WANMode))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -168,29 +196,41 @@ func (db *DB) SaveResource(ctx context.Context, resource *Resource) error {
 
 	data, err := json.Marshal(resource)
 	if err != nil {
+		db.log().Debug("DB.SaveResource: marshal failed", zap.String("resource", resource.Name), zap.Error(err))
 		return fmt.Errorf("failed to marshal resource: %w", err)
 	}
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(resourcesBucket))
 		return b.Put([]byte(resource.Name), data)
 	})
+	db.log().Debug("DB.SaveResource: put", zap.String("bucket", resourcesBucket), zap.String("key", resource.Name),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // GetResource retrieves a resource by name
 func (db *DB) GetResource(ctx context.Context, name string) (*Resource, error) {
+	db.log().Debug("DB.GetResource: reading resource", zap.String("resource", name))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var resource Resource
+	found, size := false, 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(resourcesBucket))
 		data := b.Get([]byte(name))
 		if data == nil {
 			return fmt.Errorf("resource not found")
 		}
+		found, size = true, len(data)
 		return json.Unmarshal(data, &resource)
 	})
+	db.log().Debug("DB.GetResource: get", zap.String("bucket", resourcesBucket), zap.String("key", name),
+		zap.Bool("found", found), zap.Int("size_bytes", size),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	if err != nil {
 		return nil, err
@@ -200,34 +240,44 @@ func (db *DB) GetResource(ctx context.Context, name string) (*Resource, error) {
 
 // ListResources lists all resources
 func (db *DB) ListResources(ctx context.Context) ([]*Resource, error) {
+	db.log().Debug("DB.ListResources: listing resources")
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var resources []*Resource
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(resourcesBucket))
 		return b.ForEach(func(k, v []byte) error {
 			var resource Resource
 			if err := json.Unmarshal(v, &resource); err != nil {
+				db.log().Debug("DB.ListResources: decoding entry failed", zap.ByteString("key", k), zap.Error(err))
 				return err
 			}
 			resources = append(resources, &resource)
 			return nil
 		})
 	})
+	db.log().Debug("DB.ListResources: scan", zap.String("bucket", resourcesBucket),
+		zap.Int("count", len(resources)), zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	return resources, err
 }
 
 // DeleteResource deletes a resource by name
 func (db *DB) DeleteResource(ctx context.Context, name string) error {
+	db.log().Debug("DB.DeleteResource: deleting resource", zap.String("resource", name))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(resourcesBucket))
 		return b.Delete([]byte(name))
 	})
+	db.log().Debug("DB.DeleteResource: delete", zap.String("bucket", resourcesBucket), zap.String("key", name),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // ==================== VOLUME ====================
@@ -249,6 +299,10 @@ type Volume struct {
 
 // SaveVolume saves or updates a volume
 func (db *DB) SaveVolume(ctx context.Context, volume *Volume) error {
+	db.log().Debug("DB.SaveVolume: saving volume",
+		zap.String("resource", volume.ResourceName), zap.String("volume", volume.VolumeName),
+		zap.Int("volume_id", volume.VolumeID), zap.String("pool", volume.Pool),
+		zap.Int("size_gb", volume.SizeGB), zap.Int64("size_bytes", volume.SizeBytes))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -261,22 +315,29 @@ func (db *DB) SaveVolume(ctx context.Context, volume *Volume) error {
 
 	data, err := json.Marshal(volume)
 	if err != nil {
+		db.log().Debug("DB.SaveVolume: marshal failed", zap.String("resource", volume.ResourceName), zap.Error(err))
 		return fmt.Errorf("failed to marshal volume: %w", err)
 	}
 
 	key := fmt.Sprintf("%s:%s", volume.ResourceName, volume.VolumeName)
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(volumesBucket))
 		return b.Put([]byte(key), data)
 	})
+	db.log().Debug("DB.SaveVolume: put", zap.String("bucket", volumesBucket), zap.String("key", key),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // ListVolumes lists all volumes for a resource
 func (db *DB) ListVolumes(ctx context.Context, resourceName string) ([]*Volume, error) {
+	db.log().Debug("DB.ListVolumes: listing volumes", zap.String("resource", resourceName))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var volumes []*Volume
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(volumesBucket))
 		c := b.Cursor()
@@ -287,24 +348,33 @@ func (db *DB) ListVolumes(ctx context.Context, resourceName string) ([]*Volume, 
 		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
 			var volume Volume
 			if err := json.Unmarshal(v, &volume); err != nil {
+				db.log().Debug("DB.ListVolumes: decoding entry failed", zap.ByteString("key", k), zap.Error(err))
 				return err
 			}
+			db.log().Debug("DB.ListVolumes: found volume", zap.ByteString("key", k), zap.Int("volume_id", volume.VolumeID))
 			volumes = append(volumes, &volume)
 		}
 		return nil
 	})
+	db.log().Debug("DB.ListVolumes: scan", zap.String("bucket", volumesBucket), zap.String("prefix", resourceName+":"),
+		zap.Int("count", len(volumes)), zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	return volumes, err
 }
 
 // DeleteVolume deletes a volume
 func (db *DB) DeleteVolume(ctx context.Context, resourceName, volumeName string) error {
+	db.log().Debug("DB.DeleteVolume: deleting volume", zap.String("resource", resourceName), zap.String("volume", volumeName))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	key := fmt.Sprintf("%s:%s", resourceName, volumeName)
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(volumesBucket))
 		return b.Delete([]byte(key))
 	})
+	db.log().Debug("DB.DeleteVolume: delete", zap.String("bucket", volumesBucket), zap.String("key", key),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }

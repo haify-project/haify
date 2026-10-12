@@ -20,10 +20,6 @@
 package alert
 
 import (
-	"context"
-	"fmt"
-	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -143,16 +139,26 @@ var kickSettle = 2 * time.Second
 
 // NewMonitor creates a monitor publishing to bus.
 func NewMonitor(bus *event.Bus, opts Options) *Monitor {
-	if opts.Interval <= 0 {
-		opts.Interval = 30 * time.Second
-	}
-	if opts.IdleInterval < opts.Interval {
-		opts.IdleInterval = max(opts.Interval, DefaultIdleInterval)
-	}
 	if opts.Logger == nil {
 		opts.Logger = zap.NewNop()
 	}
+	log := opts.Logger
+	if opts.Interval <= 0 {
+		log.Debug("NewMonitor: interval not set, using 30s", zap.Duration("requested", opts.Interval))
+		opts.Interval = 30 * time.Second
+	}
+	if opts.IdleInterval < opts.Interval {
+		log.Debug("NewMonitor: idle interval below poll interval, raising it",
+			zap.Duration("requested", opts.IdleInterval), zap.Duration("interval", opts.Interval))
+		opts.IdleInterval = max(opts.Interval, DefaultIdleInterval)
+	}
 	near, full := normalizeThresholds(opts.NearFullPercent, opts.FullPercent)
+	log.Debug("NewMonitor: creating alert monitor",
+		zap.Duration("interval", opts.Interval), zap.Duration("idle_interval", opts.IdleInterval),
+		zap.Bool("has_resources", opts.Resources != nil), zap.Bool("has_nodes", opts.Nodes != nil),
+		zap.Bool("has_pools", opts.Pools != nil), zap.Bool("has_observer", opts.Observer != nil),
+		zap.Bool("has_bus", bus != nil), zap.Float64("near_full_percent", near),
+		zap.Float64("full_percent", full), zap.Duration("warning_hold", opts.WarningHold))
 	return &Monitor{
 		interval:     opts.Interval,
 		resources:    opts.Resources,
@@ -186,317 +192,20 @@ func NewMonitor(bus *event.Bus, opts Options) *Monitor {
 // rejected: a bad threshold should degrade the alert, not remove it.
 func normalizeThresholds(near, full float64) (float64, float64) {
 	if near <= 0 || near > 100 {
+		zap.L().Debug("normalizeThresholds: near-full out of range, using default",
+			zap.Float64("requested", near), zap.Float64("near_full_percent", DefaultNearFullPercent))
 		near = DefaultNearFullPercent
 	}
 	if full <= 0 || full > 100 {
+		zap.L().Debug("normalizeThresholds: full out of range, using default",
+			zap.Float64("requested", full), zap.Float64("full_percent", DefaultFullPercent))
 		full = DefaultFullPercent
 	}
 	if near >= full {
-		near = full * DefaultNearFullPercent / DefaultFullPercent
+		corrected := full * DefaultNearFullPercent / DefaultFullPercent
+		zap.L().Debug("normalizeThresholds: near-full at or above full, pulling it below",
+			zap.Float64("near_full_percent", near), zap.Float64("full_percent", full), zap.Float64("corrected", corrected))
+		near = corrected
 	}
 	return near, full
-}
-
-// Start begins background polling until ctx is cancelled or Stop is called.
-//
-// The first poll runs immediately rather than after one interval: a controller
-// starting up into an already-degraded cluster should say so now, not in thirty
-// seconds.
-func (m *Monitor) Start(ctx context.Context) {
-	go func() {
-		m.Poll(ctx)
-		timer := time.NewTimer(m.nextInterval())
-		defer timer.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-m.stop:
-				return
-			case <-timer.C:
-			case <-m.kick:
-				select {
-				case <-ctx.Done():
-					return
-				case <-m.stop:
-					return
-				case <-time.After(kickSettle):
-				}
-				select { // the kicks that came in while settling are this poll's
-				case <-m.kick:
-				default:
-				}
-			}
-			m.Poll(ctx)
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(m.nextInterval())
-		}
-	}()
-}
-
-// Kick asks for a poll soon, because something changed. Never blocks.
-func (m *Monitor) Kick() {
-	select {
-	case m.kick <- struct{}{}:
-	default:
-	}
-}
-
-// SetEventDriven says whether state changes are reaching Kick from every
-// node. While they are, a healthy cluster is polled on the idle interval.
-func (m *Monitor) SetEventDriven(on bool) {
-	if m.eventDriven.Swap(on) != on && !on {
-		m.Kick() // a node's changes are no longer arriving: look now
-	}
-}
-
-func (m *Monitor) nextInterval() time.Duration {
-	if m.eventDriven.Load() && m.steady.Load() && !m.holding() {
-		return m.idleInterval
-	}
-	return m.interval
-}
-
-// Stop halts background polling. Safe to call more than once, and safe on a
-// monitor that was never started.
-func (m *Monitor) Stop() {
-	m.stopOnce.Do(func() { close(m.stop) })
-}
-
-// Polls reports how many poll cycles have completed.
-func (m *Monitor) Polls() int {
-	m.pollsMu.Lock()
-	defer m.pollsMu.Unlock()
-	return m.polls
-}
-
-// Poll runs one health check cycle. Exported so a caller can force a check and
-// so tests need not wait on a ticker.
-func (m *Monitor) Poll(ctx context.Context) {
-	// scope records every condition this cycle actually evaluated, so a firing
-	// alert whose subject has since vanished can be cleared. See resolveVanished.
-	sc := &pollScope{seen: map[string]bool{}, live: map[string]bool{}, livePools: map[string]bool{}}
-	var obs Observation
-	m.checkResources(ctx, sc, &obs)
-	m.checkNodes(ctx, sc, &obs)
-	m.checkPools(ctx, sc, &obs)
-	m.resolveVanished(sc)
-	m.dropUnseenPending(sc)
-	obs.Firing = m.firingConditions()
-	m.steady.Store(steadyState(obs))
-
-	// After the events, not before: an observer that panics or blocks must not
-	// be able to stop a degradation from being reported.
-	if m.observer != nil {
-		m.observer.Observed(obs)
-	}
-
-	m.pollsMu.Lock()
-	m.polls++
-	m.pollsMu.Unlock()
-}
-
-// pollScope is what one poll observed: the condition keys it evaluated, the
-// resources it saw, and whether each source answered at all.
-type pollScope struct {
-	seen map[string]bool
-	live map[string]bool
-	// livePools holds the pools seen this poll, keyed "<pool>@<node>", which is
-	// what makes a deleted pool distinguishable from a pool on a node that
-	// dropped out of the listing.
-	livePools map[string]bool
-	// resourcesOK / nodesOK / poolsOK are false when that source could not be
-	// listed. A source that failed reports nothing, which must never be
-	// mistaken for "every condition it owns has cleared".
-	resourcesOK bool
-	nodesOK     bool
-	poolsOK     bool
-}
-
-func (s *pollScope) mark(key string) {
-	if s != nil {
-		s.seen[key] = true
-	}
-}
-
-// resolveVanished clears alerts whose subject no longer exists.
-//
-// A level condition only resolves when something evaluates it and finds it
-// false. If the thing it describes disappears, nothing evaluates it again and
-// the alert stays raised forever. Three ways that happens, all reachable from
-// normal operations:
-//
-//   - the resource is deleted;
-//   - a replica is removed from a resource that still exists (remove-replica) —
-//     and a replica being degraded is a common reason to remove it, so the
-//     stuck alert lands on exactly the workflow that provokes it;
-//   - a node is unregistered while unreachable.
-//
-// Keying this off "the resource is gone" only covered the first. Keying it off
-// "nothing evaluated this condition" covers all three, and needs no separate
-// knowledge of what removal looks like.
-//
-// The safety condition is that silence must come from a source that actually
-// answered. A failed list produces no keys at all, which would otherwise read
-// as every condition it owns having cleared — resolving every alert in the
-// cluster on a transient database error.
-func (m *Monitor) resolveVanished(sc *pollScope) {
-	type vanished struct{ key, message string }
-
-	m.mu.Lock()
-	var stale []vanished
-	for key, on := range m.firing {
-		if !on || sc.seen[key] {
-			continue
-		}
-		// Key layout is "<type>|<resource>|<node>".
-		parts := strings.Split(key, "|")
-		if len(parts) != 3 {
-			continue
-		}
-		resource, node := parts[1], parts[2]
-
-		// Only prune from a source that reported. Which source owns a condition
-		// is recorded when it starts firing rather than guessed from the key:
-		// pool conditions carry both a name and a node, so the old "empty
-		// resource means node" rule would have misattributed every one of them.
-		var msg string
-		switch m.owners[key] {
-		case sourceNodes:
-			if !sc.nodesOK {
-				continue
-			}
-			msg = fmt.Sprintf("node %s is no longer registered; clearing its outstanding alert", node)
-		case sourcePools:
-			if !sc.poolsOK {
-				continue
-			}
-			if sc.livePools[poolKey(resource, node)] {
-				msg = fmt.Sprintf("pool %s on %s no longer holds a thin pool; clearing its outstanding alert", resource, node)
-			} else {
-				msg = fmt.Sprintf("pool %s on %s no longer exists; clearing its outstanding alert", resource, node)
-			}
-		default:
-			if !sc.resourcesOK {
-				continue
-			}
-			switch {
-			case !sc.live[resource]:
-				msg = fmt.Sprintf("resource %s no longer exists; clearing its outstanding alert", resource)
-			default:
-				msg = fmt.Sprintf("%s is no longer part of resource %s; clearing its outstanding alert", node, resource)
-			}
-		}
-		stale = append(stale, vanished{key: key, message: msg})
-	}
-	for _, v := range stale {
-		delete(m.firing, v.key)
-		delete(m.owners, v.key)
-		delete(m.raised, v.key)
-	}
-	m.mu.Unlock()
-
-	sort.Slice(stale, func(i, j int) bool { return stale[i].key < stale[j].key })
-	for _, v := range stale {
-		parts := strings.Split(v.key, "|")
-		m.publish(event.Event{
-			Type:     event.Type(parts[0]),
-			Severity: event.SeverityInfo,
-			Status:   event.StatusResolved,
-			Resource: parts[1],
-			Node:     parts[2],
-			Message:  v.message,
-		})
-	}
-}
-
-// level reports a condition that is either true or false at each poll, emitting
-// exactly one firing event when it starts and one resolved event when it ends.
-// The severity on tmpl applies to the firing event; a recovery is informational.
-//
-// src names the lister that owns the condition, and is recorded for as long as
-// it fires so that resolveVanished can tell "the subject is gone" from "the
-// source that would have reported it did not answer".
-func (m *Monitor) level(tmpl event.Event, sc *pollScope, src source, active bool, firingMsg, resolvedMsg string) {
-	key := tmpl.Key()
-	sc.mark(key)
-
-	m.mu.Lock()
-	was := m.firing[key]
-	if !active {
-		delete(m.pending, key)
-	}
-	if active && !was && !m.heldLongEnough(key, tmpl.Severity) {
-		m.mu.Unlock()
-		return
-	}
-	switch {
-	case active && !was:
-		m.firing[key] = true
-		m.owners[key] = src
-		m.raised[key] = FiringCondition{Type: string(tmpl.Type), Severity: string(tmpl.Severity)}
-	case !active && was:
-		delete(m.firing, key)
-		delete(m.owners, key)
-		delete(m.raised, key)
-	default:
-		m.mu.Unlock()
-		return
-	}
-	m.mu.Unlock()
-
-	if active {
-		tmpl.Status = event.StatusFiring
-		tmpl.Message = firingMsg
-	} else {
-		tmpl.Status = event.StatusResolved
-		tmpl.Severity = event.SeverityInfo
-		tmpl.Message = resolvedMsg
-	}
-	m.publish(tmpl)
-}
-
-func (m *Monitor) publish(e event.Event) {
-	if m.bus == nil {
-		return
-	}
-	published := m.bus.Publish(e)
-	m.log.Info("alert",
-		zap.Uint64("id", published.ID),
-		zap.String("type", string(published.Type)),
-		zap.String("severity", string(published.Severity)),
-		zap.String("status", string(published.Status)),
-		zap.String("message", published.Message))
-}
-
-// steadyState is whether a poll found nothing that changes without DRBD saying
-// so. A resync or a verify advances silently — events2 reports the start and
-// the end, not the progress — so while one runs the monitor keeps polling.
-// A replica stuck degraded is not in that set: an Outdated disk or a peer
-// that stays away changes only by a state change, which is an event, and
-// counting it would keep a cluster with one long-standing fault on the
-// short interval for good.
-func steadyState(obs Observation) bool {
-	if !obs.Resources.OK {
-		return false
-	}
-	for _, r := range obs.Resources.Items {
-		for _, st := range r.NodeStates {
-			if st.SyncPercent != nil && *st.SyncPercent < 100 {
-				return false
-			}
-			switch {
-			case strings.HasPrefix(st.ReplicationState, "Sync"),
-				strings.HasPrefix(st.ReplicationState, "PausedSync"),
-				strings.HasPrefix(st.ReplicationState, "Verify"):
-				return false
-			}
-		}
-	}
-	return true
 }

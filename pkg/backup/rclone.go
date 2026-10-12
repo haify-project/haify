@@ -7,9 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // remoteName is the rclone remote defined in every config this package renders.
@@ -57,45 +58,66 @@ func (b *RcloneBackend) Name() string { return "rclone" }
 // accepts the upload and stores it unlocked, which is the one outcome that
 // must never look like success.
 func (b *RcloneBackend) Preflight(ctx context.Context, dep DeploymentClient, host string, target TargetSpec) error {
+	log := zap.L()
+	log.Debug("RcloneBackend.Preflight: checking rclone on node", zap.String("host", host),
+		zap.String("target", target.Name), zap.String("kind", string(target.Kind)), zap.Bool("locked", target.Locked()))
 	if dep == nil {
+		log.Debug("RcloneBackend.Preflight: no deployment client", zap.String("host", host))
 		return fmt.Errorf("backup: deployment client is nil")
 	}
+	start := time.Now()
 	res, err := dep.Exec(ctx, []string{host},
 		`command -v rclone >/dev/null 2>&1 || { echo "rclone is not installed"; exit 1; }; rclone version | head -n 1`)
+	log.Debug("RcloneBackend.Preflight: rclone version probe returned", zap.String("host", host),
+		zap.Bool("success", err == nil && res.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("backup: rclone preflight on %s: %w", host, err)
 	}
 	if !res.AllSuccess() {
+		log.Debug("RcloneBackend.Preflight: rclone missing", zap.String("host", host),
+			zap.String("details", res.FailureDetails()))
 		return fmt.Errorf(
 			"backup: rclone is required on %s and was not found (install it, e.g. `curl https://rclone.org/install.sh | sudo bash`): %s",
 			host, res.FailureDetails())
 	}
 	if target.Locked() {
 		line := strings.TrimSpace(withoutNotices(res.Output(host)))
+		log.Debug("RcloneBackend.Preflight: locked target, checking rclone version", zap.String("host", host),
+			zap.String("version", line), zap.String("min", MinRcloneForLock))
 		if !rcloneVersionAtLeast(line, MinRcloneForLock) {
+			log.Debug("RcloneBackend.Preflight: rclone too old to lock", zap.String("host", host),
+				zap.String("version", line))
 			return fmt.Errorf("backup: target %q locks its objects, which needs rclone %s or later on %s (found %q)",
 				target.Name, MinRcloneForLock, host, line)
 		}
 	}
+	log.Debug("RcloneBackend.Preflight: node ready", zap.String("host", host), zap.String("target", target.Name))
 	return nil
 }
 
 // Prepare implements Backend: it renders the target's rclone config and writes
 // it to the node at mode 0600 without the secret ever entering a command line.
 func (b *RcloneBackend) Prepare(ctx context.Context, dep DeploymentClient, host string, target TargetSpec) (Session, error) {
+	log := zap.L()
+	log.Debug("RcloneBackend.Prepare: staging credentials", zap.String("host", host),
+		zap.String("target", target.Name), zap.String("kind", string(target.Kind)))
 	if dep == nil {
+		log.Debug("RcloneBackend.Prepare: no deployment client", zap.String("host", host))
 		return nil, fmt.Errorf("backup: deployment client is nil")
 	}
 	if err := target.Validate(); err != nil {
+		log.Debug("RcloneBackend.Prepare: target invalid", zap.String("target", target.Name), zap.Error(err))
 		return nil, err
 	}
 	conf, err := renderRcloneConfig(target)
 	if err != nil {
+		log.Debug("RcloneBackend.Prepare: rendering config failed", zap.String("target", target.Name), zap.Error(err))
 		return nil, err
 	}
 
 	id, err := randomID()
 	if err != nil {
+		log.Debug("RcloneBackend.Prepare: random id failed", zap.Error(err))
 		return nil, err
 	}
 	rel := nodeSecretDir + "/" + id + ".conf"
@@ -103,11 +125,19 @@ func (b *RcloneBackend) Prepare(ctx context.Context, dep DeploymentClient, host 
 	// The directory must be 0700 before the file lands in it: PutSecret sets the
 	// file's own mode, but a private parent is what makes the window between the
 	// two irrelevant.
-	if _, err := dep.Exec(ctx, []string{host},
-		fmt.Sprintf(`mkdir -p "$HOME/%s" && chmod 0700 "$HOME/%s"`, nodeSecretDir, nodeSecretDir)); err != nil {
+	start := time.Now()
+	_, err = dep.Exec(ctx, []string{host},
+		fmt.Sprintf(`mkdir -p "$HOME/%s" && chmod 0700 "$HOME/%s"`, nodeSecretDir, nodeSecretDir))
+	log.Debug("RcloneBackend.Prepare: credential directory created", zap.String("host", host),
+		zap.String("dir", nodeSecretDir), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return nil, fmt.Errorf("backup: prepare credential directory on %s: %w", host, err)
 	}
+	start = time.Now()
 	res, err := dep.PutSecret(ctx, []string{host}, conf, rel)
+	log.Debug("RcloneBackend.Prepare: config written", zap.String("host", host), zap.String("path", rel),
+		zap.Int("config_bytes", len(conf)), zap.Bool("success", err == nil && res.AllSuccess()),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, fmt.Errorf("backup: stage credentials on %s: %w", host, err)
 	}
@@ -167,13 +197,20 @@ func (s *rcloneSession) rcloneEnv() string {
 func (s *rcloneSession) PushCmd(objectPath string, sizeBytes uint64) string {
 	cmd := s.rcloneEnv()
 	if s.target.Kind == KindS3 {
-		cmd += fmt.Sprintf(" --s3-chunk-size %dM", s3ChunkMiB(sizeBytes))
+		chunk := s3ChunkMiB(sizeBytes)
+		zap.L().Debug("rcloneSession.PushCmd: s3 chunk size chosen", zap.String("object", objectPath),
+			zap.Uint64("size_bytes", sizeBytes), zap.Uint64("chunk_mib", chunk))
+		cmd += fmt.Sprintf(" --s3-chunk-size %dM", chunk)
 	}
+	zap.L().Debug("rcloneSession.PushCmd: rendering push", zap.String("host", s.host),
+		zap.String("target", s.target.Name), zap.String("object", objectPath), zap.Uint64("size_bytes", sizeBytes))
 	return cmd + s.lockFlags() + " rcat " + shellQuote(s.remotePath(objectPath))
 }
 
 // PullCmd implements Session.
 func (s *rcloneSession) PullCmd(objectPath string) string {
+	zap.L().Debug("rcloneSession.PullCmd: rendering pull", zap.String("host", s.host),
+		zap.String("target", s.target.Name), zap.String("object", objectPath))
 	return s.rcloneEnv() + s.readAtFlag() + " cat " + shellQuote(s.remotePath(objectPath))
 }
 
@@ -181,10 +218,16 @@ func (s *rcloneSession) PullCmd(objectPath string) string {
 // only for the manifest, which is metadata and holds no credentials. It is
 // base64-encoded so arbitrary JSON survives the shell intact.
 func (s *rcloneSession) PutText(ctx context.Context, objectPath, content string) error {
+	log := zap.L()
+	log.Debug("rcloneSession.PutText: writing text object", zap.String("host", s.host),
+		zap.String("target", s.target.Name), zap.String("object", objectPath), zap.Int("bytes", len(content)))
 	enc := base64.StdEncoding.EncodeToString([]byte(content))
 	cmd := fmt.Sprintf("set -o pipefail; printf %%s %s | base64 -d | %s",
 		shellQuote(enc), s.PushCmd(objectPath, uint64(len(content))))
+	start := time.Now()
 	res, err := s.dep.Exec(ctx, []string{s.host}, bash(cmd))
+	log.Debug("rcloneSession.PutText: write returned", zap.String("host", s.host), zap.String("object", objectPath),
+		zap.Bool("success", err == nil && res.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("backup: write %s: %w", objectPath, err)
 	}
@@ -198,15 +241,24 @@ func (s *rcloneSession) PutText(ctx context.Context, objectPath, content string)
 // stored actually is. This is the end-to-end check that turns "the upload
 // command exited 0" into "the far end holds every byte we sent".
 func (s *rcloneSession) SizeBytes(ctx context.Context, objectPath string) (uint64, error) {
+	log := zap.L()
+	log.Debug("rcloneSession.SizeBytes: stat object", zap.String("host", s.host),
+		zap.String("target", s.target.Name), zap.String("object", objectPath))
 	cmd := s.rcloneEnv() + " size --json " + shellQuote(s.remotePath(objectPath))
+	start := time.Now()
 	res, err := s.dep.Exec(ctx, []string{s.host}, cmd)
+	log.Debug("rcloneSession.SizeBytes: rclone size returned", zap.String("host", s.host), zap.String("object", objectPath),
+		zap.Bool("success", err == nil && res.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return 0, fmt.Errorf("backup: stat %s: %w", objectPath, err)
 	}
 	if !res.AllSuccess() {
 		return 0, fmt.Errorf("backup: stat %s failed: %s", objectPath, res.FailureDetails())
 	}
-	return parseRcloneSize(res.Output(s.host))
+	n, err := parseRcloneSize(res.Output(s.host))
+	log.Debug("rcloneSession.SizeBytes: object size", zap.String("object", objectPath),
+		zap.Uint64("size_bytes", n), zap.Error(err))
+	return n, err
 }
 
 // Remove implements Session. Deleting something already gone is a no-op, so
@@ -218,7 +270,11 @@ func (s *rcloneSession) Remove(ctx context.Context, objectPath string) error {
 	// what tells an object that is there from one that is already gone.
 	cmd := fmt.Sprintf("if [ -n \"$(%s lsf %s 2>/dev/null)\" ]; then %s deletefile %s; fi",
 		s.rcloneEnv(), remote, s.rcloneEnv(), remote)
+	start := time.Now()
 	res, err := s.dep.Exec(ctx, []string{s.host}, bash(cmd))
+	zap.L().Debug("rcloneSession.Remove: delete returned", zap.String("host", s.host),
+		zap.String("target", s.target.Name), zap.String("object", objectPath),
+		zap.Bool("success", err == nil && res.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("backup: remove %s: %w", objectPath, err)
 	}
@@ -231,20 +287,34 @@ func (s *rcloneSession) Remove(ctx context.Context, objectPath string) error {
 // List implements Session. One recursive listing of the target root rather
 // than a walk, so a bucket of a thousand backups costs one round trip.
 func (s *rcloneSession) List(ctx context.Context) ([]Object, error) {
+	log := zap.L()
+	log.Debug("rcloneSession.List: listing target", zap.String("host", s.host),
+		zap.String("target", s.target.Name), zap.Time("read_at", s.readAt))
 	cmd := s.rcloneEnv() + s.readAtFlag() + " lsjson -R --files-only " + shellQuote(s.remotePath(""))
+	start := time.Now()
 	res, err := s.dep.Exec(ctx, []string{s.host}, cmd)
+	log.Debug("rcloneSession.List: rclone lsjson returned", zap.String("host", s.host),
+		zap.Bool("success", err == nil && res.AllSuccess()), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, fmt.Errorf("backup: list target: %w", err)
 	}
 	if !res.AllSuccess() {
 		return nil, fmt.Errorf("backup: list target failed: %s", res.FailureDetails())
 	}
-	return parseRcloneList(res.Output(s.host))
+	objects, err := parseRcloneList(res.Output(s.host))
+	log.Debug("rcloneSession.List: objects listed", zap.String("target", s.target.Name),
+		zap.Int("count", len(objects)), zap.Error(err))
+	return objects, err
 }
 
 // GetText implements Session.
 func (s *rcloneSession) GetText(ctx context.Context, objectPath string) (string, error) {
+	start := time.Now()
 	res, err := s.dep.Exec(ctx, []string{s.host}, s.PullCmd(objectPath))
+	zap.L().Debug("rcloneSession.GetText: read returned", zap.String("host", s.host),
+		zap.String("target", s.target.Name), zap.String("object", objectPath),
+		zap.Bool("success", err == nil && res.AllSuccess()), zap.Int("bytes", len(res.Output(s.host))),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return "", fmt.Errorf("backup: read %s: %w", objectPath, err)
 	}
@@ -258,8 +328,10 @@ func (s *rcloneSession) GetText(ctx context.Context, objectPath string) (string,
 // the lines before the JSON array, so the array is found rather than assumed
 // to be the whole output.
 func parseRcloneList(out string) ([]Object, error) {
+	log := zap.L()
 	start := strings.Index(out, "[")
 	if start < 0 {
+		log.Debug("parseRcloneList: no json array in output", zap.Int("output_bytes", len(out)))
 		return nil, fmt.Errorf("backup: could not read the target listing: %q", strings.TrimSpace(out))
 	}
 	var entries []struct {
@@ -268,15 +340,20 @@ func parseRcloneList(out string) ([]Object, error) {
 		IsDir bool   `json:"IsDir"`
 	}
 	if err := json.Unmarshal([]byte(out[start:]), &entries); err != nil {
+		log.Debug("parseRcloneList: json unreadable", zap.Error(err))
 		return nil, fmt.Errorf("backup: could not read the target listing: %w", err)
 	}
 	objects := make([]Object, 0, len(entries))
+	skipped := 0
 	for _, e := range entries {
 		if e.IsDir || e.Size < 0 {
+			skipped++
 			continue
 		}
 		objects = append(objects, Object{Path: e.Path, Bytes: uint64(e.Size)})
 	}
+	log.Debug("parseRcloneList: parsed", zap.Int("entries", len(entries)), zap.Int("objects", len(objects)),
+		zap.Int("skipped", skipped))
 	return objects, nil
 }
 
@@ -284,127 +361,16 @@ func parseRcloneList(out string) ([]Object, error) {
 // would be 0600 in a 0700 directory and therefore not a disclosure, but it
 // would be a credential outliving its use, which is its own problem.
 func (s *rcloneSession) Close(ctx context.Context) error {
+	start := time.Now()
 	res, err := s.dep.Exec(ctx, []string{s.host}, fmt.Sprintf(`rm -f "$HOME/%s"`, s.relPath))
+	zap.L().Debug("rcloneSession.Close: staged credentials removed", zap.String("host", s.host),
+		zap.String("path", s.relPath), zap.Bool("success", err == nil && res.AllSuccess()),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("backup: remove staged credentials on %s: %w", s.host, err)
 	}
 	if !res.AllSuccess() {
 		return fmt.Errorf("backup: remove staged credentials on %s failed: %s", s.host, res.FailureDetails())
-	}
-	return nil
-}
-
-// renderRcloneConfig produces the single-remote rclone config for a target.
-func renderRcloneConfig(t TargetSpec) (string, error) {
-	if err := checkConfigValues(t); err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "[%s]\n", remoteName)
-	switch t.Kind {
-	case KindS3:
-		region := t.Region
-		if region == "" {
-			// Many S3 clones reject an empty region outright, and AWS treats
-			// us-east-1 as the neutral default, so this is the safe filler
-			// rather than a guess about the operator's deployment.
-			region = "us-east-1"
-		}
-		fmt.Fprintf(&b, "type = s3\nprovider = Other\nenv_auth = false\n")
-		fmt.Fprintf(&b, "access_key_id = %s\nsecret_access_key = %s\nregion = %s\n", t.User, t.Secret, region)
-		if t.Endpoint != "" {
-			fmt.Fprintf(&b, "endpoint = %s\n", t.Endpoint)
-		}
-		// A backup user usually has PutObject on one bucket and nothing else;
-		// rclone's default bucket existence check would fail on the missing
-		// permission before a single byte moved.
-		fmt.Fprintf(&b, "no_check_bucket = true\n")
-	case KindSMB:
-		pass, err := configPassword(t)
-		if err != nil {
-			return "", err
-		}
-		host, port := splitSMBHost(t.Host)
-		fmt.Fprintf(&b, "type = smb\nhost = %s\n", host)
-		if port != "" {
-			fmt.Fprintf(&b, "port = %s\n", port)
-		}
-		if t.User != "" {
-			fmt.Fprintf(&b, "user = %s\n", t.User)
-		}
-		if pass != "" {
-			fmt.Fprintf(&b, "pass = %s\n", pass)
-		}
-	case KindWebDAV:
-		pass, err := configPassword(t)
-		if err != nil {
-			return "", err
-		}
-		fmt.Fprintf(&b, "type = webdav\nurl = %s\nvendor = other\n", t.Endpoint)
-		if t.User != "" {
-			fmt.Fprintf(&b, "user = %s\n", t.User)
-		}
-		if pass != "" {
-			fmt.Fprintf(&b, "pass = %s\n", pass)
-		}
-	default:
-		return "", fmt.Errorf("backup: unknown target kind %q", t.Kind)
-	}
-	return b.String(), nil
-}
-
-// splitSMBHost separates an optional port from an SMB host.
-//
-// rclone's smb backend appends its own ":445" to whatever `host` holds, so a
-// host:port left intact dials "host:port:445" and fails with "too many colons
-// in address" — a message that names neither the target nor the setting behind
-// it. The port has to travel in its own config key.
-//
-// A bracketed IPv6 literal with no port ("[::1]") makes SplitHostPort report a
-// missing port; that is precisely the signal that there is nothing to split, so
-// the value goes through untouched and rclone appends the default itself.
-func splitSMBHost(h string) (host, port string) {
-	h = strings.TrimSpace(h)
-	if !strings.Contains(h, ":") {
-		return h, ""
-	}
-	host, port, err := net.SplitHostPort(h)
-	if err != nil {
-		return h, ""
-	}
-	return host, port
-}
-
-// configPassword returns the obscured password for an SMB/WebDAV target.
-func configPassword(t TargetSpec) (string, error) {
-	if t.Secret == "" {
-		return "", nil
-	}
-	if t.SecretIsObscured {
-		// Trust it, but confirm it decodes: an operator who pasted a plain
-		// password into the "already obscured" slot would otherwise get an
-		// authentication failure at backup time with nothing pointing at the
-		// cause.
-		if _, err := Reveal(t.Secret); err != nil {
-			return "", err
-		}
-		return t.Secret, nil
-	}
-	return Obscure(t.Secret)
-}
-
-// checkConfigValues rejects values that would corrupt the rendered config.
-// rclone's config is line-oriented INI with unquoted values, so a newline in
-// any field would silently inject or truncate settings.
-func checkConfigValues(t TargetSpec) error {
-	for name, v := range map[string]string{
-		"endpoint": t.Endpoint, "region": t.Region, "bucket": t.Bucket,
-		"host": t.Host, "share": t.Share, "user": t.User, "secret": t.Secret,
-		"prefix": t.Prefix,
-	} {
-		if strings.ContainsAny(v, "\r\n") {
-			return fmt.Errorf("backup: target field %q must not contain a newline", name)
-		}
 	}
 	return nil
 }
@@ -437,10 +403,13 @@ func parseRcloneSize(out string) (uint64, error) {
 			continue
 		}
 		if v.Count == 0 {
+			zap.L().Debug("parseRcloneSize: object not found (count 0)", zap.Int("line", i))
 			return 0, fmt.Errorf("backup: object not found at the target")
 		}
+		zap.L().Debug("parseRcloneSize: parsed", zap.Int64("count", v.Count), zap.Uint64("size_bytes", v.Bytes))
 		return v.Bytes, nil
 	}
+	zap.L().Debug("parseRcloneSize: no parsable json line", zap.Int("lines", len(lines)))
 	return 0, fmt.Errorf("backup: could not read object size from rclone output: %q", out)
 }
 
@@ -459,6 +428,7 @@ func shellQuote(s string) string {
 func randomID() (string, error) {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
+		zap.L().Debug("randomID: reading random bytes failed", zap.Error(err))
 		return "", fmt.Errorf("backup: generate id: %w", err)
 	}
 	return hex.EncodeToString(buf), nil

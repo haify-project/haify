@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+
+	"go.uber.org/zap"
 )
 
 // rclone stores SMB/WebDAV passwords "obscured" and refuses a plain-text one
@@ -38,13 +40,17 @@ var obscureRand io.Reader = rand.Reader
 
 // Obscure encodes a password into rclone's config representation.
 func Obscure(plain string) (string, error) {
+	log := zap.L()
+	log.Debug("Obscure: obscuring a secret", zap.Bool("has_secret", plain != ""))
 	block, err := aes.NewCipher(rcloneObscureKey)
 	if err != nil {
+		log.Debug("Obscure: cipher failed", zap.Error(err))
 		return "", fmt.Errorf("backup: obscure cipher: %w", err)
 	}
 	buf := make([]byte, aes.BlockSize+len(plain))
 	iv := buf[:aes.BlockSize]
 	if _, err := io.ReadFull(obscureRand, iv); err != nil {
+		log.Debug("Obscure: reading the iv failed", zap.Error(err))
 		return "", fmt.Errorf("backup: obscure iv: %w", err)
 	}
 	cipher.NewCTR(block, iv).XORKeyStream(buf[aes.BlockSize:], []byte(plain))
@@ -56,15 +62,20 @@ func Obscure(plain string) (string, error) {
 // a value that does not decode is a typo, and finding that out at `target add`
 // time is far better than at restore time.
 func Reveal(obscured string) (string, error) {
+	log := zap.L()
+	log.Debug("Reveal: decoding an obscured secret", zap.Bool("has_secret", obscured != ""))
 	raw, err := base64.RawURLEncoding.DecodeString(obscured)
 	if err != nil {
+		log.Debug("Reveal: not base64url", zap.Error(err))
 		return "", fmt.Errorf("backup: value is not an rclone-obscured secret: %w", err)
 	}
 	if len(raw) < aes.BlockSize {
+		log.Debug("Reveal: value shorter than an iv", zap.Int("decoded_len", len(raw)))
 		return "", fmt.Errorf("backup: value is not an rclone-obscured secret: too short")
 	}
 	block, err := aes.NewCipher(rcloneObscureKey)
 	if err != nil {
+		log.Debug("Reveal: cipher failed", zap.Error(err))
 		return "", fmt.Errorf("backup: obscure cipher: %w", err)
 	}
 	out := make([]byte, len(raw)-aes.BlockSize)

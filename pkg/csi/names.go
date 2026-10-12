@@ -1,5 +1,7 @@
 package csi
 
+import "go.uber.org/zap"
+
 // sanitizeResourceName maps a CSI volume name (typically "pvc-<uuid>") to a
 // DRBD-safe resource name: only [A-Za-z0-9_], starts with a letter, <=64 chars.
 // The result becomes the volumeHandle, so it is stable for the volume's life and
@@ -15,11 +17,14 @@ func sanitizeResourceName(in string) string {
 		}
 	}
 	if len(out) == 0 || !isLetter(out[0]) {
+		zap.L().Debug("sanitizeResourceName: prefixing v, name does not start with a letter", zap.String("name", in))
 		out = append([]rune{'v'}, out...)
 	}
 	if len(out) > 64 {
+		zap.L().Debug("sanitizeResourceName: truncating to 64 characters", zap.String("name", in), zap.Int("length", len(out)))
 		out = out[:64]
 	}
+	zap.L().Debug("sanitizeResourceName: mapped volume name", zap.String("name", in), zap.String("resource", string(out)))
 	return string(out)
 }
 

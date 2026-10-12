@@ -6,6 +6,7 @@ import (
 	"context"
 
 	bolt "go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 // Cluster events (degrade, failover, node loss) used to live only in the
@@ -22,14 +23,17 @@ const eventBucket = "events"
 
 // AppendEventRecord stores one event, dropping the oldest beyond retention.
 func (db *DB) AppendEventRecord(ctx context.Context, record []byte, retention int) error {
+	db.log().Debug("DB.AppendEventRecord: appending event", zap.Int("size_bytes", len(record)), zap.Int("retention", retention))
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.db.Update(func(tx *bolt.Tx) error {
+	var seq uint64
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(eventBucket))
 		if err != nil {
 			return err
 		}
-		seq, err := b.NextSequence()
+		seq, err = b.NextSequence()
 		if err != nil {
 			return err
 		}
@@ -37,22 +41,29 @@ func (db *DB) AppendEventRecord(ctx context.Context, record []byte, retention in
 			return err
 		}
 		if retention > 0 && auditLen(b, seq) > retention+pruneSlack {
+			db.log().Debug("DB.AppendEventRecord: history past retention, pruning", zap.Int("retention", retention))
 			_, err := pruneAudit(b, retention, time.Time{})
 			return err
 		}
 		return nil
 	})
+	db.log().Debug("DB.AppendEventRecord: put", zap.String("bucket", eventBucket), zap.Uint64("seq", seq),
+		zap.Int("size_bytes", len(record)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // RecentEventRecords returns up to limit of the newest stored events, oldest
 // first.
 func (db *DB) RecentEventRecords(ctx context.Context, limit int) ([][]byte, error) {
+	db.log().Debug("DB.RecentEventRecords: reading recent events", zap.Int("limit", limit))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	var out [][]byte
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(eventBucket))
 		if b == nil {
+			db.log().Debug("DB.RecentEventRecords: event bucket absent", zap.String("bucket", eventBucket))
 			return nil
 		}
 		c := b.Cursor()
@@ -64,5 +75,7 @@ func (db *DB) RecentEventRecords(ctx context.Context, limit int) ([][]byte, erro
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
+	db.log().Debug("DB.RecentEventRecords: scan", zap.String("bucket", eventBucket), zap.Int("count", len(out)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	return out, err
 }

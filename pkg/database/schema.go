@@ -138,41 +138,61 @@ func SchemaVersion() int {
 // before anything is written rather than discovered halfway through an upgrade
 // on a production cluster.
 func validateMigrationChain(chain []migration) error {
+	zap.L().Debug("validateMigrationChain: checking chain", zap.Int("count", len(chain)))
 	want := legacySchemaVersion + 1
 	for i, m := range chain {
+		zap.L().Debug("validateMigrationChain: checking step",
+			zap.Int("index", i), zap.Int("to_version", m.to), zap.String("name", m.name), zap.Int("expected_version", want))
 		if m.to != want {
+			zap.L().Debug("validateMigrationChain: step targets the wrong version",
+				zap.Int("index", i), zap.Int("to_version", m.to), zap.Int("expected_version", want))
 			return fmt.Errorf("migration chain is malformed: step %d targets version %d, expected %d", i, m.to, want)
 		}
 		if m.name == "" {
+			zap.L().Debug("validateMigrationChain: step has no name", zap.Int("to_version", m.to))
 			return fmt.Errorf("migration chain is malformed: step to version %d has no name", m.to)
 		}
 		if m.apply == nil {
+			zap.L().Debug("validateMigrationChain: step has no apply function",
+				zap.Int("to_version", m.to), zap.String("name", m.name))
 			return fmt.Errorf("migration chain is malformed: step %q to version %d has no apply function", m.name, m.to)
 		}
 		want++
 	}
+	zap.L().Debug("validateMigrationChain: chain is well formed", zap.Int("count", len(chain)))
 	return nil
 }
 
 // readSchemaVersion returns the version recorded in the database and whether a
 // record was present at all.
 func readSchemaVersion(bdb *bolt.DB, path string) (version int, present bool, err error) {
+	zap.L().Debug("readSchemaVersion: reading schema version", zap.String("path", path))
+	start := time.Now()
 	err = bdb.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(metaBucket))
 		if b == nil {
+			zap.L().Debug("readSchemaVersion: meta bucket absent", zap.String("bucket", metaBucket))
 			return nil
 		}
 		raw := b.Get([]byte(schemaVersionKey))
 		if raw == nil {
+			zap.L().Debug("readSchemaVersion: no version record",
+				zap.String("bucket", metaBucket), zap.String("key", schemaVersionKey))
 			return nil
 		}
 		v, perr := strconv.Atoi(string(raw))
 		if perr != nil || v < 1 {
+			zap.L().Debug("readSchemaVersion: version record is unreadable",
+				zap.String("bucket", metaBucket), zap.String("key", schemaVersionKey),
+				zap.Int("size_bytes", len(raw)), zap.Error(perr))
 			return &IncompatibleSchemaError{Path: path, Found: -1, Supported: SchemaVersion(), Raw: string(raw)}
 		}
 		version, present = v, true
 		return nil
 	})
+	zap.L().Debug("readSchemaVersion: get", zap.String("bucket", metaBucket), zap.String("key", schemaVersionKey),
+		zap.Bool("found", present), zap.Int("version", version),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return 0, false, err
 	}
@@ -182,11 +202,16 @@ func readSchemaVersion(bdb *bolt.DB, path string) (version int, present bool, er
 // putSchemaVersion stamps the version inside an existing write transaction, so
 // it can commit atomically with the migration that earned it.
 func putSchemaVersion(tx *bolt.Tx, version int) error {
+	zap.L().Debug("putSchemaVersion: stamping schema version", zap.Int("version", version))
 	b, err := tx.CreateBucketIfNotExists([]byte(metaBucket))
 	if err != nil {
+		zap.L().Debug("putSchemaVersion: creating meta bucket failed", zap.String("bucket", metaBucket), zap.Error(err))
 		return fmt.Errorf("failed to create %s bucket: %w", metaBucket, err)
 	}
-	return b.Put([]byte(schemaVersionKey), []byte(strconv.Itoa(version)))
+	err = b.Put([]byte(schemaVersionKey), []byte(strconv.Itoa(version)))
+	zap.L().Debug("putSchemaVersion: put", zap.String("bucket", metaBucket), zap.String("key", schemaVersionKey),
+		zap.Int("version", version), zap.Error(err))
+	return err
 }
 
 // backupBeforeMigration copies the database aside before the chain runs.
@@ -215,6 +240,9 @@ func putSchemaVersion(tx *bolt.Tx, version int) error {
 func backupBeforeMigration(bdb *bolt.DB, path string, from int) (string, error) {
 	dst := fmt.Sprintf("%s.v%d.bak", path, from)
 	tmp := dst + ".partial"
+	zap.L().Debug("backupBeforeMigration: copying database aside",
+		zap.String("path", path), zap.Int("from_version", from), zap.String("dest", dst))
+	start := time.Now()
 
 	// View holds a consistent snapshot for the length of the copy, so the
 	// backup is a valid database even though writers are not stopped.
@@ -225,13 +253,18 @@ func backupBeforeMigration(bdb *bolt.DB, path string, from int) (string, error) 
 	// leftover instead of accumulating files. Reporting a cleanup failure here
 	// would replace the error that explains what actually went wrong.
 	if err := bdb.View(func(tx *bolt.Tx) error { return tx.CopyFile(tmp, 0600) }); err != nil {
+		zap.L().Debug("backupBeforeMigration: copy failed", zap.String("tmp", tmp),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		_ = os.Remove(tmp)
 		return "", fmt.Errorf("failed to copy database to %s: %w", tmp, err)
 	}
+	zap.L().Debug("backupBeforeMigration: copy written", zap.String("tmp", tmp), zap.Duration("took", time.Since(start)))
 	if err := os.Rename(tmp, dst); err != nil {
+		zap.L().Debug("backupBeforeMigration: rename failed", zap.String("tmp", tmp), zap.String("dest", dst), zap.Error(err))
 		_ = os.Remove(tmp)
 		return "", fmt.Errorf("failed to move database copy into place at %s: %w", dst, err)
 	}
+	zap.L().Debug("backupBeforeMigration: copy in place", zap.String("dest", dst), zap.Duration("took", time.Since(start)))
 	return dst, nil
 }
 
@@ -246,19 +279,25 @@ func ensureSchema(bdb *bolt.DB, path string, preexisting bool, logger *zap.Logge
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+	logger.Debug("ensureSchema: checking schema", zap.String("path", path), zap.Bool("preexisting", preexisting))
 	if err := validateMigrationChain(migrations); err != nil {
+		logger.Debug("ensureSchema: migration chain invalid", zap.Error(err))
 		return err
 	}
 	target := SchemaVersion()
 
 	current, present, err := readSchemaVersion(bdb, path)
 	if err != nil {
+		logger.Debug("ensureSchema: reading schema version failed", zap.String("path", path), zap.Error(err))
 		return err
 	}
+	logger.Debug("ensureSchema: versions",
+		zap.Int("current_version", current), zap.Bool("present", present), zap.Int("target_version", target))
 
 	switch {
 	case present:
 		// Nothing to infer.
+		logger.Debug("ensureSchema: version record present", zap.Int("current_version", current))
 	case preexisting:
 		current = legacySchemaVersion
 		logger.Info("Database has no schema version record; assuming the pre-versioning schema",
@@ -268,7 +307,9 @@ func ensureSchema(bdb *bolt.DB, path string, preexisting bool, logger *zap.Logge
 	default:
 		// A database this process just created is by definition in the current
 		// shape, so it is stamped rather than migrated.
+		logger.Debug("ensureSchema: new database, stamping current version", zap.Int("version", target))
 		if err := bdb.Update(func(tx *bolt.Tx) error { return putSchemaVersion(tx, target) }); err != nil {
+			logger.Debug("ensureSchema: stamping new database failed", zap.Error(err))
 			return fmt.Errorf("failed to record schema version: %w", err)
 		}
 		logger.Info("Initialized database schema", zap.String("path", path), zap.Int("version", target))
@@ -276,15 +317,20 @@ func ensureSchema(bdb *bolt.DB, path string, preexisting bool, logger *zap.Logge
 	}
 
 	if current > target {
+		logger.Debug("ensureSchema: database is newer than this binary, refusing",
+			zap.Int("current_version", current), zap.Int("target_version", target))
 		return &IncompatibleSchemaError{Path: path, Found: current, Supported: target}
 	}
 
 	if current == target {
+		logger.Debug("ensureSchema: schema already current",
+			zap.Int("version", current), zap.Bool("record_present", present))
 		if !present {
 			// An unversioned database that is already in the current shape
 			// still needs the record, or every subsequent start re-derives the
 			// version by inference instead of reading it.
 			if err := bdb.Update(func(tx *bolt.Tx) error { return putSchemaVersion(tx, target) }); err != nil {
+				logger.Debug("ensureSchema: stamping unversioned database failed", zap.Error(err))
 				return fmt.Errorf("failed to record schema version: %w", err)
 			}
 		}
@@ -298,6 +344,7 @@ func ensureSchema(bdb *bolt.DB, path string, preexisting bool, logger *zap.Logge
 
 	backupPath, err := backupBeforeMigration(bdb, path, current)
 	if err != nil {
+		logger.Debug("ensureSchema: pre-migration copy failed, refusing to migrate", zap.Error(err))
 		// Refusing to start is the better failure. A migration that runs
 		// without a fallback on a volume already too sick to hold a copy can
 		// leave metadata that is neither the old shape nor the new one, and
@@ -310,8 +357,11 @@ func ensureSchema(bdb *bolt.DB, path string, preexisting bool, logger *zap.Logge
 
 	for _, m := range migrations {
 		if m.to <= current {
+			logger.Debug("ensureSchema: migration already applied, skipping",
+				zap.Int("version", m.to), zap.String("name", m.name))
 			continue
 		}
+		logger.Debug("ensureSchema: applying migration", zap.Int("version", m.to), zap.String("name", m.name))
 		started := time.Now()
 		if err := bdb.Update(func(tx *bolt.Tx) error {
 			if err := m.apply(tx); err != nil {
@@ -323,6 +373,8 @@ func ensureSchema(bdb *bolt.DB, path string, preexisting bool, logger *zap.Logge
 			// database is still at whatever the last successful step left. That
 			// is a real, consistent version, and the next start resumes from
 			// it — there is no half-migrated state to clean up by hand.
+			logger.Debug("ensureSchema: migration failed", zap.Int("version", m.to), zap.String("name", m.name),
+				zap.Duration("took", time.Since(started)), zap.Error(err))
 			return fmt.Errorf("database schema migration to version %d (%s) failed; "+
 				"database is intact at version %d and a pre-migration copy is at %s: %w",
 				m.to, m.name, current, backupPath, err)
@@ -340,17 +392,21 @@ func ensureSchema(bdb *bolt.DB, path string, preexisting bool, logger *zap.Logge
 
 // SchemaVersion returns the schema version recorded in this database.
 func (db *DB) SchemaVersion() (int, error) {
+	db.log().Debug("DB.SchemaVersion: reading schema version", zap.String("path", db.path))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	version, present, err := readSchemaVersion(db.db, db.path)
 	if err != nil {
+		db.log().Debug("DB.SchemaVersion: read failed", zap.Error(err))
 		return 0, err
 	}
 	if !present {
 		// Open always leaves a record behind, so its absence means something
 		// removed it underneath us rather than an old database.
+		db.log().Debug("DB.SchemaVersion: version record missing", zap.String("path", db.path))
 		return 0, fmt.Errorf("database %s has no schema version record", db.path)
 	}
+	db.log().Debug("DB.SchemaVersion: done", zap.Int("version", version))
 	return version, nil
 }

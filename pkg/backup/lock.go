@@ -3,6 +3,8 @@ package backup
 import (
 	"fmt"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // Immutable backups: S3 Object Lock.
@@ -51,6 +53,7 @@ func ParseLockMode(s string) (LockMode, error) {
 	case LockCompliance:
 		return LockCompliance, nil
 	default:
+		zap.L().Debug("ParseLockMode: unknown lock mode", zap.String("mode", s))
 		return "", fmt.Errorf("backup: unknown lock mode %q (want governance or compliance)", s)
 	}
 }
@@ -67,24 +70,38 @@ func (t TargetSpec) FullEvery() int {
 }
 
 func (t TargetSpec) validateLock() error {
+	log := zap.L()
+	log.Debug("TargetSpec.validateLock: checking lock settings", zap.String("target", t.Name),
+		zap.String("lock_mode", string(t.LockMode)), zap.Int("lock_days", t.LockDays),
+		zap.Int("full_every_days", t.FullEveryDays))
 	if !t.Locked() {
 		if t.LockDays != 0 {
+			log.Debug("TargetSpec.validateLock: rejected, lock days without a mode", zap.String("target", t.Name))
 			return fmt.Errorf("backup: target %q sets lock days without a lock mode", t.Name)
 		}
+		log.Debug("TargetSpec.validateLock: target is not locked", zap.String("target", t.Name))
 		return nil
 	}
 	if _, err := ParseLockMode(string(t.LockMode)); err != nil {
+		log.Debug("TargetSpec.validateLock: rejected, bad mode", zap.String("target", t.Name), zap.Error(err))
 		return err
 	}
 	if t.Kind != KindS3 {
+		log.Debug("TargetSpec.validateLock: rejected, lock on a non-s3 target", zap.String("target", t.Name),
+			zap.String("kind", string(t.Kind)))
 		return fmt.Errorf("backup: target %q: object lock is an S3 feature; %s targets cannot lock", t.Name, t.Kind)
 	}
 	if t.LockDays < 1 || t.LockDays > 36500 {
+		log.Debug("TargetSpec.validateLock: rejected, lock days out of range", zap.String("target", t.Name),
+			zap.Int("lock_days", t.LockDays))
 		return fmt.Errorf("backup: target %q: lock days must be between 1 and 36500", t.Name)
 	}
 	if t.FullEveryDays < 0 || t.FullEveryDays > 365 {
+		log.Debug("TargetSpec.validateLock: rejected, full-every days out of range", zap.String("target", t.Name),
+			zap.Int("full_every_days", t.FullEveryDays))
 		return fmt.Errorf("backup: target %q: full-every days must be between 1 and 365", t.Name)
 	}
+	log.Debug("TargetSpec.validateLock: lock settings valid", zap.String("target", t.Name))
 	return nil
 }
 
@@ -95,20 +112,27 @@ func (m LockMode) s3() string { return strings.ToUpper(string(m)) }
 // a minimum "1.74.0". A development or unparsable version is taken as too old:
 // a lock silently not applied is the failure this check exists to prevent.
 func rcloneVersionAtLeast(versionLine, min string) bool {
+	log := zap.L()
 	f := strings.Fields(versionLine)
 	if len(f) < 2 {
+		log.Debug("rcloneVersionAtLeast: no version in line, taken as too old", zap.String("line", versionLine))
 		return false
 	}
 	have := parseVersion(strings.TrimPrefix(f[1], "v"))
 	want := parseVersion(min)
 	if have == nil || want == nil {
+		log.Debug("rcloneVersionAtLeast: unparsable version, taken as too old",
+			zap.String("have", f[1]), zap.String("want", min))
 		return false
 	}
 	for i := 0; i < 3; i++ {
 		if have[i] != want[i] {
+			log.Debug("rcloneVersionAtLeast: compared", zap.String("have", f[1]), zap.String("want", min),
+				zap.Bool("at_least", have[i] > want[i]))
 			return have[i] > want[i]
 		}
 	}
+	log.Debug("rcloneVersionAtLeast: exact match", zap.String("have", f[1]), zap.String("want", min))
 	return true
 }
 

@@ -12,6 +12,7 @@ import (
 
 func (m *Monitor) checkNodes(ctx context.Context, sc *pollScope, obs *Observation) {
 	if m.nodes == nil {
+		m.log.Debug("Monitor.checkNodes: no node lister, node checks skipped")
 		return
 	}
 	obs.Nodes.Enabled = true
@@ -19,6 +20,8 @@ func (m *Monitor) checkNodes(ctx context.Context, sc *pollScope, obs *Observatio
 	start := time.Now()
 	nodes, err := m.nodes.GetNodeStatusList(ctx)
 	obs.Nodes.Duration = time.Since(start)
+	m.log.Debug("Monitor.checkNodes: listed nodes",
+		zap.Int("count", len(nodes)), zap.Duration("took", obs.Nodes.Duration), zap.Error(err))
 	if err != nil {
 		obs.Nodes.Err = err
 		m.log.Warn("alert monitor: list nodes failed", zap.Error(err))
@@ -33,6 +36,8 @@ func (m *Monitor) checkNodes(ctx context.Context, sc *pollScope, obs *Observatio
 		if msg == "" {
 			msg = "no response"
 		}
+		m.log.Debug("Monitor.checkNodes: checking node",
+			zap.String("node", n.Name), zap.Bool("reachable", n.Reachable), zap.String("message", n.Message))
 		m.level(event.Event{
 			Type:     event.TypeNodeUnreachable,
 			Severity: event.SeverityCritical,

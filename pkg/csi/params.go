@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // paramAllowRemoteVolumeAccess is the StorageClass parameter (LINSTOR-style)
@@ -43,23 +45,32 @@ type VolumeParams struct {
 
 // ParseVolumeParams validates and defaults the StorageClass parameters.
 func ParseVolumeParams(p map[string]string) (VolumeParams, error) {
+	log := zap.L()
+	// Only known keys are logged by name: a StorageClass can carry arbitrary
+	// parameters, so the map itself is not.
+	log.Debug("ParseVolumeParams: start", zap.Int("parameters", len(p)), zap.String("pool", p["pool"]),
+		zap.String("profile", p["resourceProfile"]))
 	out := VolumeParams{Pool: p["pool"], Replicas: 2, StorageType: "lvm", FaultDomainLabel: "host"}
 	if v := strings.TrimSpace(p["faultDomainLabel"]); v != "" {
+		log.Debug("ParseVolumeParams: fault domain label set", zap.String("fault_domain_label", v))
 		out.FaultDomainLabel = v
 	}
 	out.ResourceProfile = strings.TrimSpace(p["resourceProfile"])
 	if out.Pool == "" && out.ResourceProfile == "" {
+		log.Debug("ParseVolumeParams: neither pool nor profile given")
 		return out, fmt.Errorf("storageclass parameter \"pool\" is required")
 	}
 	if v, ok := p["replicas"]; ok {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
+			log.Debug("ParseVolumeParams: invalid replicas", zap.String("replicas", v))
 			return out, fmt.Errorf("invalid replicas %q", v)
 		}
 		out.Replicas = n
 	}
 	if v, ok := p["storageType"]; ok {
 		if v != "lvm" && v != "zfs" {
+			log.Debug("ParseVolumeParams: invalid storage type", zap.String("storage_type", v))
 			return out, fmt.Errorf("invalid storageType %q (want lvm or zfs)", v)
 		}
 		out.StorageType = v
@@ -67,6 +78,7 @@ func ParseVolumeParams(p map[string]string) (VolumeParams, error) {
 	if v, ok := p[paramAllowRemoteVolumeAccess]; ok {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
+			log.Debug("ParseVolumeParams: invalid remote access flag", zap.String("allow_remote", v))
 			return out, fmt.Errorf("invalid %s %q (want true or false)", paramAllowRemoteVolumeAccess, v)
 		}
 		out.AllowRemoteVolumeAccess = b
@@ -78,6 +90,7 @@ func ParseVolumeParams(p map[string]string) (VolumeParams, error) {
 			key = strings.TrimSpace(key)
 			value = strings.TrimSpace(value)
 			if !ok || key == "" || value == "" {
+				log.Debug("ParseVolumeParams: invalid resource label entry", zap.String("entry", item))
 				return out, fmt.Errorf("invalid resourceLabels entry %q (want key=value)", item)
 			}
 			out.ResourceLabels[key] = value
@@ -88,8 +101,12 @@ func ParseVolumeParams(p map[string]string) (VolumeParams, error) {
 	}
 	qos, err := parseQoS(p)
 	if err != nil {
+		log.Debug("ParseVolumeParams: invalid I/O limits", zap.Error(err))
 		return out, err
 	}
 	out.QoS = qos
+	log.Debug("ParseVolumeParams: parsed", zap.String("pool", out.Pool), zap.Int("replicas", out.Replicas),
+		zap.String("storage_type", out.StorageType), zap.Bool("allow_remote", out.AllowRemoteVolumeAccess),
+		zap.Int("labels", len(out.ResourceLabels)), zap.Int("qos", len(out.QoS)), zap.String("pvc", out.PVC))
 	return out, nil
 }

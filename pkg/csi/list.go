@@ -5,9 +5,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -37,25 +39,37 @@ func isCSIVolume(r *haifypb.ResourceInfo) bool {
 // WaitForFirstConsumer the Pod sat Pending while the provisioner retried. With
 // it, the scheduler does not pick the node in the first place.
 func (s *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
+	topoNode := req.GetAccessibleTopology().GetSegments()[TopologyKeyNode]
+	s.log.Debug("controllerServer.GetCapacity: start", zap.String("pool", req.GetParameters()["pool"]),
+		zap.String("node", topoNode), zap.Int("capabilities", len(req.GetVolumeCapabilities())))
 	for _, c := range req.GetVolumeCapabilities() {
 		if unsupportedCapability(c) != "" {
+			s.log.Debug("controllerServer.GetCapacity: unsupported capability, reporting 0")
 			return &csi.GetCapacityResponse{AvailableCapacity: 0}, nil
 		}
 	}
 	// Parameters are optional in GetCapacity. Without a pool the question is how
 	// much this driver could provision anywhere, which is every pool it knows.
 	if req.GetParameters()["pool"] == "" {
+		s.log.Debug("controllerServer.GetCapacity: no pool given, summing every pool")
 		return s.capacityOfAllPools(ctx)
 	}
 	params, err := ParseVolumeParams(req.GetParameters())
 	if err != nil {
+		s.log.Debug("controllerServer.GetCapacity: invalid parameters", zap.Error(err))
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	start := time.Now()
 	nodes, err := s.backend.ListNodes(ctx)
+	s.log.Debug("controllerServer.GetCapacity: listed nodes", zap.Int("count", len(nodes)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list nodes: %v", err)
 	}
+	start = time.Now()
 	pools, err := s.backend.ListPools(ctx)
+	s.log.Debug("controllerServer.GetCapacity: listed pools", zap.Int("count", len(pools)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list pools: %v", err)
 	}
@@ -68,7 +82,10 @@ func (s *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 			if p.GetName() != want || (p.GetNode() != n.GetAddress() && p.GetNode() != n.GetName()) {
 				continue
 			}
-			if free, known := poolCapacity(p); known {
+			free, known := poolCapacity(p)
+			s.log.Debug("controllerServer.GetCapacity: node hosts pool", zap.String("node", n.GetName()),
+				zap.String("pool", want), zap.Uint64("free_bytes", free), zap.Bool("known", known))
+			if known {
 				capacity[n.GetName()] = free
 			} else {
 				unknown = append(unknown, n.GetName())
@@ -79,11 +96,13 @@ func (s *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 
 	// One node, the case external-provisioner asks about: one CSIStorageCapacity
 	// object per node, because the topology key is per node.
-	if node := req.GetAccessibleTopology().GetSegments()[TopologyKeyNode]; node != "" {
+	if node := topoNode; node != "" {
 		free, ok := capacity[node]
 		if !ok {
 			for _, u := range unknown {
 				if u == node {
+					s.log.Debug("controllerServer.GetCapacity: node reports no capacity figure", zap.String("node", node),
+						zap.String("pool", params.Pool))
 					// Publishing 0 would read as "full" and stop the scheduler
 					// placing anything here, over a figure nobody measured.
 					// Unavailable makes the provisioner retry instead.
@@ -96,17 +115,25 @@ func (s *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 				// limits it is the room on the nodes that would hold the
 				// replicas. Reporting 0 would keep the scheduler away from
 				// exactly the nodes this class lets Pods run on.
+				s.log.Debug("controllerServer.GetCapacity: node lacks pool, remote access allowed, reporting pool-wide",
+					zap.String("node", node), zap.String("pool", params.Pool))
 				return poolWide(capacity, params.Replicas), nil
 			}
 			// The node does not host the pool: it can take none of this class.
+			s.log.Debug("controllerServer.GetCapacity: node does not host the pool, reporting 0", zap.String("node", node),
+				zap.String("pool", params.Pool))
 			return &csi.GetCapacityResponse{AvailableCapacity: 0, MaximumVolumeSize: wrapperspb.Int64(0)}, nil
 		}
+		s.log.Debug("controllerServer.GetCapacity: node capacity", zap.String("node", node), zap.String("pool", params.Pool),
+			zap.Uint64("free_bytes", free))
 		return &csi.GetCapacityResponse{
 			AvailableCapacity: int64(free),
 			MaximumVolumeSize: wrapperspb.Int64(int64(free)),
 		}, nil
 	}
 
+	s.log.Debug("controllerServer.GetCapacity: no node in topology, reporting pool-wide", zap.String("pool", params.Pool),
+		zap.Int("nodes_known", len(capacity)), zap.Int("nodes_unknown", len(unknown)))
 	return poolWide(capacity, params.Replicas), nil
 }
 
@@ -126,6 +153,8 @@ func poolWide(capacity map[string]uint64, replicas int) *csi.GetCapacityResponse
 	if replicas > 0 && len(frees) >= replicas {
 		maxVol = frees[replicas-1]
 	}
+	zap.L().Debug("poolWide: computed", zap.Int("nodes", len(frees)), zap.Int("replicas", replicas),
+		zap.Uint64("total_bytes", total), zap.Uint64("max_volume_bytes", maxVol))
 	return &csi.GetCapacityResponse{
 		AvailableCapacity: int64(total),
 		MaximumVolumeSize: wrapperspb.Int64(int64(maxVol)),
@@ -148,7 +177,12 @@ func csiVolume(r *haifypb.ResourceInfo) *csi.Volume {
 // ListVolumes returns the volumes this driver created, in a stable order so the
 // CO can page through them with the token it is handed back.
 func (s *controllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
+	s.log.Debug("controllerServer.ListVolumes: start", zap.String("starting_token", req.GetStartingToken()),
+		zap.Int32("max_entries", req.GetMaxEntries()))
+	t0 := time.Now()
 	all, err := s.backend.ListResources(ctx)
+	s.log.Debug("controllerServer.ListVolumes: listed resources", zap.Int("count", len(all)),
+		zap.Duration("took", time.Since(t0)), zap.Error(err))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list resources: %v", err)
 	}
@@ -162,8 +196,11 @@ func (s *controllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumes
 
 	start, end, next, err := page(len(vols), req.GetStartingToken(), req.GetMaxEntries())
 	if err != nil {
+		s.log.Debug("controllerServer.ListVolumes: bad paging", zap.Error(err))
 		return nil, err
 	}
+	s.log.Debug("controllerServer.ListVolumes: page", zap.Int("csi_volumes", len(vols)), zap.Int("start", start),
+		zap.Int("end", end), zap.String("next_token", next))
 	resp := &csi.ListVolumesResponse{NextToken: next}
 	for _, r := range vols[start:end] {
 		resp.Entries = append(resp.Entries, &csi.ListVolumesResponse_Entry{Volume: csiVolume(r)})
@@ -173,10 +210,15 @@ func (s *controllerServer) ListVolumes(ctx context.Context, req *csi.ListVolumes
 
 // ControllerGetVolume returns one volume.
 func (s *controllerServer) ControllerGetVolume(ctx context.Context, req *csi.ControllerGetVolumeRequest) (*csi.ControllerGetVolumeResponse, error) {
+	s.log.Debug("controllerServer.ControllerGetVolume: start", zap.String("resource", req.GetVolumeId()))
 	if req.GetVolumeId() == "" {
+		s.log.Debug("controllerServer.ControllerGetVolume: rejected, no volume id")
 		return nil, status.Error(codes.InvalidArgument, "volume id is required")
 	}
+	start := time.Now()
 	r, err := s.backend.GetResource(ctx, req.GetVolumeId())
+	s.log.Debug("controllerServer.ControllerGetVolume: got resource", zap.String("resource", req.GetVolumeId()),
+		zap.Bool("found", err == nil && r != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil || r == nil {
 		return nil, status.Errorf(codes.NotFound, "volume %q not found", req.GetVolumeId())
 	}
@@ -195,15 +237,23 @@ func (s *controllerServer) ControllerGetVolume(ctx context.Context, req *csi.Con
 // each volume. The two filters narrow that walk — to one volume, or to one
 // snapshot, whose ID already names the node that holds it.
 func (s *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+	s.log.Debug("controllerServer.ListSnapshots: start", zap.String("snapshot_id", req.GetSnapshotId()),
+		zap.String("source_resource", req.GetSourceVolumeId()), zap.String("starting_token", req.GetStartingToken()),
+		zap.Int32("max_entries", req.GetMaxEntries()), zap.Int("secrets", len(req.GetSecrets())))
 	var entries []*csi.Snapshot
 
 	switch {
 	case req.GetSnapshotId() != "":
+		s.log.Debug("controllerServer.ListSnapshots: filtering by snapshot id", zap.String("snapshot_id", req.GetSnapshotId()))
 		resource, node, name, err := parseSnapshotID(req.GetSnapshotId())
 		if err != nil {
+			s.log.Debug("controllerServer.ListSnapshots: malformed snapshot id, matches nothing", zap.Error(err))
 			return &csi.ListSnapshotsResponse{}, nil // an ID nobody could have issued matches nothing
 		}
+		start := time.Now()
 		r, err := s.backend.GetResource(ctx, resource)
+		s.log.Debug("controllerServer.ListSnapshots: got source resource", zap.String("resource", resource),
+			zap.Bool("found", err == nil && r != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil || r == nil {
 			return &csi.ListSnapshotsResponse{}, nil
 		}
@@ -214,14 +264,22 @@ func (s *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnaps
 		}
 
 	case req.GetSourceVolumeId() != "":
+		s.log.Debug("controllerServer.ListSnapshots: filtering by source volume", zap.String("resource", req.GetSourceVolumeId()))
+		start := time.Now()
 		r, err := s.backend.GetResource(ctx, req.GetSourceVolumeId())
+		s.log.Debug("controllerServer.ListSnapshots: got source resource", zap.String("resource", req.GetSourceVolumeId()),
+			zap.Bool("found", err == nil && r != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil || r == nil {
 			return &csi.ListSnapshotsResponse{}, nil
 		}
 		entries = s.snapshotsOf(ctx, r)
 
 	default:
+		s.log.Debug("controllerServer.ListSnapshots: no filter, walking every CSI volume")
+		start := time.Now()
 		all, err := s.backend.ListResources(ctx)
+		s.log.Debug("controllerServer.ListSnapshots: listed resources", zap.Int("count", len(all)),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "list resources: %v", err)
 		}
@@ -235,8 +293,11 @@ func (s *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnaps
 	sort.Slice(entries, func(i, j int) bool { return entries[i].GetSnapshotId() < entries[j].GetSnapshotId() })
 	start, end, next, err := page(len(entries), req.GetStartingToken(), req.GetMaxEntries())
 	if err != nil {
+		s.log.Debug("controllerServer.ListSnapshots: bad paging", zap.Error(err))
 		return nil, err
 	}
+	s.log.Debug("controllerServer.ListSnapshots: page", zap.Int("snapshots", len(entries)), zap.Int("start", start),
+		zap.Int("end", end), zap.String("next_token", next))
 	resp := &csi.ListSnapshotsResponse{NextToken: next}
 	for _, snap := range entries[start:end] {
 		resp.Entries = append(resp.Entries, &csi.ListSnapshotsResponse_Entry{Snapshot: snap})
@@ -248,8 +309,10 @@ func (s *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnaps
 func (s *controllerServer) snapshotsOf(ctx context.Context, r *haifypb.ResourceInfo) []*csi.Snapshot {
 	var out []*csi.Snapshot
 	for _, node := range r.GetNodes() {
+		s.log.Debug("controllerServer.snapshotsOf: asking replica node", zap.String("resource", r.GetName()), zap.String("node", node))
 		out = append(out, s.snapshotsOn(ctx, r, node)...)
 	}
+	s.log.Debug("controllerServer.snapshotsOf: done", zap.String("resource", r.GetName()), zap.Int("count", len(out)))
 	return out
 }
 
@@ -263,17 +326,24 @@ func (s *controllerServer) snapshotsOf(ctx context.Context, r *haifypb.ResourceI
 func (s *controllerServer) snapshotsOn(ctx context.Context, r *haifypb.ResourceInfo, node string) []*csi.Snapshot {
 	volumePath, _, err := snapshotSource(r)
 	if err != nil {
+		s.log.Debug("controllerServer.snapshotsOn: volume has no snapshot source, skipping", zap.String("resource", r.GetName()),
+			zap.Error(err))
 		return nil
 	}
+	start := time.Now()
 	snaps, err := s.backend.ListSnapshots(ctx, volumePath, node)
+	s.log.Debug("controllerServer.snapshotsOn: listed snapshots", zap.String("volume", volumePath), zap.String("node", node),
+		zap.Int("count", len(snaps)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil
 	}
 	var out []*csi.Snapshot
 	for _, snap := range snaps {
 		if !strings.HasPrefix(snap.GetName(), snapshotNamePrefix) {
+			s.log.Debug("controllerServer.snapshotsOn: not a CSI snapshot, skipping", zap.String("snapshot", snap.GetName()))
 			continue
 		}
+		s.log.Debug("controllerServer.snapshotsOn: CSI snapshot", zap.String("snapshot", snap.GetName()), zap.String("node", node))
 		out = append(out, &csi.Snapshot{
 			SnapshotId:     makeSnapshotID(r.GetName(), node, snap.GetName()),
 			SourceVolumeId: r.GetName(),
@@ -292,10 +362,12 @@ func page(n int, token string, maxEntries int32) (start, end int, next string, e
 	if token != "" {
 		start, err = strconv.Atoi(token)
 		if err != nil || start < 0 || start > n {
+			zap.L().Debug("page: invalid starting token", zap.String("token", token), zap.Int("count", n))
 			return 0, 0, "", status.Errorf(codes.Aborted, "invalid starting token %q", token)
 		}
 	}
 	if maxEntries < 0 {
+		zap.L().Debug("page: negative max entries", zap.Int32("max_entries", maxEntries))
 		return 0, 0, "", status.Error(codes.InvalidArgument, "max_entries must not be negative")
 	}
 	end = n
@@ -310,19 +382,26 @@ func page(n int, token string, maxEntries int32) (start, end int, next string, e
 // across every pool that reports a figure, and the largest single pool as the
 // biggest volume that could fit on one node.
 func (s *controllerServer) capacityOfAllPools(ctx context.Context) (*csi.GetCapacityResponse, error) {
+	start := time.Now()
 	pools, err := s.backend.ListPools(ctx)
+	s.log.Debug("controllerServer.capacityOfAllPools: listed pools", zap.Int("count", len(pools)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list pools: %v", err)
 	}
 	var total, largest uint64
 	for _, p := range pools {
-		if free, known := poolCapacity(p); known {
+		free, known := poolCapacity(p)
+		s.log.Debug("controllerServer.capacityOfAllPools: pool", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()),
+			zap.Uint64("free_bytes", free), zap.Bool("known", known))
+		if known {
 			total += free
 			if free > largest {
 				largest = free
 			}
 		}
 	}
+	s.log.Debug("controllerServer.capacityOfAllPools: done", zap.Uint64("total_bytes", total), zap.Uint64("largest_bytes", largest))
 	return &csi.GetCapacityResponse{
 		AvailableCapacity: int64(total),
 		MaximumVolumeSize: wrapperspb.Int64(int64(largest)),

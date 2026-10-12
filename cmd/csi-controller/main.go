@@ -34,11 +34,16 @@ func main() {
 
 	log := logging.Production()
 	defer func() { _ = log.Sync() }()
+	log.Debug("main: csi-controller starting", zap.String("endpoint", *endpoint), zap.String("haify_controller", *haifyAddr),
+		zap.Duration("health_interval", *healthInterval), zap.Bool("leader_election", *leaderElection),
+		zap.String("leader_election_namespace", *leaderElectionNamespace))
 
 	// With [auth] or [rbac] on the controller, every call needs a token:
 	// HAIFY_TOKEN (the manifests fill it from the haify-api-token Secret),
 	// else ~/.haify/token or /etc/haify/token.
-	haify, err := client.NewHaifyClient(*haifyAddr, client.WithToken(client.ResolveToken("")))
+	token := client.ResolveToken("")
+	log.Debug("main: connecting to haify-controller", zap.String("addr", *haifyAddr), zap.Bool("has_token", token != ""))
+	haify, err := client.NewHaifyClient(*haifyAddr, client.WithToken(token))
 	if err != nil {
 		log.Fatal("connect haify-controller", zap.Error(err))
 	}
@@ -62,7 +67,10 @@ func main() {
 		if *leaderElection {
 			lease = leaseNamespace(*leaderElectionNamespace)
 		}
+		log.Debug("main: starting health reporter", zap.Duration("interval", *healthInterval), zap.String("lease_namespace", lease))
 		startHealthReporter(ctx, haify, *healthInterval, lease, log)
+	} else {
+		log.Debug("main: health reporter disabled by --health-interval=0")
 	}
 
 	if err := d.Run(ctx); err != nil {
@@ -76,6 +84,8 @@ func main() {
 // provisioning does not depend on it. With leaseNamespace set it runs only while
 // this replica holds the Lease there.
 func startHealthReporter(ctx context.Context, haify csi.HaifyBackend, interval time.Duration, leaseNamespace string, log *zap.Logger) {
+	log.Debug("startHealthReporter: loading in-cluster config", zap.Duration("interval", interval),
+		zap.String("lease_namespace", leaseNamespace))
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Warn("volume health reporting disabled: not running in a cluster", zap.Error(err))
@@ -91,16 +101,20 @@ func startHealthReporter(ctx context.Context, haify csi.HaifyBackend, interval t
 	recorder := broadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: csi.DriverName})
 	go func() {
 		<-ctx.Done()
+		log.Debug("startHealthReporter: context done, shutting down event broadcaster")
 		broadcaster.Shutdown()
 	}()
 	run := func(ctx context.Context) {
 		// A fresh reporter per term: what a previous term saw may be stale by
 		// the time this replica leads again.
+		log.Debug("startHealthReporter: starting a reporter term")
 		csi.NewHealthReporter(haify, kube, recorder, interval, log).Run(ctx)
 	}
 	if leaseNamespace == "" {
+		log.Debug("startHealthReporter: no leader election, running directly")
 		go run(ctx)
 	} else {
+		log.Debug("startHealthReporter: running under leader election", zap.String("namespace", leaseNamespace))
 		go runWhileLeader(ctx, kube, leaseNamespace, leaseIdentity(), log, run)
 	}
 	log.Info("volume health reporting enabled", zap.Duration("interval", interval),

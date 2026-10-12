@@ -8,6 +8,7 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 // Backup state values. A backup is only usable for a restore in StateCompleted;
@@ -139,6 +140,13 @@ type Backup struct {
 
 // SaveBackupTarget saves or updates a backup target.
 func (db *DB) SaveBackupTarget(ctx context.Context, t *BackupTarget) error {
+	// User is an S3 access key id and Secret a key or password: only their
+	// presence is traced.
+	db.log().Debug("DB.SaveBackupTarget: saving backup target",
+		zap.String("target", t.Name), zap.String("kind", t.Kind), zap.String("bucket_name", t.Bucket),
+		zap.String("endpoint", t.Endpoint), zap.String("host", t.Host), zap.String("share", t.Share),
+		zap.Bool("has_user", t.User != ""), zap.Bool("has_secret", t.Secret != ""),
+		zap.String("lock_mode", t.LockMode), zap.Int("lock_days", t.LockDays))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -150,26 +158,38 @@ func (db *DB) SaveBackupTarget(ctx context.Context, t *BackupTarget) error {
 
 	data, err := json.Marshal(t)
 	if err != nil {
+		db.log().Debug("DB.SaveBackupTarget: marshal failed", zap.String("target", t.Name), zap.Error(err))
 		return fmt.Errorf("failed to marshal backup target: %w", err)
 	}
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(backupTargetsBucket)).Put([]byte(t.Name), data)
 	})
+	db.log().Debug("DB.SaveBackupTarget: put", zap.String("bucket", backupTargetsBucket), zap.String("key", t.Name),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // GetBackupTarget retrieves a backup target by name.
 func (db *DB) GetBackupTarget(ctx context.Context, name string) (*BackupTarget, error) {
+	db.log().Debug("DB.GetBackupTarget: reading backup target", zap.String("target", name))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var t BackupTarget
+	found, size := false, 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		data := tx.Bucket([]byte(backupTargetsBucket)).Get([]byte(name))
 		if data == nil {
 			return fmt.Errorf("backup target %q not found", name)
 		}
+		found, size = true, len(data)
 		return json.Unmarshal(data, &t)
 	})
+	db.log().Debug("DB.GetBackupTarget: get", zap.String("bucket", backupTargetsBucket), zap.String("key", name),
+		zap.Bool("found", found), zap.Int("size_bytes", size),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -178,20 +198,25 @@ func (db *DB) GetBackupTarget(ctx context.Context, name string) (*BackupTarget, 
 
 // ListBackupTargets lists all backup targets, name-ordered.
 func (db *DB) ListBackupTargets(ctx context.Context) ([]*BackupTarget, error) {
+	db.log().Debug("DB.ListBackupTargets: listing backup targets")
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	targets := make([]*BackupTarget, 0)
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte(backupTargetsBucket)).ForEach(func(_, v []byte) error {
+		return tx.Bucket([]byte(backupTargetsBucket)).ForEach(func(k, v []byte) error {
 			var t BackupTarget
 			if err := json.Unmarshal(v, &t); err != nil {
+				db.log().Debug("DB.ListBackupTargets: decoding entry failed", zap.ByteString("key", k), zap.Error(err))
 				return err
 			}
 			targets = append(targets, &t)
 			return nil
 		})
 	})
+	db.log().Debug("DB.ListBackupTargets: scan", zap.String("bucket", backupTargetsBucket),
+		zap.Int("count", len(targets)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -201,46 +226,68 @@ func (db *DB) ListBackupTargets(ctx context.Context) ([]*BackupTarget, error) {
 
 // DeleteBackupTarget deletes a backup target by name.
 func (db *DB) DeleteBackupTarget(ctx context.Context, name string) error {
+	db.log().Debug("DB.DeleteBackupTarget: deleting backup target", zap.String("target", name))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(backupTargetsBucket)).Delete([]byte(name))
 	})
+	db.log().Debug("DB.DeleteBackupTarget: delete", zap.String("bucket", backupTargetsBucket), zap.String("key", name),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // ==================== BACKUP ====================
 
 // SaveBackup saves or updates a backup record.
 func (db *DB) SaveBackup(ctx context.Context, b *Backup) error {
+	db.log().Debug("DB.SaveBackup: saving backup record",
+		zap.String("backup", b.ID), zap.String("resource", b.Resource), zap.String("target", b.Target),
+		zap.String("node", b.Node), zap.String("state", b.State), zap.String("kind", b.Kind),
+		zap.String("parent", b.Parent), zap.Int("volumes", len(b.Volumes)), zap.Uint64("total_bytes", b.TotalBytes))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	if b.ID == "" {
+		db.log().Debug("DB.SaveBackup: refusing record without id", zap.String("resource", b.Resource))
 		return fmt.Errorf("backup id is required")
 	}
 	data, err := json.Marshal(b)
 	if err != nil {
+		db.log().Debug("DB.SaveBackup: marshal failed", zap.String("backup", b.ID), zap.Error(err))
 		return fmt.Errorf("failed to marshal backup: %w", err)
 	}
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(backupsBucket)).Put([]byte(b.ID), data)
 	})
+	db.log().Debug("DB.SaveBackup: put", zap.String("bucket", backupsBucket), zap.String("key", b.ID),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // GetBackup retrieves a backup record by id.
 func (db *DB) GetBackup(ctx context.Context, id string) (*Backup, error) {
+	db.log().Debug("DB.GetBackup: reading backup record", zap.String("backup", id))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var b Backup
+	found, size := false, 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		data := tx.Bucket([]byte(backupsBucket)).Get([]byte(id))
 		if data == nil {
 			return fmt.Errorf("backup %q not found", id)
 		}
+		found, size = true, len(data)
 		return json.Unmarshal(data, &b)
 	})
+	db.log().Debug("DB.GetBackup: get", zap.String("bucket", backupsBucket), zap.String("key", id),
+		zap.Bool("found", found), zap.Int("size_bytes", size),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -250,14 +297,19 @@ func (db *DB) GetBackup(ctx context.Context, id string) (*Backup, error) {
 // ListBackups lists backup records, newest first. An empty resource or target
 // matches everything.
 func (db *DB) ListBackups(ctx context.Context, resource, target string) ([]*Backup, error) {
+	db.log().Debug("DB.ListBackups: listing backup records", zap.String("resource", resource), zap.String("target", target))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	backups := make([]*Backup, 0)
+	scanned := 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte(backupsBucket)).ForEach(func(_, v []byte) error {
+		return tx.Bucket([]byte(backupsBucket)).ForEach(func(k, v []byte) error {
+			scanned++
 			var b Backup
 			if err := json.Unmarshal(v, &b); err != nil {
+				db.log().Debug("DB.ListBackups: decoding entry failed", zap.ByteString("key", k), zap.Error(err))
 				return err
 			}
 			if resource != "" && b.Resource != resource {
@@ -270,6 +322,8 @@ func (db *DB) ListBackups(ctx context.Context, resource, target string) ([]*Back
 			return nil
 		})
 	})
+	db.log().Debug("DB.ListBackups: scan", zap.String("bucket", backupsBucket), zap.Int("scanned", scanned),
+		zap.Int("count", len(backups)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -279,10 +333,15 @@ func (db *DB) ListBackups(ctx context.Context, resource, target string) ([]*Back
 
 // DeleteBackup deletes a backup record by id.
 func (db *DB) DeleteBackup(ctx context.Context, id string) error {
+	db.log().Debug("DB.DeleteBackup: deleting backup record", zap.String("backup", id))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(backupsBucket)).Delete([]byte(id))
 	})
+	db.log().Debug("DB.DeleteBackup: delete", zap.String("bucket", backupsBucket), zap.String("key", id),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }

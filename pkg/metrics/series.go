@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 )
 
 // ==================== Wholesale-replaced gauge vectors ====================
@@ -48,17 +49,24 @@ func (s *seriesSet) set(labels prometheus.Labels, value float64) {
 // commit deletes every series that was exported before this cycle and was not
 // written during it.
 func (s *seriesSet) commit() {
+	deleted := 0
 	for key, labels := range s.live {
 		if _, kept := s.next[key]; !kept {
 			s.vec.Delete(labels)
+			deleted++
 		}
 	}
 	s.live = s.next
 	s.next = nil
+	if deleted > 0 {
+		zap.L().Debug("seriesSet.commit: vanished series deleted",
+			zap.Int("deleted", deleted), zap.Int("series", len(s.live)))
+	}
 }
 
 // reset drops every series, used only by ResetMetrics.
 func (s *seriesSet) reset() {
+	zap.L().Debug("seriesSet.reset: dropping series", zap.Int("series", len(s.live)))
 	s.vec.Reset()
 	s.live = map[string]prometheus.Labels{}
 	s.next = nil

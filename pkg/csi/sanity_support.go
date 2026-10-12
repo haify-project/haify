@@ -9,6 +9,7 @@ import (
 	"time"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 )
 
 // sanityBackend is a concurrency-safe in-memory HaifyBackend for the CSI sanity
@@ -26,6 +27,7 @@ type sanityBackend struct {
 // NewSanityFakeBackend builds a fake backend seeded with the given node names.
 // Every node hosts the "vg0" pool the sanity suite provisions against.
 func NewSanityFakeBackend(nodeNames ...string) HaifyBackend {
+	zap.L().Debug("NewSanityFakeBackend: seeding", zap.Strings("nodes", nodeNames))
 	b := &sanityBackend{resources: map[string]*haifypb.ResourceInfo{}}
 	for i, n := range nodeNames {
 		addr := fmt.Sprintf("10.0.0.%d", i+1)
@@ -40,6 +42,8 @@ func NewSanityFakeBackend(nodeNames ...string) HaifyBackend {
 }
 
 func (b *sanityBackend) CreateResourceWithPoolAndType(_ context.Context, name string, port uint32, nodes []string, _ string, sizeGB uint32, pool, _ string, _ map[string]string) error {
+	zap.L().Debug("sanityBackend.CreateResourceWithPoolAndType: creating", zap.String("resource", name),
+		zap.Strings("nodes", nodes), zap.Uint32("size_gb", sizeGB), zap.String("pool", pool))
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.resources[name] = &haifypb.ResourceInfo{
@@ -65,8 +69,10 @@ func (b *sanityBackend) GetResource(_ context.Context, name string) (*haifypb.Re
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if r, ok := b.resources[name]; ok {
+		zap.L().Debug("sanityBackend.GetResource: found", zap.String("resource", name))
 		return r, nil
 	}
+	zap.L().Debug("sanityBackend.GetResource: not found", zap.String("resource", name))
 	return nil, fmt.Errorf("resource %q not found", name)
 }
 
@@ -81,6 +87,7 @@ func (b *sanityBackend) ListResources(context.Context) ([]*haifypb.ResourceInfo,
 }
 
 func (b *sanityBackend) DeleteResource(_ context.Context, name string) error {
+	zap.L().Debug("sanityBackend.DeleteResource: deleting", zap.String("resource", name))
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.resources, name)
@@ -116,9 +123,13 @@ func (b *sanityBackend) CreateSnapshot(_ context.Context, volume, snapshotName, 
 	k := volume + "|" + node
 	for _, s := range b.snapshots[k] {
 		if s.GetName() == snapshotName {
+			zap.L().Debug("sanityBackend.CreateSnapshot: exists (idempotent)", zap.String("volume", volume),
+				zap.String("snapshot", snapshotName), zap.String("node", node))
 			return nil // idempotent
 		}
 	}
+	zap.L().Debug("sanityBackend.CreateSnapshot: creating", zap.String("volume", volume),
+		zap.String("snapshot", snapshotName), zap.String("node", node))
 	// The controller reports each snapshot's creation time (lv_time), and CSI
 	// makes creation_time required, so the fake has to carry one too.
 	b.snapshots[k] = append(b.snapshots[k], &haifypb.SnapshotInfo{Name: snapshotName, Volume: volume,
@@ -127,6 +138,8 @@ func (b *sanityBackend) CreateSnapshot(_ context.Context, volume, snapshotName, 
 }
 
 func (b *sanityBackend) DeleteSnapshot(_ context.Context, volume, snapshotName, node string) error {
+	zap.L().Debug("sanityBackend.DeleteSnapshot: deleting", zap.String("volume", volume),
+		zap.String("snapshot", snapshotName), zap.String("node", node))
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	k := volume + "|" + node

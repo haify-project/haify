@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/haify-project/haify/pkg/logging"
 
@@ -23,6 +24,8 @@ func main() {
 
 	log := logging.Production()
 	defer func() { _ = log.Sync() }()
+	log.Debug("main: csi-node starting", zap.String("endpoint", *endpoint), zap.String("haify_controller", *haifyAddr),
+		zap.String("node", *nodeName), zap.String("node_ip", *nodeIP))
 
 	if *nodeName == "" || *nodeIP == "" {
 		log.Fatal("node-name and node-ip are required (set via downward API NODE_NAME / NODE_IP)")
@@ -31,7 +34,9 @@ func main() {
 	// With [auth] or [rbac] on the controller, every call needs a token:
 	// HAIFY_TOKEN (the manifests fill it from the haify-api-token Secret),
 	// else ~/.haify/token or /etc/haify/token.
-	haify, err := client.NewHaifyClient(*haifyAddr, client.WithToken(client.ResolveToken("")))
+	token := client.ResolveToken("")
+	log.Debug("main: connecting to haify-controller", zap.String("addr", *haifyAddr), zap.Bool("has_token", token != ""))
+	haify, err := client.NewHaifyClient(*haifyAddr, client.WithToken(token))
 	if err != nil {
 		log.Fatal("connect haify-controller", zap.Error(err))
 	}
@@ -43,8 +48,12 @@ func main() {
 
 	// Auto-register this node into haify (idempotent on the controller side):
 	// maps the k8s node name to its storage IP so topology and SSH line up.
+	start := time.Now()
 	if _, err := haify.RegisterNode(context.Background(), *nodeName, *nodeIP); err != nil {
 		log.Warn("register node (continuing)", zap.Error(err))
+	} else {
+		log.Debug("main: registered node", zap.String("node", *nodeName), zap.String("node_ip", *nodeIP),
+			zap.Duration("took", time.Since(start)))
 	}
 
 	d := csi.NewDriver(*endpoint, log,

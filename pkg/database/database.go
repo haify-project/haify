@@ -70,6 +70,15 @@ type Config struct {
 // Default database path
 const DefaultDBPath = "/var/lib/haify/haify.db"
 
+// log returns the database's logger, or the process-wide one when it was
+// opened without one, so a trace never panics on a nil logger.
+func (db *DB) log() *zap.Logger {
+	if db == nil || db.logger == nil {
+		return zap.L()
+	}
+	return db.logger
+}
+
 // closeAfterFailedOpen releases the file when Open gives up after bolt has
 // already taken it.
 //
@@ -87,6 +96,7 @@ func closeAfterFailedOpen(db *bolt.DB, path string, logger *zap.Logger) {
 		// out of an error the caller still needs to see.
 		logger = zap.NewNop()
 	}
+	logger.Debug("closeAfterFailedOpen: closing database after aborted open", zap.String("path", path))
 	if err := db.Close(); err != nil {
 		logger.Warn("Failed to close the database after an aborted open; the file may stay locked",
 			zap.String("path", path), zap.Error(err))
@@ -95,13 +105,23 @@ func closeAfterFailedOpen(db *bolt.DB, path string, logger *zap.Logger) {
 
 // Open opens the database connection
 func Open(cfg *Config, logger *zap.Logger) (*DB, error) {
+	trace := logger
+	if trace == nil {
+		trace = zap.L()
+	}
 	if cfg == nil {
+		trace.Debug("Open: no config given, using default path", zap.String("path", DefaultDBPath))
 		cfg = &Config{Path: DefaultDBPath}
 	}
+	trace.Debug("Open: opening database",
+		zap.String("path", cfg.Path),
+		zap.Int("audit_retention", cfg.AuditRetention),
+		zap.Duration("audit_max_age", cfg.AuditMaxAge))
 
 	// Ensure directory exists
 	dir := filepath.Dir(cfg.Path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
+		trace.Debug("Open: creating database directory failed", zap.String("dir", dir), zap.Error(err))
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
@@ -112,10 +132,17 @@ func Open(cfg *Config, logger *zap.Logger) (*DB, error) {
 	preexisting := false
 	if fi, statErr := os.Stat(cfg.Path); statErr == nil && fi.Size() > 0 {
 		preexisting = true
+		trace.Debug("Open: database file already holds data",
+			zap.String("path", cfg.Path), zap.Int64("size_bytes", fi.Size()))
+	} else {
+		trace.Debug("Open: database file is new or empty", zap.String("path", cfg.Path), zap.Error(statErr))
 	}
 
 	// Open database
+	start := time.Now()
 	db, err := bolt.Open(cfg.Path, 0600, &bolt.Options{Timeout: 5 * time.Second})
+	trace.Debug("Open: bolt open", zap.String("path", cfg.Path),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -126,24 +153,29 @@ func Open(cfg *Config, logger *zap.Logger) (*DB, error) {
 	// the layout that was actually on disk, not one already patched up by
 	// CreateBucketIfNotExists.
 	if err := ensureSchema(db, cfg.Path, preexisting, logger); err != nil {
+		trace.Debug("Open: schema check failed", zap.String("path", cfg.Path), zap.Error(err))
 		closeAfterFailedOpen(db, cfg.Path, logger)
 		return nil, err
 	}
 
 	// Initialize buckets
+	start = time.Now()
 	if err := db.Update(func(tx *bolt.Tx) error {
 		buckets := []string{nodesBucket, poolsBucket, resourcesBucket, profilesBucket, volumesBucket, gatewaysBucket, haConfigsBucket, rbacBucket, schedulesBucket, backupTargetsBucket, backupsBucket, backupSchedulesBucket, notifyChannelsBucket}
 		for _, bucket := range buckets {
 			_, err := tx.CreateBucketIfNotExists([]byte(bucket))
+			trace.Debug("Open: ensuring bucket", zap.String("bucket", bucket), zap.Error(err))
 			if err != nil {
 				return fmt.Errorf("failed to create bucket %s: %w", bucket, err)
 			}
 		}
 		return nil
 	}); err != nil {
+		trace.Debug("Open: bucket initialization failed", zap.String("path", cfg.Path), zap.Error(err))
 		closeAfterFailedOpen(db, cfg.Path, logger)
 		return nil, fmt.Errorf("failed to initialize buckets: %w", err)
 	}
+	trace.Debug("Open: buckets initialized", zap.Duration("took", time.Since(start)))
 
 	database := &DB{
 		db:          db,
@@ -160,9 +192,12 @@ func Open(cfg *Config, logger *zap.Logger) (*DB, error) {
 
 // Close closes the database connection
 func (db *DB) Close() error {
+	db.log().Debug("DB.Close: closing database", zap.String("path", db.path))
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.db.Close()
+	err := db.db.Close()
+	db.log().Debug("DB.Close: closed", zap.String("path", db.path), zap.Error(err))
+	return err
 }
 
 // ==================== NODE ====================
@@ -196,6 +231,8 @@ type Node struct {
 
 // SaveNode saves or updates a node
 func (db *DB) SaveNode(ctx context.Context, node *Node) error {
+	db.log().Debug("DB.SaveNode: saving node",
+		zap.String("node", node.Name), zap.String("address", node.Address), zap.String("state", node.State))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -207,29 +244,41 @@ func (db *DB) SaveNode(ctx context.Context, node *Node) error {
 
 	data, err := json.Marshal(node)
 	if err != nil {
+		db.log().Debug("DB.SaveNode: marshal failed", zap.String("node", node.Name), zap.Error(err))
 		return fmt.Errorf("failed to marshal node: %w", err)
 	}
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(nodesBucket))
 		return b.Put([]byte(node.Address), data)
 	})
+	db.log().Debug("DB.SaveNode: put", zap.String("bucket", nodesBucket), zap.String("key", node.Address),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // GetNode retrieves a node by address
 func (db *DB) GetNode(ctx context.Context, address string) (*Node, error) {
+	db.log().Debug("DB.GetNode: reading node", zap.String("address", address))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var node Node
+	found, size := false, 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(nodesBucket))
 		data := b.Get([]byte(address))
 		if data == nil {
 			return fmt.Errorf("node not found")
 		}
+		found, size = true, len(data)
 		return json.Unmarshal(data, &node)
 	})
+	db.log().Debug("DB.GetNode: get", zap.String("bucket", nodesBucket), zap.String("key", address),
+		zap.Bool("found", found), zap.Int("size_bytes", size),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	if err != nil {
 		return nil, err
@@ -239,34 +288,44 @@ func (db *DB) GetNode(ctx context.Context, address string) (*Node, error) {
 
 // ListNodes lists all nodes
 func (db *DB) ListNodes(ctx context.Context) ([]*Node, error) {
+	db.log().Debug("DB.ListNodes: listing nodes")
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var nodes []*Node
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(nodesBucket))
 		return b.ForEach(func(k, v []byte) error {
 			var node Node
 			if err := json.Unmarshal(v, &node); err != nil {
+				db.log().Debug("DB.ListNodes: decoding entry failed", zap.ByteString("key", k), zap.Error(err))
 				return err
 			}
 			nodes = append(nodes, &node)
 			return nil
 		})
 	})
+	db.log().Debug("DB.ListNodes: scan", zap.String("bucket", nodesBucket), zap.Int("count", len(nodes)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	return nodes, err
 }
 
 // DeleteNode deletes a node by address
 func (db *DB) DeleteNode(ctx context.Context, address string) error {
+	db.log().Debug("DB.DeleteNode: deleting node", zap.String("address", address))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(nodesBucket))
 		return b.Delete([]byte(address))
 	})
+	db.log().Debug("DB.DeleteNode: delete", zap.String("bucket", nodesBucket), zap.String("key", address),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // ==================== POOL ====================
@@ -285,6 +344,8 @@ type Pool struct {
 
 // SavePool saves or updates a pool
 func (db *DB) SavePool(ctx context.Context, pool *Pool) error {
+	db.log().Debug("DB.SavePool: saving pool",
+		zap.String("pool", pool.Name), zap.String("type", pool.Type), zap.String("node", pool.Node))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -296,29 +357,41 @@ func (db *DB) SavePool(ctx context.Context, pool *Pool) error {
 
 	data, err := json.Marshal(pool)
 	if err != nil {
+		db.log().Debug("DB.SavePool: marshal failed", zap.String("pool", pool.Name), zap.Error(err))
 		return fmt.Errorf("failed to marshal pool: %w", err)
 	}
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(poolsBucket))
 		return b.Put([]byte(pool.Name), data)
 	})
+	db.log().Debug("DB.SavePool: put", zap.String("bucket", poolsBucket), zap.String("key", pool.Name),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // GetPool retrieves a pool by name
 func (db *DB) GetPool(ctx context.Context, name string) (*Pool, error) {
+	db.log().Debug("DB.GetPool: reading pool", zap.String("pool", name))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var pool Pool
+	found, size := false, 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(poolsBucket))
 		data := b.Get([]byte(name))
 		if data == nil {
 			return fmt.Errorf("pool not found")
 		}
+		found, size = true, len(data)
 		return json.Unmarshal(data, &pool)
 	})
+	db.log().Debug("DB.GetPool: get", zap.String("bucket", poolsBucket), zap.String("key", name),
+		zap.Bool("found", found), zap.Int("size_bytes", size),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	if err != nil {
 		return nil, err
@@ -328,34 +401,44 @@ func (db *DB) GetPool(ctx context.Context, name string) (*Pool, error) {
 
 // ListPools lists all pools
 func (db *DB) ListPools(ctx context.Context) ([]*Pool, error) {
+	db.log().Debug("DB.ListPools: listing pools")
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var pools []*Pool
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(poolsBucket))
 		return b.ForEach(func(k, v []byte) error {
 			var pool Pool
 			if err := json.Unmarshal(v, &pool); err != nil {
+				db.log().Debug("DB.ListPools: decoding entry failed", zap.ByteString("key", k), zap.Error(err))
 				return err
 			}
 			pools = append(pools, &pool)
 			return nil
 		})
 	})
+	db.log().Debug("DB.ListPools: scan", zap.String("bucket", poolsBucket), zap.Int("count", len(pools)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 
 	return pools, err
 }
 
 // DeletePool deletes a pool by name
 func (db *DB) DeletePool(ctx context.Context, name string) error {
+	db.log().Debug("DB.DeletePool: deleting pool", zap.String("pool", name))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(poolsBucket))
 		return b.Delete([]byte(name))
 	})
+	db.log().Debug("DB.DeletePool: delete", zap.String("bucket", poolsBucket), zap.String("key", name),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // ==================== RBAC ====================
@@ -363,23 +446,31 @@ func (db *DB) DeletePool(ctx context.Context, name string) error {
 // SaveRBAC persists the serialized RBAC snapshot (opaque to the database; the
 // rbac package owns the encoding).
 func (db *DB) SaveRBAC(ctx context.Context, data []byte) error {
+	// The snapshot holds token digests: its size is traced, never its bytes.
+	db.log().Debug("DB.SaveRBAC: saving RBAC snapshot", zap.Int("size_bytes", len(data)))
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
 	// Copy: bbolt does not retain the caller's slice past the transaction.
 	buf := make([]byte, len(data))
 	copy(buf, data)
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(rbacBucket)).Put([]byte(rbacStateKey), buf)
 	})
+	db.log().Debug("DB.SaveRBAC: put", zap.String("bucket", rbacBucket), zap.String("key", rbacStateKey),
+		zap.Int("size_bytes", len(buf)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // LoadRBAC returns the stored RBAC snapshot, or nil if none has been saved yet.
 func (db *DB) LoadRBAC(ctx context.Context) ([]byte, error) {
+	db.log().Debug("DB.LoadRBAC: loading RBAC snapshot")
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var out []byte
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket([]byte(rbacBucket)).Get([]byte(rbacStateKey))
 		if v != nil {
@@ -388,5 +479,8 @@ func (db *DB) LoadRBAC(ctx context.Context) ([]byte, error) {
 		}
 		return nil
 	})
+	db.log().Debug("DB.LoadRBAC: get", zap.String("bucket", rbacBucket), zap.String("key", rbacStateKey),
+		zap.Bool("found", out != nil), zap.Int("size_bytes", len(out)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	return out, err
 }

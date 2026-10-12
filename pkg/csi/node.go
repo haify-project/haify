@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"go.uber.org/zap"
@@ -33,6 +34,7 @@ func NewNodeServer(b HaifyBackend, m Mounter, nodeName string, log *zap.Logger) 
 }
 
 func (s *nodeServer) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
+	s.log.Debug("nodeServer.NodeGetInfo: reporting node", zap.String("node", s.nodeName))
 	return &csi.NodeGetInfoResponse{
 		NodeId:             s.nodeName,
 		AccessibleTopology: &csi.Topology{Segments: map[string]string{TopologyKeyNode: s.nodeName}},
@@ -40,6 +42,7 @@ func (s *nodeServer) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi
 }
 
 func (s *nodeServer) NodeGetCapabilities(context.Context, *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
+	s.log.Debug("nodeServer.NodeGetCapabilities: reporting capabilities")
 	rpc := func(t csi.NodeServiceCapability_RPC_Type) *csi.NodeServiceCapability {
 		return &csi.NodeServiceCapability{Type: &csi.NodeServiceCapability_Rpc{
 			Rpc: &csi.NodeServiceCapability_RPC{Type: t}}}
@@ -57,10 +60,15 @@ func (s *nodeServer) NodeGetCapabilities(context.Context, *csi.NodeGetCapabiliti
 func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
 	res := req.GetVolumeId()
 	staging := req.GetStagingTargetPath()
+	s.log.Debug("nodeServer.NodeStageVolume: start", zap.String("resource", res), zap.String("staging", staging),
+		zap.String("node", s.nodeName), zap.Bool("remote_access", allowsRemoteAccess(req.GetVolumeContext())),
+		zap.Int("secrets", len(req.GetSecrets())))
 	if res == "" || staging == "" {
+		s.log.Debug("nodeServer.NodeStageVolume: rejected, missing volume id or staging path")
 		return nil, status.Error(codes.InvalidArgument, "volume id and staging path are required")
 	}
 	if req.GetVolumeCapability() == nil {
+		s.log.Debug("nodeServer.NodeStageVolume: rejected, no capability", zap.String("resource", res))
 		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
 	}
 
@@ -72,14 +80,21 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 	// scheduler should never have placed the Pod here.
 	isReplica, err := s.nodeHoldsReplica(ctx, res)
 	if err != nil {
+		s.log.Debug("nodeServer.NodeStageVolume: replica check failed", zap.String("resource", res), zap.Error(err))
 		return nil, err
 	}
 	if !isReplica {
 		if !allowsRemoteAccess(req.GetVolumeContext()) {
+			s.log.Debug("nodeServer.NodeStageVolume: no local replica and remote access not allowed", zap.String("resource", res),
+				zap.String("node", s.nodeName))
 			return nil, status.Errorf(codes.FailedPrecondition,
 				"node %q holds no replica of %q and the volume does not allow remote access (set allowRemoteVolumeAccess on the StorageClass)", s.nodeName, res)
 		}
-		if err := s.backend.AttachDisklessClient(ctx, res, s.nodeName); err != nil {
+		start := time.Now()
+		err := s.backend.AttachDisklessClient(ctx, res, s.nodeName)
+		s.log.Debug("nodeServer.NodeStageVolume: attached diskless client", zap.String("resource", res), zap.String("node", s.nodeName),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			return nil, status.Errorf(codes.Internal, "attach diskless client: %v", err)
 		}
 	}
@@ -94,12 +109,17 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 	// Primary that lost quorum is blocked from I/O, so forcing is safe. If this
 	// node lacks quorum the controller refuses, and we surface that error rather
 	// than risk a dual-Primary split-brain.
-	if err := s.backend.PromoteForNode(ctx, res, s.nodeName); err != nil {
+	start := time.Now()
+	err = s.backend.PromoteForNode(ctx, res, s.nodeName)
+	s.log.Debug("nodeServer.NodeStageVolume: quorum-guarded promote returned", zap.String("resource", res),
+		zap.String("node", s.nodeName), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return nil, status.Errorf(codes.Internal, "promote (quorum-guarded): %v", err)
 	}
 
 	device, err := s.deviceFor(ctx, res)
 	if err != nil {
+		s.log.Debug("nodeServer.NodeStageVolume: no device", zap.String("resource", res), zap.Error(err))
 		return nil, err
 	}
 
@@ -107,6 +127,8 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 	// at publish time. There is nothing to format and nothing to mount at the
 	// staging path; promoting this node is the whole of staging.
 	if req.GetVolumeCapability().GetBlock() != nil {
+		s.log.Debug("nodeServer.NodeStageVolume: raw block, nothing to mount", zap.String("resource", res),
+			zap.String("device", device))
 		return &csi.NodeStageVolumeResponse{}, nil
 	}
 
@@ -114,34 +136,53 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 	if fsType == "" {
 		fsType = "ext4"
 	}
+	s.log.Debug("nodeServer.NodeStageVolume: filesystem volume", zap.String("resource", res), zap.String("device", device),
+		zap.String("fs_type", fsType))
 	if err := s.mounter.EnsureDir(staging); err != nil {
+		s.log.Debug("nodeServer.NodeStageVolume: mkdir staging failed", zap.String("staging", staging), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "mkdir staging: %v", err)
 	}
 	mounted, err := s.mounter.IsMountPoint(staging)
 	if err != nil {
+		s.log.Debug("nodeServer.NodeStageVolume: mount check failed", zap.String("staging", staging), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "check mount: %v", err)
 	}
 	if mounted {
+		s.log.Debug("nodeServer.NodeStageVolume: already mounted (idempotent)", zap.String("staging", staging))
 		return &csi.NodeStageVolumeResponse{}, nil // idempotent
 	}
+	start = time.Now()
 	if err := s.mounter.FormatAndMount(device, staging, fsType, nil); err != nil {
 		// Roll the role back so another node can take over.
-		_ = s.backend.SetSecondary(ctx, res, s.nodeName)
+		s.log.Debug("nodeServer.NodeStageVolume: format and mount failed, demoting", zap.String("device", device),
+			zap.String("staging", staging), zap.Duration("took", time.Since(start)), zap.Error(err))
+		serr := s.backend.SetSecondary(ctx, res, s.nodeName)
+		s.log.Debug("nodeServer.NodeStageVolume: rollback demote returned", zap.String("resource", res), zap.Error(serr))
 		return nil, status.Errorf(codes.Internal, "format+mount: %v", err)
 	}
+	s.log.Debug("nodeServer.NodeStageVolume: staged", zap.String("resource", res), zap.String("device", device),
+		zap.String("staging", staging), zap.Duration("took", time.Since(start)))
 	return &csi.NodeStageVolumeResponse{}, nil
 }
 
 func (s *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	res := req.GetVolumeId()
 	staging := req.GetStagingTargetPath()
+	s.log.Debug("nodeServer.NodeUnstageVolume: start", zap.String("resource", res), zap.String("staging", staging),
+		zap.String("node", s.nodeName))
 	if res == "" || staging == "" {
+		s.log.Debug("nodeServer.NodeUnstageVolume: rejected, missing volume id or staging path")
 		return nil, status.Error(codes.InvalidArgument, "volume id and staging path are required")
 	}
 	if err := s.mounter.Unmount(staging); err != nil {
+		s.log.Debug("nodeServer.NodeUnstageVolume: unmount failed", zap.String("staging", staging), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "unmount staging: %v", err)
 	}
-	if err := s.backend.SetSecondary(ctx, res, s.nodeName); err != nil {
+	start := time.Now()
+	err := s.backend.SetSecondary(ctx, res, s.nodeName)
+	s.log.Debug("nodeServer.NodeUnstageVolume: demote returned", zap.String("resource", res), zap.String("node", s.nodeName),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return nil, status.Errorf(codes.Internal, "set secondary: %v", err)
 	}
 	// A node with no local replica only participates because a diskless client
@@ -149,8 +190,15 @@ func (s *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstage
 	// connection once the Pod leaves. A replica node is left in place. Detach is
 	// idempotent and best-effort — a stale client is harmless and the next stage
 	// re-attaches, so a detach error must not fail unstage.
-	if isReplica, err := s.nodeHoldsReplica(ctx, res); err == nil && !isReplica {
-		if err := s.backend.DetachDisklessClient(ctx, res, s.nodeName); err != nil {
+	isReplica, rerr := s.nodeHoldsReplica(ctx, res)
+	s.log.Debug("nodeServer.NodeUnstageVolume: replica check", zap.String("resource", res), zap.Bool("replica", isReplica),
+		zap.Error(rerr))
+	if rerr == nil && !isReplica {
+		start = time.Now()
+		err := s.backend.DetachDisklessClient(ctx, res, s.nodeName)
+		s.log.Debug("nodeServer.NodeUnstageVolume: detached diskless client", zap.String("resource", res),
+			zap.String("node", s.nodeName), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			s.log.Warn("detach diskless client on unstage failed (leaving it in place)",
 				zap.String("resource", res), zap.String("node", s.nodeName), zap.Error(err))
 		}
@@ -161,15 +209,22 @@ func (s *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstage
 // nodeHoldsReplica reports whether this node is one of the resource's diskful
 // replica nodes (as opposed to a diskless client or an unrelated node).
 func (s *nodeServer) nodeHoldsReplica(ctx context.Context, resource string) (bool, error) {
+	start := time.Now()
 	r, err := s.backend.GetResource(ctx, resource)
+	s.log.Debug("nodeServer.nodeHoldsReplica: got resource", zap.String("resource", resource),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return false, status.Errorf(codes.NotFound, "get resource %q: %v", resource, err)
 	}
 	for _, n := range r.GetNodes() {
 		if n == s.nodeName {
+			s.log.Debug("nodeServer.nodeHoldsReplica: this node holds a replica", zap.String("resource", resource),
+				zap.String("node", s.nodeName))
 			return true, nil
 		}
 	}
+	s.log.Debug("nodeServer.nodeHoldsReplica: no replica on this node", zap.String("resource", resource),
+		zap.String("node", s.nodeName), zap.Strings("nodes", r.GetNodes()))
 	return false, nil
 }
 
@@ -182,26 +237,35 @@ func allowsRemoteAccess(volumeContext map[string]string) bool {
 func (s *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
 	staging := req.GetStagingTargetPath()
 	target := req.GetTargetPath()
+	s.log.Debug("nodeServer.NodePublishVolume: start", zap.String("resource", req.GetVolumeId()),
+		zap.String("staging", staging), zap.String("target", target), zap.Bool("readonly", req.GetReadonly()),
+		zap.Int("secrets", len(req.GetSecrets())))
 	if staging == "" || target == "" {
+		s.log.Debug("nodeServer.NodePublishVolume: rejected, missing staging or target path")
 		return nil, status.Error(codes.InvalidArgument, "staging and target paths are required")
 	}
 	if req.GetVolumeCapability() == nil {
+		s.log.Debug("nodeServer.NodePublishVolume: rejected, no capability", zap.String("resource", req.GetVolumeId()))
 		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
 	}
 	if err := s.claimSingleWriter(req); err != nil {
 		return nil, err
 	}
 	if req.GetVolumeCapability().GetBlock() != nil {
+		s.log.Debug("nodeServer.NodePublishVolume: raw block volume", zap.String("resource", req.GetVolumeId()))
 		return s.publishBlock(ctx, req)
 	}
 	if err := s.mounter.EnsureDir(target); err != nil {
+		s.log.Debug("nodeServer.NodePublishVolume: mkdir target failed", zap.String("target", target), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "mkdir target: %v", err)
 	}
 	mounted, err := s.mounter.IsMountPoint(target)
 	if err != nil {
+		s.log.Debug("nodeServer.NodePublishVolume: mount check failed", zap.String("target", target), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "check mount: %v", err)
 	}
 	if mounted {
+		s.log.Debug("nodeServer.NodePublishVolume: already mounted (idempotent)", zap.String("target", target))
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 	opts := []string{"bind"}
@@ -209,31 +273,46 @@ func (s *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublish
 		opts = append(opts, "ro")
 	}
 	if err := s.mounter.Mount(staging, target, "", opts); err != nil {
+		s.log.Debug("nodeServer.NodePublishVolume: bind mount failed", zap.String("staging", staging),
+			zap.String("target", target), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "bind mount: %v", err)
 	}
 	if hasQoS(req.GetVolumeContext()) {
-		if device, err := s.deviceFor(ctx, req.GetVolumeId()); err == nil {
+		device, err := s.deviceFor(ctx, req.GetVolumeId())
+		s.log.Debug("nodeServer.NodePublishVolume: volume has I/O limits", zap.String("resource", req.GetVolumeId()),
+			zap.String("device", device), zap.Error(err))
+		if err == nil {
 			s.applyQoS(req.GetVolumeContext(), device, target)
 		}
 	}
+	s.log.Debug("nodeServer.NodePublishVolume: published", zap.String("resource", req.GetVolumeId()), zap.String("target", target))
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
 func (s *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
+	s.log.Debug("nodeServer.NodeUnpublishVolume: start", zap.String("resource", req.GetVolumeId()),
+		zap.String("target", req.GetTargetPath()))
 	if req.GetTargetPath() == "" {
+		s.log.Debug("nodeServer.NodeUnpublishVolume: rejected, no target path")
 		return nil, status.Error(codes.InvalidArgument, "target path is required")
 	}
 	target := req.GetTargetPath()
 	if err := s.mounter.Unmount(target); err != nil {
+		s.log.Debug("nodeServer.NodeUnpublishVolume: unmount failed", zap.String("target", target), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "unmount target: %v", err)
 	}
 	s.mu.Lock()
 	if s.singleWriter[req.GetVolumeId()] == target {
+		s.log.Debug("nodeServer.NodeUnpublishVolume: releasing single-writer claim", zap.String("resource", req.GetVolumeId()),
+			zap.String("target", target))
 		delete(s.singleWriter, req.GetVolumeId())
 	}
 	s.mu.Unlock()
 	// CSI spec requires the SP to delete the target_path after a successful unpublish.
-	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+	err := os.Remove(target)
+	s.log.Debug("nodeServer.NodeUnpublishVolume: removed target path", zap.String("target", target),
+		zap.Bool("already_gone", os.IsNotExist(err)), zap.Error(err))
+	if err != nil && !os.IsNotExist(err) {
 		return nil, status.Errorf(codes.Internal, "remove target: %v", err)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
@@ -243,13 +322,17 @@ func (s *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpubli
 // expanded block device. Called by kubelet after ControllerExpandVolume
 // succeeds and the volume is re-staged on this node.
 func (s *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
+	s.log.Debug("nodeServer.NodeExpandVolume: start", zap.String("resource", req.GetVolumeId()),
+		zap.String("path", req.GetVolumePath()), zap.Int64("required_bytes", req.GetCapacityRange().GetRequiredBytes()))
 	if req.GetVolumeId() == "" || req.GetVolumePath() == "" {
+		s.log.Debug("nodeServer.NodeExpandVolume: rejected, missing volume id or path")
 		return nil, status.Error(codes.InvalidArgument, "volume id and volume path are required")
 	}
 
 	// A raw block volume has no filesystem to grow: the device itself got
 	// bigger in ControllerExpandVolume, and what the Pod sees is that device.
 	if req.GetVolumeCapability().GetBlock() != nil {
+		s.log.Debug("nodeServer.NodeExpandVolume: raw block, no filesystem to grow", zap.String("resource", req.GetVolumeId()))
 		return &csi.NodeExpandVolumeResponse{CapacityBytes: req.GetCapacityRange().GetRequiredBytes()}, nil
 	}
 
@@ -257,10 +340,15 @@ func (s *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVo
 	// knows which device backs the mount.
 	devicePath, err := s.deviceFor(ctx, req.GetVolumeId())
 	if err != nil {
+		s.log.Debug("nodeServer.NodeExpandVolume: no device", zap.String("resource", req.GetVolumeId()), zap.Error(err))
 		return nil, err
 	}
 
-	if err := s.mounter.ResizeFS(devicePath, req.GetVolumePath()); err != nil {
+	start := time.Now()
+	err = s.mounter.ResizeFS(devicePath, req.GetVolumePath())
+	s.log.Debug("nodeServer.NodeExpandVolume: filesystem resize returned", zap.String("device", devicePath),
+		zap.String("path", req.GetVolumePath()), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resize filesystem: %v", err)
 	}
 
@@ -270,13 +358,19 @@ func (s *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVo
 
 // deviceFor returns the /dev/drbdX path of a resource's first volume.
 func (s *nodeServer) deviceFor(ctx context.Context, resource string) (string, error) {
+	start := time.Now()
 	r, err := s.backend.GetResource(ctx, resource)
+	s.log.Debug("nodeServer.deviceFor: got resource", zap.String("resource", resource),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return "", status.Errorf(codes.NotFound, "get resource %q: %v", resource, err)
 	}
 	if len(r.GetVolumes()) == 0 || r.GetVolumes()[0].GetDevice() == "" {
+		s.log.Debug("nodeServer.deviceFor: resource has no device", zap.String("resource", resource),
+			zap.Int("volumes", len(r.GetVolumes())))
 		return "", status.Errorf(codes.Internal, "resource %q has no device", resource)
 	}
+	s.log.Debug("nodeServer.deviceFor: resolved", zap.String("resource", resource), zap.String("device", r.GetVolumes()[0].GetDevice()))
 	return r.GetVolumes()[0].GetDevice(), nil
 }
 
@@ -284,18 +378,23 @@ func (s *nodeServer) deviceFor(ctx context.Context, resource string) (string, er
 // path, and the DRBD device node is bind-mounted onto that file.
 func (s *nodeServer) publishBlock(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
 	target := req.GetTargetPath()
+	s.log.Debug("nodeServer.publishBlock: start", zap.String("resource", req.GetVolumeId()), zap.String("target", target))
 	device, err := s.deviceFor(ctx, req.GetVolumeId())
 	if err != nil {
+		s.log.Debug("nodeServer.publishBlock: no device", zap.String("resource", req.GetVolumeId()), zap.Error(err))
 		return nil, err
 	}
 	if err := s.mounter.EnsureFile(target); err != nil {
+		s.log.Debug("nodeServer.publishBlock: create target file failed", zap.String("target", target), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "create block target: %v", err)
 	}
 	mounted, err := s.mounter.IsMountPoint(target)
 	if err != nil {
+		s.log.Debug("nodeServer.publishBlock: mount check failed", zap.String("target", target), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "check mount: %v", err)
 	}
 	if mounted {
+		s.log.Debug("nodeServer.publishBlock: already mounted (idempotent)", zap.String("target", target))
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 	opts := []string{"bind"}
@@ -303,9 +402,13 @@ func (s *nodeServer) publishBlock(ctx context.Context, req *csi.NodePublishVolum
 		opts = append(opts, "ro")
 	}
 	if err := s.mounter.Mount(device, target, "", opts); err != nil {
+		s.log.Debug("nodeServer.publishBlock: bind mount failed", zap.String("device", device), zap.String("target", target),
+			zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "bind mount %s onto %s: %v", device, target, err)
 	}
 	s.applyQoS(req.GetVolumeContext(), device, target)
+	s.log.Debug("nodeServer.publishBlock: published", zap.String("device", device), zap.String("target", target),
+		zap.Bool("readonly", req.GetReadonly()))
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
@@ -315,14 +418,18 @@ func (s *nodeServer) publishBlock(ctx context.Context, req *csi.NodePublishVolum
 // is full.
 func (s *nodeServer) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
 	path := req.GetVolumePath()
+	s.log.Debug("nodeServer.NodeGetVolumeStats: start", zap.String("resource", req.GetVolumeId()), zap.String("path", path))
 	if req.GetVolumeId() == "" || path == "" {
+		s.log.Debug("nodeServer.NodeGetVolumeStats: rejected, missing volume id or path")
 		return nil, status.Error(codes.InvalidArgument, "volume id and volume path are required")
 	}
 	fi, err := os.Stat(path)
 	if os.IsNotExist(err) {
+		s.log.Debug("nodeServer.NodeGetVolumeStats: path does not exist", zap.String("path", path))
 		return nil, status.Errorf(codes.NotFound, "volume path %q does not exist", path)
 	}
 	if err != nil {
+		s.log.Debug("nodeServer.NodeGetVolumeStats: stat failed", zap.String("path", path), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "stat %q: %v", path, err)
 	}
 
@@ -331,6 +438,8 @@ func (s *nodeServer) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolum
 	// Pod's business and not something the node can see.
 	if !fi.IsDir() {
 		size, err := s.mounter.BlockSize(path)
+		s.log.Debug("nodeServer.NodeGetVolumeStats: block volume size", zap.String("path", path), zap.Int64("size_bytes", size),
+			zap.Error(err))
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "block size of %q: %v", path, err)
 		}
@@ -340,6 +449,9 @@ func (s *nodeServer) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolum
 	}
 
 	st, err := s.mounter.FSStats(path)
+	s.log.Debug("nodeServer.NodeGetVolumeStats: filesystem usage", zap.String("path", path),
+		zap.Int64("total_bytes", st.TotalBytes), zap.Int64("used_bytes", st.UsedBytes),
+		zap.Int64("available_bytes", st.AvailableBytes), zap.Int64("used_inodes", st.UsedInodes), zap.Error(err))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "statfs %q: %v", path, err)
 	}
@@ -354,15 +466,19 @@ func (s *nodeServer) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolum
 // Publishing again at the same path is the idempotent retry the spec allows.
 func (s *nodeServer) claimSingleWriter(req *csi.NodePublishVolumeRequest) error {
 	if req.GetVolumeCapability().GetAccessMode().GetMode() != csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER {
+		s.log.Debug("nodeServer.claimSingleWriter: not single-writer, nothing to claim", zap.String("resource", req.GetVolumeId()))
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	vol, target := req.GetVolumeId(), req.GetTargetPath()
 	if held, ok := s.singleWriter[vol]; ok && held != target {
+		s.log.Debug("nodeServer.claimSingleWriter: refused, already published elsewhere", zap.String("resource", vol),
+			zap.String("target", target), zap.String("held", held))
 		return status.Errorf(codes.FailedPrecondition,
 			"volume %q is ReadWriteOncePod and already published at %q", vol, held)
 	}
+	s.log.Debug("nodeServer.claimSingleWriter: claimed", zap.String("resource", vol), zap.String("target", target))
 	s.singleWriter[vol] = target
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 // Two-person approval requests ([rbac.approval], pkg/controller/approval.go).
@@ -54,26 +55,38 @@ func (a *Approval) EffectiveState(now time.Time) string {
 
 // SaveApproval creates or replaces a request.
 func (db *DB) SaveApproval(ctx context.Context, a *Approval) error {
+	// Request holds the call's arguments: only its size is traced.
+	db.log().Debug("DB.SaveApproval: saving approval",
+		zap.String("approval", a.ID), zap.String("method", a.Method), zap.String("requester", a.Requester),
+		zap.String("state", a.State), zap.String("decided_by", a.DecidedBy), zap.Time("expires_at", a.ExpiresAt))
 	data, err := json.Marshal(a)
 	if err != nil {
+		db.log().Debug("DB.SaveApproval: marshal failed", zap.String("approval", a.ID), zap.Error(err))
 		return err
 	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.db.Update(func(tx *bolt.Tx) error {
+	start := time.Now()
+	err = db.db.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(approvalsBucket))
 		if err != nil {
 			return err
 		}
 		return b.Put([]byte(a.ID), data)
 	})
+	db.log().Debug("DB.SaveApproval: put", zap.String("bucket", approvalsBucket), zap.String("key", a.ID),
+		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }
 
 // GetApproval returns one request.
 func (db *DB) GetApproval(ctx context.Context, id string) (*Approval, error) {
+	db.log().Debug("DB.GetApproval: reading approval", zap.String("approval", id))
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	var a *Approval
+	size := 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(approvalsBucket))
 		if b == nil {
@@ -83,9 +96,13 @@ func (db *DB) GetApproval(ctx context.Context, id string) (*Approval, error) {
 		if v == nil {
 			return nil
 		}
+		size = len(v)
 		a = &Approval{}
 		return json.Unmarshal(v, a)
 	})
+	db.log().Debug("DB.GetApproval: get", zap.String("bucket", approvalsBucket), zap.String("key", id),
+		zap.Bool("found", a != nil), zap.Int("size_bytes", size),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err == nil && a == nil {
 		err = fmt.Errorf("no approval request %q", id)
 	}
@@ -94,22 +111,30 @@ func (db *DB) GetApproval(ctx context.Context, id string) (*Approval, error) {
 
 // ListApprovals returns every request, newest first.
 func (db *DB) ListApprovals(ctx context.Context) ([]*Approval, error) {
+	db.log().Debug("DB.ListApprovals: listing approvals")
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	var out []*Approval
+	unreadable := 0
+	start := time.Now()
 	err := db.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(approvalsBucket))
 		if b == nil {
+			db.log().Debug("DB.ListApprovals: approvals bucket absent", zap.String("bucket", approvalsBucket))
 			return nil
 		}
 		return b.ForEach(func(_, v []byte) error {
 			var a Approval
 			if json.Unmarshal(v, &a) == nil {
 				out = append(out, &a)
+			} else {
+				unreadable++
 			}
 			return nil
 		})
 	})
+	db.log().Debug("DB.ListApprovals: scan", zap.String("bucket", approvalsBucket), zap.Int("count", len(out)),
+		zap.Int("unreadable", unreadable), zap.Duration("took", time.Since(start)), zap.Error(err))
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, err
 }
@@ -117,11 +142,15 @@ func (db *DB) ListApprovals(ctx context.Context) ([]*Approval, error) {
 // PruneApprovals drops requests that closed (or expired) before cutoff. The
 // audit trail, not this list, is the record of what was approved.
 func (db *DB) PruneApprovals(ctx context.Context, cutoff time.Time) error {
+	db.log().Debug("DB.PruneApprovals: pruning approvals", zap.Time("cutoff", cutoff))
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.db.Update(func(tx *bolt.Tx) error {
+	dropped := 0
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(approvalsBucket))
 		if b == nil {
+			db.log().Debug("DB.PruneApprovals: approvals bucket absent", zap.String("bucket", approvalsBucket))
 			return nil
 		}
 		var doomed [][]byte
@@ -136,10 +165,17 @@ func (db *DB) PruneApprovals(ctx context.Context, cutoff time.Time) error {
 			return err
 		}
 		for _, k := range doomed {
-			if err := b.Delete(k); err != nil {
+			err := b.Delete(k)
+			db.log().Debug("DB.PruneApprovals: delete", zap.String("bucket", approvalsBucket),
+				zap.ByteString("key", k), zap.Error(err))
+			if err != nil {
 				return err
 			}
 		}
+		dropped = len(doomed)
 		return nil
 	})
+	db.log().Debug("DB.PruneApprovals: done", zap.Int("count", dropped),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
 }

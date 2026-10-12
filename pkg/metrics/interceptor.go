@@ -5,12 +5,14 @@ import (
 	"context"
 	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 )
 
 // UnaryServerInterceptor returns a gRPC unary server interceptor that records metrics
 func (m *Metrics) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
+	m.log().Debug("Metrics.UnaryServerInterceptor: building unary metrics interceptor")
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		start := time.Now()
 
@@ -37,6 +39,7 @@ func (m *Metrics) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 // Note: For streaming, we record on stream creation since duration tracking for the
 // entire stream would require wrapping the stream
 func (m *Metrics) StreamServerInterceptor() grpc.StreamServerInterceptor {
+	m.log().Debug("Metrics.StreamServerInterceptor: building stream metrics interceptor")
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		start := time.Now()
 
@@ -58,6 +61,7 @@ func (m *Metrics) StreamServerInterceptor() grpc.StreamServerInterceptor {
 // ChainUnaryServer creates a single interceptor from multiple interceptors
 // This can be used to combine metrics interceptors with other interceptors
 func ChainUnaryServer(interceptors ...grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
+	zap.L().Debug("ChainUnaryServer: chaining unary interceptors", zap.Int("count", len(interceptors)))
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		// Build the chain in reverse order so the first interceptor is outermost
 		chainedHandler := handler

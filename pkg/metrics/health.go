@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.uber.org/zap"
 )
 
 // Health metrics: the conditions the alerting acts on, as numbers a dashboard
@@ -31,6 +32,7 @@ func gauge(auto promauto.Factory, subsystem, name, help string, labels ...string
 }
 
 func (m *Metrics) registerHealth(auto promauto.Factory) {
+	m.log().Debug("Metrics.registerHealth: registering health families")
 	m.health = healthSeries{
 		nodeReachable: gauge(auto, subsystem, "node_reachable",
 			"1 when the controller reached the node on its last check, 0 when it did not", "node"),
@@ -65,10 +67,16 @@ func (m *Metrics) SetNodeReachability(nodes []NodeReach) {
 	defer m.mu.Unlock()
 	s := m.health.nodeReachable
 	s.begin()
+	unreachable := 0
 	for _, n := range nodes {
+		if !n.Reachable {
+			unreachable++
+		}
 		s.set(prometheus.Labels{"node": n.Node}, boolValue(n.Reachable))
 	}
 	s.commit()
+	m.log().Debug("Metrics.SetNodeReachability: reachability view replaced",
+		zap.Int("count", len(nodes)), zap.Int("unreachable", unreachable))
 }
 
 // ThinUsage is one thin pool's utilisation.
@@ -88,6 +96,8 @@ func (m *Metrics) SetThinPoolUsage(pools []ThinUsage) {
 		s.set(prometheus.Labels{"pool": p.Pool, "node": p.Node, "kind": "metadata"}, p.MetaPercent)
 	}
 	s.commit()
+	m.log().Debug("Metrics.SetThinPoolUsage: thin pool view replaced",
+		zap.Int("count", len(pools)), zap.Int("series", len(s.live)))
 }
 
 // SetFiringAlerts replaces the count of raised conditions, given one entry
@@ -106,6 +116,8 @@ func (m *Metrics) SetFiringAlerts(conditions []string) {
 		s.set(prometheus.Labels{"type": typ, "severity": sev}, n)
 	}
 	s.commit()
+	m.log().Debug("Metrics.SetFiringAlerts: firing alert view replaced",
+		zap.Int("count", len(conditions)), zap.Int("series", len(counts)))
 }
 
 // BackupState is the newest completed backup of one resource to one target.
@@ -129,6 +141,8 @@ func (m *Metrics) SetBackups(backups []BackupState) {
 	}
 	last.commit()
 	size.commit()
+	m.log().Debug("Metrics.SetBackups: backup view replaced",
+		zap.Int("count", len(backups)), zap.Int("series", len(last.live)))
 }
 
 // SetFaultDomainRisks replaces the fault-domain risk series, given each
@@ -151,6 +165,8 @@ func (m *Metrics) SetFaultDomainRisks(risks map[string]string) {
 		}
 	}
 	s.commit()
+	m.log().Debug("Metrics.SetFaultDomainRisks: fault-domain risk view replaced",
+		zap.Int("resources", len(risks)), zap.Int("series", len(s.live)))
 }
 
 func boolValue(b bool) float64 {

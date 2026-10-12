@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Docker's volume plugin protocol: every call is a POST with a JSON body, and
@@ -44,13 +46,21 @@ func Handler(d *Driver) http.Handler {
 	fail := func(w http.ResponseWriter, err error) { reply(w, map[string]string{"Err": err.Error()}) }
 	handle := func(path string, fn func(ctx context.Context, r request) (any, error)) {
 		mux.HandleFunc(path, func(w http.ResponseWriter, req *http.Request) {
+			log := zap.L()
 			var r request
 			if req.Body != nil {
-				_ = json.NewDecoder(req.Body).Decode(&r)
+				if derr := json.NewDecoder(req.Body).Decode(&r); derr != nil {
+					log.Debug("Handler: request body not decoded", zap.String("call", path), zap.Error(derr))
+				}
 			}
+			log.Debug("Handler: call", zap.String("call", path), zap.String("volume", r.Name),
+				zap.String("container", r.ID), zap.Int("opts", len(r.Opts)))
 			ctx, cancel := context.WithTimeout(req.Context(), callTimeout)
 			defer cancel()
+			start := time.Now()
 			out, err := fn(ctx, r)
+			log.Debug("Handler: call done", zap.String("call", path), zap.String("volume", r.Name),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
 			if err != nil {
 				fail(w, err)
 				return
@@ -106,9 +116,16 @@ func Handler(d *Driver) http.Handler {
 
 // Listen opens the plugin socket Docker discovers, replacing a stale one.
 func Listen(socket string) (net.Listener, error) {
+	log := zap.L()
+	log.Debug("Listen: opening plugin socket", zap.String("socket", socket))
 	if err := os.MkdirAll(filepath.Dir(socket), 0o755); err != nil {
+		log.Debug("Listen: creating socket directory failed", zap.String("dir", filepath.Dir(socket)), zap.Error(err))
 		return nil, err
 	}
-	_ = os.Remove(socket)
-	return net.Listen("unix", socket)
+	if err := os.Remove(socket); err == nil {
+		log.Debug("Listen: removed stale socket", zap.String("socket", socket))
+	}
+	ln, err := net.Listen("unix", socket)
+	log.Debug("Listen: listen returned", zap.String("socket", socket), zap.Error(err))
+	return ln, err
 }

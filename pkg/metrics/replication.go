@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 )
 
 // ReplicaState is one replica's live DRBD state.
@@ -122,6 +123,17 @@ func (m *Metrics) SetReplication(snap ReplicationSnapshot) {
 
 	for _, s := range m.replicaSeries() {
 		s.commit()
+	}
+	if ce := m.log().Check(zap.DebugLevel, "Metrics.SetReplication: replication view replaced"); ce != nil {
+		var unread []string
+		for _, name := range snap.Resources {
+			if !observed[name] {
+				unread = append(unread, name)
+			}
+		}
+		ce.Write(zap.Int("resources", len(snap.Resources)),
+			zap.Int("replicas", len(snap.Replicas)),
+			zap.Strings("unread_resources", unread))
 	}
 }
 

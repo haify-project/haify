@@ -21,6 +21,7 @@ import (
 // done. Watching the pool is what makes it preventable.
 func (m *Monitor) checkPools(ctx context.Context, sc *pollScope, obs *Observation) {
 	if m.pools == nil {
+		m.log.Debug("Monitor.checkPools: no pool lister, pool checks skipped")
 		return
 	}
 	obs.Pools.Enabled = true
@@ -28,6 +29,8 @@ func (m *Monitor) checkPools(ctx context.Context, sc *pollScope, obs *Observatio
 	start := time.Now()
 	pools, err := m.pools.GetPoolStatusList(ctx)
 	obs.Pools.Duration = time.Since(start)
+	m.log.Debug("Monitor.checkPools: listed pools",
+		zap.Int("count", len(pools)), zap.Duration("took", obs.Pools.Duration), zap.Error(err))
 	if err != nil {
 		obs.Pools.Err = err
 		m.log.Warn("alert monitor: list pools failed", zap.Error(err))
@@ -43,11 +46,18 @@ func (m *Monitor) checkPools(ctx context.Context, sc *pollScope, obs *Observatio
 		// old capacity alert would send an operator looking for a deletion that
 		// never happened.
 		sc.livePools[poolKey(p.Name, p.Node)] = true
+		m.log.Debug("Monitor.checkPools: checking pool",
+			zap.String("pool", p.Name), zap.String("node", p.Node), zap.String("thin_pool", p.ThinPool),
+			zap.Float64("data_percent", p.DataPercent), zap.Float64("metadata_percent", p.MetaPercent),
+			zap.Bool("out_of_space", p.OutOfSpace), zap.Bool("vdo", p.VDO),
+			zap.Bool("vdo_physical_known", p.VDOPhysicalKnown), zap.Float64("vdo_physical_percent", p.VDOPhysicalPercent))
 
 		// A group with no thin pool has no utilisation to judge. Its vg_free is
 		// a real number, but it is also the number Haify drives to zero on
 		// purpose, so there is nothing here to alert on.
 		if p.ThinPool == "" {
+			m.log.Debug("Monitor.checkPools: no thin pool in group, capacity not judged",
+				zap.String("pool", p.Name), zap.String("node", p.Node))
 			continue
 		}
 		m.checkPoolDimension(p, sc, "data", p.DataPercent,
@@ -63,6 +73,8 @@ func (m *Monitor) checkPools(ctx context.Context, sc *pollScope, obs *Observatio
 			m.checkPoolDimension(p, sc, "VDO physical", p.VDOPhysicalPercent,
 				event.TypePoolVDOPhysicalNearFull, event.TypePoolVDOPhysicalFull)
 		case p.VDO:
+			m.log.Debug("Monitor.checkPools: VDO physical usage unknown this poll, holding its conditions",
+				zap.String("pool", p.Name), zap.String("node", p.Node))
 			for _, t := range []event.Type{event.TypePoolVDOPhysicalNearFull, event.TypePoolVDOPhysicalFull} {
 				sc.mark(event.Event{Type: t, Resource: p.Name, Node: p.Node}.Key())
 			}
@@ -92,6 +104,10 @@ func (m *Monitor) checkPools(ctx context.Context, sc *pollScope, obs *Observatio
 // poll that raises the critical. Reporting both at once would double every
 // notification at the moment it matters most.
 func (m *Monitor) checkPoolDimension(p PoolStatusInfo, sc *pollScope, dimension string, percent float64, nearType, fullType event.Type) {
+	m.log.Debug("Monitor.checkPoolDimension: judging pool utilisation",
+		zap.String("pool", p.Name), zap.String("node", p.Node), zap.String("dimension", dimension),
+		zap.Float64("percent", percent), zap.Float64("near_full_percent", m.nearFull), zap.Float64("full_percent", m.full),
+		zap.Bool("full", percent >= m.full), zap.Bool("near_full", percent >= m.nearFull && percent < m.full))
 	details := func() map[string]string {
 		return map[string]string{
 			"thin_pool": p.ThinPool,

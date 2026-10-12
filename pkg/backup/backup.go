@@ -55,6 +55,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Kind is a target's storage protocol.
@@ -80,6 +82,7 @@ func ParseKind(s string) (Kind, error) {
 	case KindWebDAV:
 		return KindWebDAV, nil
 	default:
+		zap.L().Debug("ParseKind: unknown target kind", zap.String("kind", s))
 		return "", fmt.Errorf("backup: unknown target kind %q (want s3, smb or webdav)", s)
 	}
 }
@@ -134,22 +137,36 @@ type TargetSpec struct {
 
 // Validate checks a target is usable before it is stored or dialled.
 func (t TargetSpec) Validate() error {
+	log := zap.L()
+	log.Debug("TargetSpec.Validate: checking target",
+		zap.String("target", t.Name), zap.String("kind", string(t.Kind)),
+		zap.String("bucket", t.Bucket), zap.String("endpoint_host", endpointHost(t.Endpoint)),
+		zap.String("host", t.Host), zap.String("share", t.Share),
+		zap.Bool("has_user", t.User != ""), zap.Bool("has_secret", t.Secret != ""),
+		zap.Bool("secret_obscured", t.SecretIsObscured), zap.String("lock_mode", string(t.LockMode)))
 	if strings.TrimSpace(t.Name) == "" {
+		log.Debug("TargetSpec.Validate: rejected, no name")
 		return fmt.Errorf("backup: target name is required")
 	}
 	if strings.ContainsAny(t.Name, "/ \t\n") {
+		log.Debug("TargetSpec.Validate: rejected, name has spaces or slashes", zap.String("target", t.Name))
 		return fmt.Errorf("backup: target name %q must not contain spaces or slashes", t.Name)
 	}
 	switch t.Kind {
 	case KindS3:
 		if strings.TrimSpace(t.Bucket) == "" {
+			log.Debug("TargetSpec.Validate: rejected, s3 without bucket", zap.String("target", t.Name))
 			return fmt.Errorf("backup: s3 target %q needs a bucket", t.Name)
 		}
 		if strings.TrimSpace(t.User) == "" || t.Secret == "" {
+			log.Debug("TargetSpec.Validate: rejected, s3 without credentials", zap.String("target", t.Name),
+				zap.Bool("has_user", strings.TrimSpace(t.User) != ""), zap.Bool("has_secret", t.Secret != ""))
 			return fmt.Errorf("backup: s3 target %q needs an access key and a secret key", t.Name)
 		}
 	case KindSMB:
 		if strings.TrimSpace(t.Host) == "" || strings.TrimSpace(t.Share) == "" {
+			log.Debug("TargetSpec.Validate: rejected, smb without host or share", zap.String("target", t.Name),
+				zap.String("host", t.Host), zap.String("share", t.Share))
 			return fmt.Errorf("backup: smb target %q needs a host and a share", t.Name)
 		}
 		// A port is optional, but a malformed one must be rejected here rather
@@ -157,17 +174,24 @@ func (t TargetSpec) Validate() error {
 		// at backup time with nothing pointing back at the typo.
 		if _, port := splitSMBHost(t.Host); port != "" {
 			if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+				log.Debug("TargetSpec.Validate: rejected, invalid smb port", zap.String("target", t.Name),
+					zap.String("host", t.Host), zap.String("port", port))
 				return fmt.Errorf("backup: smb target %q has an invalid port in host %q", t.Name, t.Host)
 			}
 		}
 	case KindWebDAV:
 		if strings.TrimSpace(t.Endpoint) == "" {
+			log.Debug("TargetSpec.Validate: rejected, webdav without endpoint", zap.String("target", t.Name))
 			return fmt.Errorf("backup: webdav target %q needs an endpoint URL", t.Name)
 		}
 	default:
+		log.Debug("TargetSpec.Validate: rejected, unknown kind", zap.String("target", t.Name),
+			zap.String("kind", string(t.Kind)))
 		return fmt.Errorf("backup: target %q has unknown kind %q", t.Name, t.Kind)
 	}
-	return t.validateLock()
+	err := t.validateLock()
+	log.Debug("TargetSpec.Validate: done", zap.String("target", t.Name), zap.Error(err))
+	return err
 }
 
 // Describe renders a target for display. It never includes the secret.
@@ -255,6 +279,7 @@ func (r *Result) FailureDetails() string {
 		return ""
 	}
 	sort.Strings(failed)
+	zap.L().Debug("Result.FailureDetails: hosts failed", zap.Strings("hosts", failed), zap.Int("total", len(r.Hosts)))
 	parts := make([]string, 0, len(failed))
 	for _, host := range failed {
 		reason := ""

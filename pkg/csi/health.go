@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"go.uber.org/zap"
 )
 
 // volumeHealth judges a volume from the controller's view of its DRBD
@@ -32,7 +33,9 @@ func volumeHealth(r *haifypb.ResourceInfo) (abnormal bool, message string) {
 // runs — the initial sync of a replica that has never held data — is not news
 // at all; the reporter uses this to stay quiet about it.
 func volumeHealthDetail(r *haifypb.ResourceInfo) (abnormal bool, message string, onlyResync bool) {
+	log := zap.L()
 	if r == nil {
+		log.Debug("volumeHealthDetail: no resource, volume not found")
 		return true, "volume not found", false
 	}
 	expectedDiskless := map[string]bool{}
@@ -50,7 +53,11 @@ func volumeHealthDetail(r *haifypb.ResourceInfo) (abnormal bool, message string,
 		if name == "" {
 			name = host
 		}
-		if p := replicaProblem(st, expectedDiskless[name] || expectedDiskless[host]); p != "" {
+		p := replicaProblem(st, expectedDiskless[name] || expectedDiskless[host])
+		log.Debug("volumeHealthDetail: replica", zap.String("resource", r.GetName()), zap.String("node", name),
+			zap.String("connection", st.GetConnection()), zap.String("disk_state", st.GetDiskState()),
+			zap.String("replication_state", st.GetReplicationState()), zap.String("problem", p))
+		if p != "" {
 			problems = append(problems, fmt.Sprintf("%s: %s", name, p))
 			if !strings.HasPrefix(p, "resyncing") {
 				onlyResync = false
@@ -58,9 +65,12 @@ func volumeHealthDetail(r *haifypb.ResourceInfo) (abnormal bool, message string,
 		}
 	}
 	if len(problems) == 0 {
+		log.Debug("volumeHealthDetail: healthy", zap.String("resource", r.GetName()), zap.Int("replicas", len(r.GetNodeStates())))
 		return false, "all replicas up to date", false
 	}
 	sort.Strings(problems)
+	log.Debug("volumeHealthDetail: abnormal", zap.String("resource", r.GetName()), zap.Int("problems", len(problems)),
+		zap.Bool("only_resync", onlyResync))
 	return true, "replica " + strings.Join(problems, "; "), onlyResync
 }
 
@@ -105,24 +115,31 @@ func replicaProblem(st *haifypb.NodeResourceState, expectedDiskless bool) string
 // unreported must not be published as empty — and a thin pool that is genuinely
 // full must be.
 func poolCapacity(p *haifypb.PoolInfo) (uint64, bool) {
+	log := zap.L()
 	if p.GetThinPoolLv() != "" && p.GetThinSizeBytes() > 0 {
 		used := float64(p.GetThinSizeBytes()) * p.GetThinDataPercent() / 100
+		log.Debug("poolCapacity: from thin pool utilisation", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()),
+			zap.Uint64("thin_size_bytes", p.GetThinSizeBytes()), zap.Float64("data_percent", p.GetThinDataPercent()))
 		if free := float64(p.GetThinSizeBytes()) - used; free > 0 {
 			return uint64(free), true
 		}
 		return 0, true
 	}
 	if b := p.GetFreeBytes(); b > 0 {
+		log.Debug("poolCapacity: from free bytes", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()))
 		return b, true
 	}
 	if g := p.GetFreeGb(); g > 0 {
+		log.Debug("poolCapacity: from free GiB", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()))
 		return g * giB, true
 	}
 	// A thick pool with every extent allocated reports zeros in both fields,
 	// which is indistinguishable from reporting nothing. Its total size says
 	// which: a pool the controller measured has one.
 	if p.GetTotalBytes() > 0 || p.GetTotalGb() > 0 {
+		log.Debug("poolCapacity: measured and full", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()))
 		return 0, true
 	}
+	log.Debug("poolCapacity: no figure reported", zap.String("pool", p.GetName()), zap.String("node", p.GetNode()))
 	return 0, false
 }

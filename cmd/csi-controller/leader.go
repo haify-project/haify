@@ -25,17 +25,24 @@ const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccou
 // leaseNamespace is the namespace of the health reporter's Lease: the flag when
 // given, else the pod's own namespace.
 func leaseNamespace(flagValue string) string {
+	log := zap.L()
 	if flagValue != "" {
+		log.Debug("leaseNamespace: from flag", zap.String("namespace", flagValue))
 		return flagValue
 	}
 	if ns := os.Getenv("NAMESPACE"); ns != "" {
+		log.Debug("leaseNamespace: from NAMESPACE", zap.String("namespace", ns))
 		return ns
 	}
-	if b, err := os.ReadFile(serviceAccountNamespaceFile); err == nil {
+	b, err := os.ReadFile(serviceAccountNamespaceFile)
+	log.Debug("leaseNamespace: read service account namespace file", zap.String("path", serviceAccountNamespaceFile),
+		zap.Int("size", len(b)), zap.Error(err))
+	if err == nil {
 		if ns := strings.TrimSpace(string(b)); ns != "" {
 			return ns
 		}
 	}
+	log.Debug("leaseNamespace: falling back to default")
 	return "default"
 }
 
@@ -44,9 +51,11 @@ func leaseNamespace(flagValue string) string {
 // on one node would share a hostname.
 func leaseIdentity() string {
 	if name := os.Getenv("POD_NAME"); name != "" {
+		zap.L().Debug("leaseIdentity: from POD_NAME", zap.String("identity", name))
 		return name
 	}
-	host, _ := os.Hostname()
+	host, err := os.Hostname()
+	zap.L().Debug("leaseIdentity: from hostname", zap.String("identity", host), zap.Error(err))
 	return host
 }
 
@@ -61,7 +70,10 @@ func runWhileLeader(ctx context.Context, kube kubernetes.Interface, namespace, i
 		Client:     kube.CoordinationV1(),
 		LockConfig: resourcelock.ResourceLockConfig{Identity: id},
 	}
+	log.Debug("runWhileLeader: competing for lease", zap.String("lease", healthLeaseName), zap.String("namespace", namespace),
+		zap.String("identity", id))
 	for ctx.Err() == nil {
+		log.Debug("runWhileLeader: starting an election round", zap.String("identity", id))
 		leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 			Lock:            lock,
 			Name:            healthLeaseName,
@@ -77,7 +89,11 @@ func runWhileLeader(ctx context.Context, kube kubernetes.Interface, namespace, i
 				OnStoppedLeading: func() {
 					log.Info("health reporter: not leading", zap.String("identity", id))
 				},
+				OnNewLeader: func(identity string) {
+					log.Debug("runWhileLeader: observed leader", zap.String("leader", identity), zap.String("identity", id))
+				},
 			},
 		})
 	}
+	log.Debug("runWhileLeader: context done, stopped competing", zap.String("identity", id))
 }

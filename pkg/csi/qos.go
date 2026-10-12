@@ -59,8 +59,10 @@ func parseQoS(p map[string]string) (map[string]string, error) {
 			n, err = strconv.ParseUint(raw, 10, 64)
 		}
 		if err != nil || n == 0 {
+			zap.L().Debug("parseQoS: invalid limit", zap.String("param", param), zap.String("value", raw), zap.Error(err))
 			return nil, fmt.Errorf("invalid %s %q", param, raw)
 		}
+		zap.L().Debug("parseQoS: limit", zap.String("param", param), zap.Uint64("value", n))
 		out[param] = strconv.FormatUint(n, 10)
 	}
 	return out, nil
@@ -82,8 +84,11 @@ func (s *nodeServer) applyQoS(volumeContext map[string]string, device, target st
 		}
 	}
 	if len(parts) == 0 {
+		s.log.Debug("nodeServer.applyQoS: no I/O limits", zap.String("target", target))
 		return
 	}
+	s.log.Debug("nodeServer.applyQoS: applying I/O limits", zap.String("device", device), zap.String("target", target),
+		zap.Strings("limits", parts))
 	if err := writeIOMax(device, target, strings.Join(parts, " ")); err != nil {
 		s.log.Warn("I/O limits for the volume were not applied; the volume is published without them",
 			zap.String("target", target), zap.String("device", device), zap.Error(err))
@@ -91,20 +96,27 @@ func (s *nodeServer) applyQoS(volumeContext map[string]string, device, target st
 }
 
 func writeIOMax(device, target, limits string) error {
+	log := zap.L()
 	m := podUIDRE.FindStringSubmatch(target)
 	if m == nil {
+		log.Debug("writeIOMax: no pod UID in target", zap.String("target", target))
 		return fmt.Errorf("no pod UID in the target path")
 	}
 	cg, err := podCgroup(m[1])
 	if err != nil {
+		log.Debug("writeIOMax: pod cgroup not found", zap.String("pod_uid", m[1]), zap.Error(err))
 		return err
 	}
 	var st unix.Stat_t
 	if err := unix.Stat(device, &st); err != nil {
+		log.Debug("writeIOMax: stat device failed", zap.String("device", device), zap.Error(err))
 		return fmt.Errorf("stat %s: %w", device, err)
 	}
 	line := fmt.Sprintf("%d:%d %s", unix.Major(uint64(st.Rdev)), unix.Minor(uint64(st.Rdev)), limits)
-	if err := os.WriteFile(filepath.Join(cg, "io.max"), []byte(line), 0o644); err != nil {
+	path := filepath.Join(cg, "io.max")
+	err = os.WriteFile(path, []byte(line), 0o644)
+	log.Debug("writeIOMax: wrote io.max", zap.String("path", path), zap.String("line", line), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("write io.max of %s (is the io controller enabled for pod cgroups?): %w", cg, err)
 	}
 	return nil
@@ -136,11 +148,14 @@ func podCgroup(uid string) (string, error) {
 		return nil
 	})
 	if err != nil && found == "" {
+		zap.L().Debug("podCgroup: walk failed", zap.String("pod_uid", uid), zap.String("root", cgroupRoot), zap.Error(err))
 		return "", err
 	}
 	if found == "" {
+		zap.L().Debug("podCgroup: not found", zap.String("pod_uid", uid), zap.String("root", cgroupRoot))
 		return "", fmt.Errorf("no cgroup for pod %s under %s", uid, cgroupRoot)
 	}
+	zap.L().Debug("podCgroup: found", zap.String("pod_uid", uid), zap.String("cgroup", found))
 	return found, nil
 }
 
