@@ -81,3 +81,17 @@ groups:
         labels: {severity: info}
         annotations:
           summary: "Losing {{ $labels.domain }} would take {{ $labels.resource }} down"
+
+      - alert: HaifyNodeExporterDown
+        expr: up{job="node"} == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "node_exporter on {{ $labels.node }} is not answering; its memory, CPU and disk graphs are empty"
+
+      - alert: HaifyNodeMemoryHigh
+        expr: 1 - node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"} > 0.9
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Node {{ $labels.node }} has used over 90% of its memory for 10 minutes"

@@ -267,7 +267,7 @@ func (c *Controller) startMetricsServer() error {
 	log.Debug("Controller.startMetricsServer: starting", zap.String("address", addr))
 	c.metricsServer = &http.Server{
 		Addr:    addr,
-		Handler: c.metrics.Handler(),
+		Handler: c.metricsMux(),
 	}
 
 	go func() {

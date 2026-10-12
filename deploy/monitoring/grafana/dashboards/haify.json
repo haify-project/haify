@@ -1688,6 +1688,425 @@
      }
     ]
    }
+  },
+  {
+   "id": 19,
+   "type": "row",
+   "title": "Nodes",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 49,
+    "w": 24,
+    "h": 1
+   },
+   "panels": []
+  },
+  {
+   "id": 20,
+   "type": "timeseries",
+   "title": "Memory used",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "haify-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 50,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "100 * (1 - node_memory_MemAvailable_bytes{job=\"node\",cluster=\"$cluster\"} / node_memory_MemTotal_bytes{job=\"node\",cluster=\"$cluster\"})",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "haify-prom"
+     },
+     "legendFormat": "{{node}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      },
+      "spanNulls": true,
+      "thresholdsStyle": {
+       "mode": "line"
+      }
+     },
+     "unit": "percent",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 85
+       },
+       {
+        "color": "red",
+        "value": 95
+       }
+      ]
+     },
+     "max": 100,
+     "min": 0,
+     "noValue": "No node_exporter targets"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 21,
+   "type": "timeseries",
+   "title": "CPU busy",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "haify-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 50,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "100 * (1 - avg by (node) (rate(node_cpu_seconds_total{job=\"node\",cluster=\"$cluster\",mode=\"idle\"}[5m])))",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "haify-prom"
+     },
+     "legendFormat": "{{node}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      },
+      "spanNulls": true
+     },
+     "unit": "percent",
+     "max": 100,
+     "min": 0,
+     "noValue": "No node_exporter targets"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 22,
+   "type": "timeseries",
+   "title": "Disk I/O (DRBD devices)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "haify-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 58,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (node) (rate(node_disk_written_bytes_total{job=\"node\",cluster=\"$cluster\",device=~\"drbd.*\"}[5m]))",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "haify-prom"
+     },
+     "legendFormat": "{{node}} write"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (node) (rate(node_disk_read_bytes_total{job=\"node\",cluster=\"$cluster\",device=~\"drbd.*\"}[5m]))",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "haify-prom"
+     },
+     "legendFormat": "{{node}} read"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      },
+      "spanNulls": true
+     },
+     "unit": "Bps",
+     "noValue": "No DRBD I/O"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 23,
+   "type": "timeseries",
+   "title": "Network",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "haify-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 58,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (node) (rate(node_network_transmit_bytes_total{job=\"node\",cluster=\"$cluster\",device!~\"lo|veth.*|docker.*|br-.*\"}[5m]))",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "haify-prom"
+     },
+     "legendFormat": "{{node}} out"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (node) (rate(node_network_receive_bytes_total{job=\"node\",cluster=\"$cluster\",device!~\"lo|veth.*|docker.*|br-.*\"}[5m]))",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "haify-prom"
+     },
+     "legendFormat": "{{node}} in"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      },
+      "spanNulls": true
+     },
+     "unit": "Bps",
+     "noValue": "No node_exporter targets"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 24,
+   "type": "timeseries",
+   "title": "Load (1 min) per CPU",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "haify-prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 66,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "node_load1{job=\"node\",cluster=\"$cluster\"} / on (node) count by (node) (node_cpu_seconds_total{job=\"node\",cluster=\"$cluster\",mode=\"idle\"})",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "haify-prom"
+     },
+     "legendFormat": "{{node}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      },
+      "spanNulls": true
+     },
+     "unit": "none",
+     "noValue": "No node_exporter targets"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
+  },
+  {
+   "id": 25,
+   "type": "timeseries",
+   "title": "Root filesystem used",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "haify-prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 66,
+    "w": 12,
+    "h": 8
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "100 * (1 - node_filesystem_avail_bytes{job=\"node\",cluster=\"$cluster\",mountpoint=\"/\"} / node_filesystem_size_bytes{job=\"node\",cluster=\"$cluster\",mountpoint=\"/\"})",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "haify-prom"
+     },
+     "legendFormat": "{{node}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "none"
+      },
+      "spanNulls": true,
+      "thresholdsStyle": {
+       "mode": "line"
+      }
+     },
+     "unit": "percent",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 85
+       },
+       {
+        "color": "red",
+        "value": 95
+       }
+      ]
+     },
+     "max": 100,
+     "min": 0,
+     "noValue": "No node_exporter targets"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "lastNotNull",
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
   }
  ]
 }

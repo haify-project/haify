@@ -246,6 +246,7 @@ func setDefaults() {
 	viper.SetDefault("metrics.enabled", true)
 	viper.SetDefault("metrics.listen_address", "0.0.0.0")
 	viper.SetDefault("metrics.port", 9433)
+	viper.SetDefault("metrics.node_exporter_port", 39117)
 	setSectionDefaults()
 	viper.SetDefault("rbac.enabled", false)
 	viper.SetDefault("gateway.auto_state_volume", true)

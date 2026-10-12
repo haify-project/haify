@@ -422,7 +422,9 @@ For a smoke test, run `scripts/csi-e2e.sh`.
 
 Optional: `rclone` (backups), `thin-provisioning-tools` (incremental backups),
 `ktls-utils` + `openssl` (encrypted replication), `cryptsetup` (encryption at
-rest), `haify-ai` + `haify-mcp` (Copilot).
+rest), `haify-ai` + `haify-mcp` (Copilot), node_exporter on port 39117
+(memory, CPU, disk and network per node in Prometheus;
+`scripts/install-node-exporter.sh`, see `deploy/monitoring/README.md`).
 
 ```bash
 for p in \

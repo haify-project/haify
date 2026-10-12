@@ -105,6 +105,20 @@ table("Backups", 0, y, 24, 6, [
   {"resource":"Resource","target":"Target","Value #A":"Last backup","Value #B":"Shipped"},
   ["Resource","Target","Last backup","Shipped"],
   [col("Last backup",[{"id":"unit","value":"dateTimeFromNow"}]),col("Shipped",[{"id":"unit","value":"bytes"}])], nodata="No backups yet")
+y+=6
+# Per node, from node_exporter (job="node", discovered from the controller).
+N=f'job="node",{C}'
+row("Nodes",y); y+=1
+ts("Memory used",[tgt(f'100 * (1 - node_memory_MemAvailable_bytes{{{N}}} / node_memory_MemTotal_bytes{{{N}}})',"A","{{node}}")],0,y,12,8,unit="percent",maxv=100,th=steps(("green",None),("orange",85),("red",95)),nodata="No node_exporter targets")
+ts("CPU busy",[tgt(f'100 * (1 - avg by (node) (rate(node_cpu_seconds_total{{{N},mode="idle"}}[5m])))',"A","{{node}}")],12,y,12,8,unit="percent",maxv=100,nodata="No node_exporter targets")
+y+=8
+ts("Disk I/O (DRBD devices)",[tgt(f'sum by (node) (rate(node_disk_written_bytes_total{{{N},device=~"drbd.*"}}[5m]))',"A","{{node}} write"),
+                               tgt(f'sum by (node) (rate(node_disk_read_bytes_total{{{N},device=~"drbd.*"}}[5m]))',"B","{{node}} read")],0,y,12,8,unit="Bps",nodata="No DRBD I/O")
+ts("Network",[tgt(f'sum by (node) (rate(node_network_transmit_bytes_total{{{N},device!~"lo|veth.*|docker.*|br-.*"}}[5m]))',"A","{{node}} out"),
+              tgt(f'sum by (node) (rate(node_network_receive_bytes_total{{{N},device!~"lo|veth.*|docker.*|br-.*"}}[5m]))',"B","{{node}} in")],12,y,12,8,unit="Bps",nodata="No node_exporter targets")
+y+=8
+ts("Load (1 min) per CPU",[tgt(f'node_load1{{{N}}} / on (node) count by (node) (node_cpu_seconds_total{{{N},mode="idle"}})',"A","{{node}}")],0,y,12,8,unit="none",nodata="No node_exporter targets")
+ts("Root filesystem used",[tgt(f'100 * (1 - node_filesystem_avail_bytes{{{N},mountpoint="/"}} / node_filesystem_size_bytes{{{N},mountpoint="/"}})',"A","{{node}}")],12,y,12,8,unit="percent",maxv=100,th=steps(("green",None),("orange",85),("red",95)),nodata="No node_exporter targets")
 dash={"uid":"haify-overview","title":"Haify","tags":["haify"],"timezone":"browser","schemaVersion":41,"refresh":"30s",
  "time":{"from":"now-24h","to":"now"},"graphTooltip":1,
  "templating":{"list":[{"name":"cluster","label":"Cluster","type":"query","datasource":DS,

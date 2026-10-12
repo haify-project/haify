@@ -12,3 +12,11 @@ scrape_configs:
         labels: {cluster: cluster-a}
       - targets: ["controller-b.example.com:9433"]
         labels: {cluster: cluster-b}
+  # node_exporter on every node (scripts/install-node-exporter.sh). The
+  # controller lists its nodes at /discovery/node-exporter on its [metrics]
+  # port; ?cluster= puts the cluster label on them. Nodes added or removed in
+  # Haify are picked up without editing this file.
+  - job_name: node
+    http_sd_configs:
+      - url: http://controller-a.example.com:9433/discovery/node-exporter?cluster=cluster-a
+      - url: http://controller-b.example.com:9433/discovery/node-exporter?cluster=cluster-b

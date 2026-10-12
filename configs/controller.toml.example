@@ -131,6 +131,9 @@ extra_services = []
 enabled = true
 listen_address = "0.0.0.0"
 port = 9433
+# node_exporter's port on every node (scripts/install-node-exporter.sh); the
+# metrics listener serves /discovery/node-exporter for Prometheus with it
+node_exporter_port = 39117
 
 [ui]
 enabled = true

@@ -256,6 +256,10 @@ type MetricsConfig struct {
 	Enabled       bool   `mapstructure:"enabled"`
 	ListenAddress string `mapstructure:"listen_address"`
 	Port          int    `mapstructure:"port"`
+	// NodeExporterPort is the port node_exporter listens on on every node,
+	// as scripts/install-node-exporter.sh sets it up; the listener's
+	// /discovery/node-exporter hands Prometheus one such target per node.
+	NodeExporterPort int `mapstructure:"node_exporter_port"`
 }
 
 // UIConfig controls the embedded web UI server. It was documented and written
