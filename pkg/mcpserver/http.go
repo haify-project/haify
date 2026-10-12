@@ -54,10 +54,15 @@ type HTTPOptions struct {
 // destructive ones, an "admin" token all of them. The tools are not filtered
 // per call — an absent tool cannot be called, whatever the client sends.
 func ServeHTTP(ctx context.Context, c ControllerClient, logger *zap.Logger, base Options, h HTTPOptions) error {
+	logger.Debug("ServeHTTP: starting", zap.String("listen", h.Listen), zap.String("public_url", h.PublicURL),
+		zap.String("max_role", string(h.MaxRole)), zap.Bool("has_token_store", h.Tokens != nil),
+		zap.Bool("tls", h.TLSCert != ""), zap.Bool("trust_proxy", h.TrustProxy), zap.String("admin_listen", h.AdminListen))
 	if h.Tokens == nil {
+		logger.Debug("ServeHTTP: refusing to start without a token store")
 		return errors.New("a token store is required")
 	}
 	if h.MaxRole == "" {
+		logger.Debug("ServeHTTP: no max role given, capping at admin")
 		h.MaxRole = mcpauth.RoleAdmin
 	}
 	servers := map[mcpauth.Role]*mcp.Server{}
@@ -66,6 +71,8 @@ func ServeHTTP(ctx context.Context, c ControllerClient, logger *zap.Logger, base
 		mcpauth.RoleOperate: {NoDestructive: true},
 		mcpauth.RoleAdmin:   {},
 	} {
+		logger.Debug("ServeHTTP: building tool set for role", zap.String("role", string(role)),
+			zap.Bool("read_only", opts.ReadOnly), zap.Bool("no_destructive", opts.NoDestructive))
 		opts.Version = base.Version
 		servers[role] = New(c, logger, opts).MCPServer()
 	}
@@ -78,11 +85,14 @@ func ServeHTTP(ctx context.Context, c ControllerClient, logger *zap.Logger, base
 	errc := make(chan error, 2)
 	httpServers := []*http.Server{primarySrv}
 	go func() {
+		var err error
 		if h.TLSCert != "" {
-			errc <- primarySrv.ListenAndServeTLS(h.TLSCert, h.TLSKey)
+			err = primarySrv.ListenAndServeTLS(h.TLSCert, h.TLSKey)
 		} else {
-			errc <- primarySrv.ListenAndServe()
+			err = primarySrv.ListenAndServe()
 		}
+		logger.Debug("ServeHTTP: primary listener stopped", zap.String("addr", h.Listen), zap.Error(err))
+		errc <- err
 	}()
 	logger.Info("Haify MCP server listening",
 		zap.String("addr", h.Listen), zap.Bool("tls", h.TLSCert != ""),
@@ -94,11 +104,14 @@ func ServeHTTP(ctx context.Context, c ControllerClient, logger *zap.Logger, base
 		adminSrv := newHTTPServer(h.AdminListen, newHandler(admin, h.Tokens, servers, limiter))
 		httpServers = append(httpServers, adminSrv)
 		go func() {
+			var err error
 			if h.TLSCert != "" {
-				errc <- adminSrv.ListenAndServeTLS(h.TLSCert, h.TLSKey)
+				err = adminSrv.ListenAndServeTLS(h.TLSCert, h.TLSKey)
 			} else {
-				errc <- adminSrv.ListenAndServe()
+				err = adminSrv.ListenAndServe()
 			}
+			logger.Debug("ServeHTTP: admin listener stopped", zap.String("addr", h.AdminListen), zap.Error(err))
+			errc <- err
 		}()
 		logger.Info("Haify MCP admin listener (local network, not capped, operator tokens only)",
 			zap.String("addr", h.AdminListen), zap.Bool("tls", h.TLSCert != ""))
@@ -106,13 +119,19 @@ func ServeHTTP(ctx context.Context, c ControllerClient, logger *zap.Logger, base
 
 	select {
 	case err := <-errc:
+		logger.Debug("ServeHTTP: a listener ended, stopping", zap.Error(err))
 		return err
 	case <-ctx.Done():
+		logger.Debug("ServeHTTP: context done, shutting listeners down", zap.Int("listeners", len(httpServers)))
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		var first error
 		for _, srv := range httpServers {
-			if err := srv.Shutdown(sctx); err != nil && first == nil {
+			start := time.Now()
+			err := srv.Shutdown(sctx)
+			logger.Debug("ServeHTTP: listener shut down", zap.String("addr", srv.Addr),
+				zap.Duration("took", time.Since(start)), zap.Error(err))
+			if err != nil && first == nil {
 				first = err
 			}
 		}
@@ -146,20 +165,33 @@ type listener struct {
 // set picked by the token's role (never above the listener's cap), and, when
 // the listener has a public URL, the OAuth endpoints.
 func newHandler(l listener, tokens *mcpauth.Store, servers map[mcpauth.Role]*mcp.Server, limiter *mcpauth.Limiter) http.Handler {
+	log := zap.L()
+	log.Debug("newHandler: building routes", zap.String("addr", l.addr), zap.String("max_role", string(l.maxRole)),
+		zap.String("public_url", l.publicURL), zap.Bool("trust_proxy", l.trustProxy),
+		zap.Bool("operator_tokens_only", l.operatorTokensOnly))
 	verify := func(_ context.Context, secret string, r *http.Request) (*auth.TokenInfo, error) {
 		ip := mcpauth.ClientIP(r, l.trustProxy)
+		log.Debug("verifyBearer: checking token", zap.String("addr", l.addr), zap.String("client_ip", ip),
+			zap.Bool("has_token", secret != ""), zap.String("path", r.URL.Path))
 		if limiter.Blocked("bearer:" + ip) {
+			log.Debug("verifyBearer: client is rate limited after failures", zap.String("client_ip", ip))
 			return nil, auth.ErrInvalidToken
 		}
 		t, err := tokens.Verify(secret)
 		if err == nil && l.operatorTokensOnly && t.Kind != mcpauth.KindStatic {
+			log.Debug("verifyBearer: listener takes operator tokens only, refusing", zap.String("kind", t.Kind),
+				zap.String("token_id", t.ID))
 			err = mcpauth.ErrInvalid
 		}
 		if err != nil {
+			log.Debug("verifyBearer: token refused, counting failure", zap.String("client_ip", ip), zap.Error(err))
 			limiter.Fail("bearer:" + ip)
 			return nil, auth.ErrInvalidToken
 		}
 		role := mcpauth.Min(t.Role, l.maxRole)
+		log.Debug("verifyBearer: token accepted", zap.String("token_id", t.ID), zap.String("name", t.Name),
+			zap.String("kind", t.Kind), zap.String("token_role", string(t.Role)), zap.String("role", string(role)),
+			zap.Time("expires", t.Expires))
 		return &auth.TokenInfo{
 			Scopes:     role.Scopes(),
 			Expiration: t.Expires,
@@ -176,18 +208,23 @@ func newHandler(l listener, tokens *mcpauth.Store, servers map[mcpauth.Role]*mcp
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		info := auth.TokenInfoFromContext(r.Context())
 		if info == nil {
+			log.Debug("newHandler: request has no token info, no tool set")
 			return nil
 		}
-		return servers[mcpauth.Min(mcpauth.RoleFromScopes(info.Scopes), l.maxRole)]
+		role := mcpauth.Min(mcpauth.RoleFromScopes(info.Scopes), l.maxRole)
+		log.Debug("newHandler: picked tool set", zap.String("role", string(role)), zap.String("token_id", info.UserID))
+		return servers[role]
 	}, nil)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		log.Debug("healthz: answering", zap.String("addr", l.addr))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.Handle("/mcp", withChallenge(bearer, mcpHandler))
 	if public != "" {
+		log.Debug("newHandler: public URL set, mounting OAuth endpoints", zap.String("public_url", public))
 		meta := auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
 			Resource:               public + "/mcp",
 			AuthorizationServers:   []string{public},
@@ -200,6 +237,7 @@ func newHandler(l listener, tokens *mcpauth.Store, servers map[mcpauth.Role]*mcp
 			Store: tokens, PublicURL: public, Limiter: limiter, TrustProxy: l.trustProxy, MaxRole: l.maxRole,
 		}).Mount(mux)
 	}
+	log.Debug("newHandler: routes built", zap.String("addr", l.addr), zap.Bool("oauth", public != ""))
 	return mux
 }
 
@@ -231,6 +269,7 @@ type challengeWriter struct {
 
 func (c *challengeWriter) WriteHeader(code int) {
 	if code == http.StatusUnauthorized && c.Header().Get("WWW-Authenticate") == "" {
+		zap.L().Debug("challengeWriter.WriteHeader: 401 without a challenge, adding the realm")
 		c.Header().Set("WWW-Authenticate", challengeRealm)
 	}
 	c.ResponseWriter.WriteHeader(code)

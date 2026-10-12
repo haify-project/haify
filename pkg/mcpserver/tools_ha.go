@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/client"
@@ -68,12 +69,16 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 	addRead(s, srv, readOnlyTool("haify_ha_list", "List HA configs",
 		"List all drbd-reactor HA configurations managed by Haify."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, haListOut, error) {
+			s.logger.Debug("haify_ha_list: listing HA configs")
 			configs, err := s.client.ListHa(ctx)
 			if err != nil {
+				s.logger.Debug("haify_ha_list: list failed", zap.Error(err))
 				return nil, haListOut{}, err
 			}
 			out := haListOut{Configs: make([]haConfigOut, 0, len(configs))}
 			for _, c := range configs {
+				s.logger.Debug("haify_ha_list: config", zap.String("resource", c.Resource), zap.String("vip", c.Vip),
+					zap.String("mount_point", c.MountPoint), zap.Strings("services", c.Services))
 				out.Configs = append(out.Configs, haConfigOut{
 					Resource:   c.Resource,
 					VIP:        c.Vip,
@@ -82,6 +87,7 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 					Services:   c.Services,
 				})
 			}
+			s.logger.Debug("haify_ha_list: listed", zap.Int("count", len(out.Configs)))
 			return nil, out, nil
 		})
 
@@ -89,8 +95,10 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 		"Show the HA configuration of one resource — VIP, mount point, managed services — and, live, its "+
 			"service chain, whether each standby could take it over, and what outside the chain uses its mounts."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in haResourceIn) (*mcp.CallToolResult, haConfigStatusOut, error) {
+			s.logger.Debug("haify_ha_status: reading HA config", zap.String("resource", in.Resource))
 			c, err := s.client.GetHa(ctx, in.Resource)
 			if err != nil {
+				s.logger.Debug("haify_ha_status: read failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, haConfigStatusOut{}, err
 			}
 			out := haConfigStatusOut{haConfigOut: haConfigOut{
@@ -101,10 +109,20 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 				Services:   c.Services,
 			}}
 			// The live part is best effort: the stored config stands on its own.
-			if sts, err := s.client.GetHaStatus(ctx, in.Resource); err == nil && len(sts) > 0 {
+			sts, stErr := s.client.GetHaStatus(ctx, in.Resource)
+			switch {
+			case stErr != nil:
+				s.logger.Debug("haify_ha_status: live status unavailable, returning the stored config alone",
+					zap.String("resource", in.Resource), zap.Error(stErr))
+			case len(sts) == 0:
+				s.logger.Debug("haify_ha_status: no promoter reported, returning the stored config alone",
+					zap.String("resource", in.Resource))
+			default:
 				p := haPromoterOutFrom(sts[0])
 				out.Promoter = &p
 			}
+			s.logger.Debug("haify_ha_status: read", zap.String("resource", in.Resource), zap.String("vip", out.VIP),
+				zap.Bool("has_promoter", out.Promoter != nil))
 			return nil, out, nil
 		})
 
@@ -114,26 +132,38 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 			"active node runs that libvirt guest (ocf:heartbeat:VirtualDomain), restarted on another replica "+
 			"when its node fails."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in haCreateIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_ha_create: creating HA config", zap.String("resource", in.Resource),
+				zap.String("vip", in.VIP), zap.String("mount", in.Mount), zap.String("fs_type", in.FsType),
+				zap.Strings("services", in.Services), zap.String("vm", in.VM))
 			fsType := in.FsType
 			if fsType == "" && in.Mount != "" {
+				s.logger.Debug("haify_ha_create: mount without a filesystem type, using ext4", zap.String("mount", in.Mount))
 				fsType = "ext4"
 			}
 			var agents []*haifypb.OcfAgent
 			if in.VM != "" {
+				s.logger.Debug("haify_ha_create: running a libvirt guest in the chain", zap.String("vm", in.VM))
 				agent, err := client.VirtualDomainAgent(in.VM)
 				if err != nil {
+					s.logger.Debug("haify_ha_create: guest agent rejected", zap.String("vm", in.VM), zap.Error(err))
 					return nil, opResult{}, err
 				}
 				agents = append(agents, agent)
 			}
 			configPath, err := s.client.MakeHa(ctx, in.Resource, in.Services, in.Mount, fsType, in.VIP, agents, nil)
 			if err != nil {
+				s.logger.Debug("haify_ha_create: create failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_ha_create: created", zap.String("resource", in.Resource), zap.String("config_path", configPath))
 			parts := []string{fmt.Sprintf("HA config for %s created (%s)", in.Resource, configPath)}
 			if in.VM != "" {
+				s.logger.Debug("haify_ha_create: labelling resource with its guest", zap.String("resource", in.Resource),
+					zap.String("vm", in.VM))
 				if _, err := s.client.SetResourceLabels(ctx, in.Resource,
 					map[string]string{client.LibvirtDomainLabel: in.VM}, nil); err != nil {
+					s.logger.Debug("haify_ha_create: labelling failed, reporting it", zap.String("resource", in.Resource),
+						zap.Error(err))
 					parts = append(parts, "the resource could not be labelled with the guest: "+err.Error())
 				}
 			}
@@ -156,9 +186,12 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 			"has taken over, and fails if none did. Never stop or restart a drbd-reactor-managed service by hand "+
 			"instead: the promoter treats that as a fault and fails the resource over."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in haResourceIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_ha_evict: evicting resource from its active node", zap.String("resource", in.Resource))
 			if err := s.client.EvictHa(ctx, in.Resource); err != nil {
+				s.logger.Debug("haify_ha_evict: failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_ha_evict: done", zap.String("resource", in.Resource))
 			return nil, ok(fmt.Sprintf("resource %s evicted from its active node", in.Resource)), nil
 		})
 
@@ -166,19 +199,26 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 		"Remove the drbd-reactor HA configuration of a resource. Running services are stopped; "+
 			"the DRBD resource and its data are kept."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in haResourceIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_ha_delete: deleting HA config", zap.String("resource", in.Resource))
 			if err := s.client.DeleteHa(ctx, in.Resource); err != nil {
+				s.logger.Debug("haify_ha_delete: failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_ha_delete: done", zap.String("resource", in.Resource))
 			return nil, ok(fmt.Sprintf("HA config for %s deleted", in.Resource)), nil
 		})
 
 	addRead(s, srv, readOnlyTool("haify_self_ha_status", "Controller self-HA status",
 		"Show whether the Haify controller itself runs highly available and which node is active."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, selfHaStatusOut, error) {
+			s.logger.Debug("haify_self_ha_status: reading self-HA status")
 			st, err := s.client.GetSelfHaStatus(ctx)
 			if err != nil {
+				s.logger.Debug("haify_self_ha_status: read failed", zap.Error(err))
 				return nil, selfHaStatusOut{}, err
 			}
+			s.logger.Debug("haify_self_ha_status: read", zap.Bool("enabled", st.Enabled), zap.String("resource", st.Resource),
+				zap.String("vip", st.VIP), zap.Strings("nodes", st.Nodes), zap.String("active_node", st.ActiveNode))
 			return nil, selfHaStatusOut{
 				Enabled:    st.Enabled,
 				Resource:   st.Resource,
@@ -193,18 +233,25 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 			"database, distributes the controller to all nodes, and hands management to drbd-reactor behind a VIP. "+
 			"The controller restarts during the handoff — reconnect to the VIP afterwards."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in selfHaEnableIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_self_ha_enable: enabling controller self-HA", zap.String("vip", in.VIP),
+				zap.String("pool", in.Pool), zap.Uint32("size_gb", in.SizeGB), zap.Uint32("port", in.Port),
+				zap.Strings("nodes", in.Nodes))
 			sizeGB := in.SizeGB
 			if sizeGB == 0 {
+				s.logger.Debug("haify_self_ha_enable: no size given, using 1 GiB")
 				sizeGB = 1
 			}
 			port := in.Port
 			if port == 0 {
+				s.logger.Debug("haify_self_ha_enable: no port given, using 7999")
 				port = 7999
 			}
 			resource, vip, err := s.client.EnableSelfHa(ctx, in.VIP, in.Pool, sizeGB, port, in.Nodes)
 			if err != nil {
+				s.logger.Debug("haify_self_ha_enable: enable failed", zap.String("pool", in.Pool), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_self_ha_enable: enabled", zap.String("resource", resource), zap.String("vip", vip))
 			return nil, ok(fmt.Sprintf("controller self-HA enabled: resource %s, VIP %s; reconnect via the VIP",
 				resource, vip)), nil
 		})
@@ -212,9 +259,12 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 	addWrite(s, srv, destructiveTool("haify_self_ha_disable", "Disable controller self-HA",
 		"Revert the controller to standalone mode on one node. The controller restarts during the handoff."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in selfHaDisableIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_self_ha_disable: disabling controller self-HA", zap.String("node", in.Node))
 			if err := s.client.DisableSelfHa(ctx, in.Node); err != nil {
+				s.logger.Debug("haify_self_ha_disable: failed", zap.String("node", in.Node), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_self_ha_disable: done", zap.String("node", in.Node))
 			return nil, ok(fmt.Sprintf("controller self-HA disabled, standalone on %s", in.Node)), nil
 		})
 }

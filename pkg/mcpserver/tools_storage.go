@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/util"
 )
@@ -113,16 +114,21 @@ func (s *Server) registerStorageTools(srv *mcp.Server) {
 			"inspection finding names one. Probes every node over SSH, so it takes a few seconds."),
 		poolDisksTimeout,
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolDisksIn) (*mcp.CallToolResult, poolDisksOut, error) {
+			s.logger.Debug("haify_pool_disks: listing pool disks", zap.String("pool", in.Pool), zap.String("node", in.Node))
 			disks, err := s.client.ListPoolDisks(ctx, in.Pool, in.Node)
 			if err != nil {
+				s.logger.Debug("haify_pool_disks: list failed", zap.String("pool", in.Pool), zap.String("node", in.Node), zap.Error(err))
 				return nil, poolDisksOut{}, err
 			}
 			out := poolDisksOut{Disks: make([]poolDiskOut, 0, len(disks))}
 			for _, d := range disks {
+				s.logger.Debug("haify_pool_disks: disk", zap.String("node", d.Node), zap.String("pool", d.Pool),
+					zap.String("device", d.Device), zap.Uint64("size_bytes", d.SizeBytes), zap.String("health", d.Health))
 				out.Disks = append(out.Disks, poolDiskOut{Node: d.Node, Pool: d.Pool, Device: d.Device,
 					Size: util.FormatBytes(d.SizeBytes), Used: util.FormatBytes(d.UsedBytes), Health: d.Health,
 					Detail: d.HealthDetail, Model: d.Model, Serial: d.Serial})
 			}
+			s.logger.Debug("haify_pool_disks: listed", zap.Int("count", len(out.Disks)))
 			return nil, out, nil
 		})
 
@@ -130,15 +136,20 @@ func (s *Server) registerStorageTools(srv *mcp.Server) {
 		"List the long storage jobs: disks being emptied or replaced, volumes moving between pools. Running jobs "+
 			"by default. A job runs on its node and survives a controller restart; poll this until it is done or failed."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in storageJobsIn) (*mcp.CallToolResult, storageJobsOut, error) {
+			s.logger.Debug("haify_storage_jobs: listing storage jobs", zap.Bool("all", in.All))
 			jobs, err := s.client.ListStorageJobs(ctx, in.All)
 			if err != nil {
+				s.logger.Debug("haify_storage_jobs: list failed", zap.Error(err))
 				return nil, storageJobsOut{}, err
 			}
 			out := storageJobsOut{Jobs: make([]storageJobOut, 0, len(jobs))}
 			for _, j := range jobs {
+				s.logger.Debug("haify_storage_jobs: job", zap.String("job_id", j.Id), zap.String("kind", j.Kind),
+					zap.String("state", j.State), zap.String("subject", j.Subject))
 				out.Jobs = append(out.Jobs, storageJobOut{ID: j.Id, Kind: j.Kind, State: j.State, Subject: j.Subject,
 					Progress: j.Progress, Message: j.Message, Started: unixRFC3339(j.StartedUnix), Updated: unixRFC3339(j.UpdatedUnix)})
 			}
+			s.logger.Debug("haify_storage_jobs: listed", zap.Int("count", len(out.Jobs)))
 			return nil, out, nil
 		})
 
@@ -147,12 +158,16 @@ func (s *Server) registerStorageTools(srv *mcp.Server) {
 			"so each node's thin pool gets back the blocks the filesystem freed. Use it when a thin pool is fuller "+
 			"than its volumes' contents explain. The controller already does this daily ([storage.thin] trim_schedule)."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolTrimIn) (*mcp.CallToolResult, poolTrimOut, error) {
+			s.logger.Debug("haify_pool_trim: trimming pools", zap.String("node", in.Node))
 			resp, err := s.client.TrimPools(ctx, in.Node)
 			if err != nil {
+				s.logger.Debug("haify_pool_trim: trim failed", zap.String("node", in.Node), zap.Error(err))
 				return nil, poolTrimOut{}, err
 			}
 			out := poolTrimOut{Summary: resp.Message, Results: make([]trimResultOut, 0, len(resp.Results))}
 			for _, r := range resp.Results {
+				s.logger.Debug("haify_pool_trim: mount result", zap.String("node", r.Node), zap.String("mount", r.Mount),
+					zap.Uint64("trimmed_bytes", r.Bytes), zap.String("error", r.Error))
 				t := trimResultOut{Node: r.Node, Mount: r.Mount, Error: r.Error}
 				if r.Error == "" {
 					t.Trimmed = util.FormatBytes(r.Bytes)
@@ -160,8 +175,10 @@ func (s *Server) registerStorageTools(srv *mcp.Server) {
 				out.Results = append(out.Results, t)
 			}
 			if !resp.Success && len(resp.Results) == 0 {
+				s.logger.Debug("haify_pool_trim: controller refused with no results", zap.String("message", resp.Message))
 				return nil, poolTrimOut{}, fmt.Errorf("%s", resp.Message)
 			}
+			s.logger.Debug("haify_pool_trim: done", zap.Bool("success", resp.Success), zap.Int("count", len(out.Results)))
 			return nil, out, nil
 		})
 
@@ -170,10 +187,15 @@ func (s *Server) registerStorageTools(srv *mcp.Server) {
 			"the pool. Refused when the other disks lack room, and for a pool's only disk (use haify_pool_replace_disk). "+
 			"Returns a job id; follow it with haify_storage_jobs."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolRemoveDiskIn) (*mcp.CallToolResult, jobStartOut, error) {
+			s.logger.Debug("haify_pool_remove_disk: removing disk", zap.String("pool", in.Pool), zap.String("node", in.Node),
+				zap.String("disk", in.Disk))
 			resp, err := s.client.RemovePoolDisk(ctx, in.Pool, in.Node, in.Disk)
 			if err != nil {
+				s.logger.Debug("haify_pool_remove_disk: remove failed", zap.String("pool", in.Pool), zap.String("node", in.Node),
+					zap.String("disk", in.Disk), zap.Error(err))
 				return nil, jobStartOut{}, err
 			}
+			s.logger.Debug("haify_pool_remove_disk: job started", zap.String("job_id", resp.JobId))
 			return nil, jobStartOut{JobID: resp.JobId, Detail: resp.Message}, nil
 		})
 
@@ -181,10 +203,15 @@ func (s *Server) registerStorageTools(srv *mcp.Server) {
 		"Replace a failing or too-small disk: the new disk joins the pool, the old one's data moves to it, and the "+
 			"old disk leaves the pool. The pool stays in use throughout. Returns a job id; follow it with haify_storage_jobs."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in poolReplaceDiskIn) (*mcp.CallToolResult, jobStartOut, error) {
+			s.logger.Debug("haify_pool_replace_disk: replacing disk", zap.String("pool", in.Pool), zap.String("node", in.Node),
+				zap.String("disk", in.Disk), zap.String("new_disk", in.NewDisk), zap.Bool("wipe", in.Wipe))
 			resp, err := s.client.ReplacePoolDisk(ctx, in.Pool, in.Node, in.Disk, in.NewDisk, in.Wipe)
 			if err != nil {
+				s.logger.Debug("haify_pool_replace_disk: replace failed", zap.String("pool", in.Pool), zap.String("node", in.Node),
+					zap.String("disk", in.Disk), zap.Error(err))
 				return nil, jobStartOut{}, err
 			}
+			s.logger.Debug("haify_pool_replace_disk: job started", zap.String("job_id", resp.JobId))
 			return nil, jobStartOut{JobID: resp.JobId, Detail: resp.Message}, nil
 		})
 
@@ -196,10 +223,15 @@ func (s *Server) registerStorageTools(srv *mcp.Server) {
 			"are DELETED — confirm with the user and offer a backup first. Needs two or more diskful replicas; refused "+
 			"for encrypted resources and while snapshots are locked. Returns a job id; follow it with haify_storage_jobs."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in moveVolumeIn) (*mcp.CallToolResult, jobStartOut, error) {
+			s.logger.Debug("haify_resource_move_volume: moving volume", zap.String("resource", in.Resource),
+				zap.Int32("volume", in.Volume), zap.String("pool", in.Pool))
 			resp, err := s.client.MoveVolume(ctx, in.Resource, in.Volume, in.Pool)
 			if err != nil {
+				s.logger.Debug("haify_resource_move_volume: move failed", zap.String("resource", in.Resource),
+					zap.Int32("volume", in.Volume), zap.String("pool", in.Pool), zap.Error(err))
 				return nil, jobStartOut{}, err
 			}
+			s.logger.Debug("haify_resource_move_volume: job started", zap.String("job_id", resp.JobId))
 			return nil, jobStartOut{JobID: resp.JobId, Detail: resp.Message}, nil
 		})
 }

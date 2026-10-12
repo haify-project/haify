@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/triage"
@@ -110,8 +111,11 @@ func (s *Server) registerDiagnoseTools(srv *mcp.Server) {
 }
 
 func (s *Server) handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, in diagnoseIn) (*mcp.CallToolResult, diagnoseOut, error) {
+	s.logger.Debug("haify_diagnose: diagnosing", zap.Strings("nodes", in.Nodes), zap.Int("window_minutes", in.WindowMinutes),
+		zap.Strings("collectors", in.Collectors), zap.Bool("skip_nodes", in.SkipNodes))
 	window := in.WindowMinutes
 	if window <= 0 {
+		s.logger.Debug("haify_diagnose: no window given, using 60 minutes", zap.Int("window_minutes", in.WindowMinutes))
 		window = 60
 	}
 	input := triage.Input{Now: time.Now(), Window: time.Duration(window) * time.Minute}
@@ -121,9 +125,12 @@ func (s *Server) handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, in 
 	// a node that is down has no journal, and neither is a reason to refuse to
 	// diagnose what is left — a diagnosis from partial evidence is useful as
 	// long as it says which part is missing.
+	start := time.Now()
 	if resp, err := s.client.ListEvents(ctx, &haifypb.ListEventsRequest{Limit: diagEventLimit}); err != nil {
+		s.logger.Debug("haify_diagnose: events unreadable, noting the gap", zap.Duration("took", time.Since(start)), zap.Error(err))
 		notes = append(notes, "could not read cluster events: "+err.Error())
 	} else {
+		s.logger.Debug("haify_diagnose: read events", zap.Int("count", len(resp.Events)), zap.Duration("took", time.Since(start)))
 		for _, e := range resp.Events {
 			input.Events = append(input.Events, triage.Event{
 				ID: e.Id, Type: e.Type, Severity: e.Severity, Status: e.Status,
@@ -133,11 +140,14 @@ func (s *Server) handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, in 
 		}
 	}
 
+	start = time.Now()
 	if resp, err := s.client.ListAuditEvents(ctx, &haifypb.ListAuditEventsRequest{
 		Limit: diagAuditLimit, FailuresOnly: true,
 	}); err != nil {
+		s.logger.Debug("haify_diagnose: audit unreadable, noting the gap", zap.Duration("took", time.Since(start)), zap.Error(err))
 		notes = append(notes, "could not read the audit trail: "+err.Error())
 	} else {
+		s.logger.Debug("haify_diagnose: read audit failures", zap.Int("count", len(resp.Events)), zap.Duration("took", time.Since(start)))
 		for _, a := range resp.Events {
 			input.Audit = append(input.Audit, triage.Audit{
 				At: msTime(a.TimestampUnixMs), Method: a.Method, User: a.User,
@@ -147,11 +157,14 @@ func (s *Server) handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, in 
 		}
 	}
 
+	start = time.Now()
 	if resp, err := s.client.ListControllerLogs(ctx, &haifypb.ListControllerLogsRequest{
 		Limit: diagLogLimit, Level: "warn",
 	}); err != nil {
+		s.logger.Debug("haify_diagnose: controller log unreadable, noting the gap", zap.Duration("took", time.Since(start)), zap.Error(err))
 		notes = append(notes, "could not read the controller log: "+err.Error())
 	} else {
+		s.logger.Debug("haify_diagnose: read controller log", zap.Int("count", len(resp.Entries)), zap.Duration("took", time.Since(start)))
 		for _, l := range resp.Entries {
 			input.Logs = append(input.Logs, triage.LogEntry{
 				At: msTime(l.TimestampUnixMs), Level: l.Level,
@@ -161,22 +174,35 @@ func (s *Server) handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, in 
 	}
 
 	if in.SkipNodes {
+		s.logger.Debug("haify_diagnose: skipping node collection as asked")
 		notes = append(notes, "node collection was skipped, so no DRBD, kernel, promoter or storage evidence was read")
 	} else {
+		s.logger.Debug("haify_diagnose: collecting from nodes", zap.Strings("nodes", in.Nodes),
+			zap.Strings("collectors", in.Collectors), zap.Int("since_minutes", window))
+		start = time.Now()
 		resp, err := s.client.CollectNodeDiagnostics(ctx, &haifypb.CollectNodeDiagnosticsRequest{
 			Nodes: in.Nodes, Collectors: in.Collectors,
 			SinceMinutes: int32(window), MaxLines: 200,
 		})
 		switch {
 		case err != nil:
+			s.logger.Debug("haify_diagnose: node collection failed, reporting controller records only",
+				zap.Duration("took", time.Since(start)), zap.Error(err))
 			notes = append(notes, "could not collect from nodes: "+err.Error()+
 				" — this report covers only what the controller itself holds")
 		default:
+			s.logger.Debug("haify_diagnose: collected from nodes", zap.Int("nodes", len(resp.Nodes)),
+				zap.Duration("took", time.Since(start)))
 			for _, n := range resp.Nodes {
+				s.logger.Debug("haify_diagnose: node report", zap.String("node", n.Node), zap.String("address", n.Address),
+					zap.Bool("reachable", n.Reachable), zap.String("error", n.Error), zap.Int("collectors", len(n.Collectors)))
 				nr := triage.NodeReport{
 					Node: n.Node, Address: n.Address, Reachable: n.Reachable, Error: n.Error,
 				}
 				for _, c := range n.Collectors {
+					s.logger.Debug("haify_diagnose: collector output", zap.String("node", n.Node),
+						zap.String("collector", c.Collector), zap.Bool("ok", c.Ok), zap.Int("lines", len(c.Lines)),
+						zap.Bool("truncated", c.Truncated), zap.String("error", c.Error))
 					nr.Collectors = append(nr.Collectors, triage.CollectorOutput{
 						Collector: c.Collector, Command: c.Command, Lines: c.Lines,
 						Ok: c.Ok, Truncated: c.Truncated, Error: c.Error,
@@ -185,13 +211,19 @@ func (s *Server) handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, in 
 				input.Nodes = append(input.Nodes, nr)
 			}
 			for _, u := range resp.UnknownCollectors {
+				s.logger.Debug("haify_diagnose: unknown collector requested", zap.String("collector", u))
 				notes = append(notes, "no collector named "+u+"; the ones that exist are "+
 					joinComma(resp.AvailableCollectors))
 			}
 		}
 	}
 
+	s.logger.Debug("haify_diagnose: analyzing", zap.Int("events", len(input.Events)), zap.Int("audit", len(input.Audit)),
+		zap.Int("logs", len(input.Logs)), zap.Int("nodes", len(input.Nodes)), zap.Int("notes", len(notes)))
 	rep := triage.Analyze(input)
+	s.logger.Debug("haify_diagnose: analyzed", zap.Bool("healthy", rep.Healthy), zap.Int("findings", len(rep.Findings)),
+		zap.Int("node_lines", rep.Scanned.NodeLines), zap.Strings("unreachable", rep.Scanned.Unreachable),
+		zap.Strings("failed_collectors", rep.Scanned.FailedCollectors))
 	return nil, diagnoseOut{
 		WindowMinutes: rep.WindowMinutes,
 		Healthy:       rep.Healthy,
@@ -211,7 +243,11 @@ func (s *Server) handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, in 
 
 func toDiagnoseFindings(in []triage.Finding) []diagnoseFinding {
 	out := make([]diagnoseFinding, 0, len(in))
+	log := zap.L()
 	for _, f := range in {
+		log.Debug("toDiagnoseFindings: finding", zap.String("id", f.ID), zap.String("severity", string(f.Severity)),
+			zap.Int("count", f.Count), zap.Bool("known", f.Known), zap.String("resource", f.Resource),
+			zap.Int("evidence", len(f.Evidence)))
 		df := diagnoseFinding{
 			ID: f.ID, Title: f.Title, Severity: string(f.Severity), Count: f.Count,
 			Nodes: f.Nodes, Resource: f.Resource, Known: f.Known,

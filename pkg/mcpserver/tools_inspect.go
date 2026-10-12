@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
@@ -52,7 +53,10 @@ func reportOut(r *haifypb.InspectionReport) inspectReportOut {
 		Areas: r.Areas, Fail: s.GetFail(), Warn: s.GetWarn(), Error: s.GetError(), Pass: s.GetPass(),
 		Checks: make([]inspectCheckOut, 0, len(r.Checks)),
 	}
+	log := zap.L()
 	for _, c := range r.Checks {
+		log.Debug("reportOut: check", zap.String("id", c.Id), zap.String("area", c.Area), zap.String("subject", c.Subject),
+			zap.String("status", c.Status))
 		out.Checks = append(out.Checks, inspectCheckOut{ID: c.Id, Area: c.Area, Subject: c.Subject, Status: c.Status,
 			Message: c.Message, Evidence: c.Evidence, Fix: c.Fix, Runbook: c.Runbook})
 	}
@@ -71,15 +75,21 @@ func (s *Server) registerInspectTools(srv *mcp.Server) {
 			"evidence and the exact fix command. Start here for 'is the cluster healthy?' before reading individual "+
 			"resources; it is cheap, it only reads the stored report."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in inspectReportIn) (*mcp.CallToolResult, inspectReportOut, error) {
+			s.logger.Debug("haify_inspect_report: reading report", zap.String("id", in.ID))
 			id := in.ID
 			if id == "" {
+				s.logger.Debug("haify_inspect_report: no id given, reading the newest")
 				id = "latest"
 			}
 			r, err := s.client.GetInspection(ctx, id)
 			if err != nil {
+				s.logger.Debug("haify_inspect_report: read failed", zap.String("id", id), zap.Error(err))
 				return nil, inspectReportOut{}, err
 			}
-			return nil, reportOut(r), nil
+			out := reportOut(r)
+			s.logger.Debug("haify_inspect_report: read", zap.String("id", out.ID), zap.Int("checks", len(out.Checks)),
+				zap.Int32("fail", out.Fail), zap.Int32("warn", out.Warn), zap.Int32("error", out.Error))
+			return nil, out, nil
 		})
 
 	addReadWithin(s, srv, readOnlyTool("haify_inspect_run", "Inspect the cluster now",
@@ -90,10 +100,18 @@ func (s *Server) registerInspectTools(srv *mcp.Server) {
 			"running; read that one with haify_inspect_report afterwards."),
 		inspectRunTimeout,
 		func(ctx context.Context, _ *mcp.CallToolRequest, in inspectRunIn) (*mcp.CallToolResult, inspectReportOut, error) {
+			s.logger.Debug("haify_inspect_run: running inspection", zap.Strings("areas", in.Areas))
+			start := time.Now()
 			r, err := s.client.RunInspection(ctx, in.Areas)
 			if err != nil {
+				s.logger.Debug("haify_inspect_run: run failed", zap.Strings("areas", in.Areas),
+					zap.Duration("took", time.Since(start)), zap.Error(err))
 				return nil, inspectReportOut{}, err
 			}
-			return nil, reportOut(r), nil
+			out := reportOut(r)
+			s.logger.Debug("haify_inspect_run: done", zap.String("id", out.ID), zap.Int("checks", len(out.Checks)),
+				zap.Int32("fail", out.Fail), zap.Int32("warn", out.Warn), zap.Int32("error", out.Error),
+				zap.Duration("took", time.Since(start)))
+			return nil, out, nil
 		})
 }

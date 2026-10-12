@@ -47,9 +47,12 @@ func main() {
 				return fmt.Errorf("init logger: %w", err)
 			}
 			defer func() { _ = logger.Sync() }()
+			logger.Debug("haify-mcp: starting stdio server", zap.String("controller", conn.addr),
+				zap.Bool("read_only", readOnly), zap.Strings("allow", allowWrite), zap.String("version", version))
 
 			haifyClient, err := conn.dial()
 			if err != nil {
+				logger.Debug("haify-mcp: dialing the controller failed", zap.Error(err))
 				return err
 			}
 			defer func() { _ = haifyClient.Close() }()
@@ -94,7 +97,9 @@ func newStderrLogger(debug bool) (*zap.Logger, error) {
 	if err != nil {
 		return nil, err
 	}
-	return logging.Install(logger), nil
+	logger = logging.Install(logger)
+	logger.Debug("newStderrLogger: debug logging on stderr", zap.Bool("debug", debug))
+	return logger, nil
 }
 
 // k8sCmd serves the Kubernetes (CSI) tools as their own MCP server, haify-k8s.
@@ -115,11 +120,15 @@ func k8sCmd() *cobra.Command {
 				return fmt.Errorf("init logger: %w", err)
 			}
 			defer func() { _ = logger.Sync() }()
+			logger.Debug("k8sCmd: starting haify-k8s stdio server", zap.Bool("has_kubeconfig", kubeconfig != ""),
+				zap.String("kubeconfig", kubeconfig), zap.Bool("read_only", readOnly), zap.Strings("allow", allowWrite))
 			apps, err := k8sapp.NewManager(kubeconfig)
 			if err != nil {
+				logger.Debug("k8sCmd: building the Kubernetes client failed", zap.Error(err))
 				return err
 			}
 			if apps == nil {
+				logger.Debug("k8sCmd: no Kubernetes cluster found")
 				return fmt.Errorf("no Kubernetes cluster: pass --kubeconfig (or HAIFY_KUBECONFIG), or run inside a pod")
 			}
 			return mcpserver.NewK8s(apps, logger, mcpserver.Options{

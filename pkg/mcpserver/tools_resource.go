@@ -6,6 +6,7 @@ import (
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 )
 
 // ---- output types ----
@@ -62,7 +63,10 @@ type resourceProfileListOut struct {
 
 func volumesOut(vols []*haifypb.VolumeInfo) []volumeOut {
 	out := make([]volumeOut, 0, len(vols))
+	log := zap.L()
 	for _, v := range vols {
+		log.Debug("volumesOut: volume", zap.Uint32("volume", v.VolumeId), zap.String("device", v.Device),
+			zap.Uint64("size_gb", v.SizeGb), zap.String("pool", v.Pool))
 		out = append(out, volumeOut{
 			VolumeID:      v.VolumeId,
 			Device:        v.Device,
@@ -76,7 +80,10 @@ func volumesOut(vols []*haifypb.VolumeInfo) []volumeOut {
 
 func nodeStatesOut(states map[string]*haifypb.NodeResourceState) []nodeStateOut {
 	out := make([]nodeStateOut, 0, len(states))
+	log := zap.L()
 	for node, st := range states {
+		log.Debug("nodeStatesOut: node state", zap.String("node", node), zap.String("role", st.Role),
+			zap.String("disk_state", st.DiskState), zap.String("replication_state", st.ReplicationState))
 		out = append(out, nodeStateOut{
 			Node:             node,
 			Role:             st.Role,
@@ -92,22 +99,6 @@ func nodeStatesOut(states map[string]*haifypb.NodeResourceState) []nodeStateOut 
 
 type resourceNameIn struct {
 	Name string `json:"name" jsonschema:"DRBD resource name"`
-}
-
-type resourceProfileIn struct {
-	Name                string            `json:"name" jsonschema:"resource profile name"`
-	Protocol            string            `json:"protocol,omitempty" jsonschema:"default DRBD protocol A, B, or C"`
-	StorageType         string            `json:"storage_type,omitempty" jsonschema:"default storage type: lvm, lvm-thin, or zfs"`
-	Pool                string            `json:"pool,omitempty" jsonschema:"default storage pool"`
-	Replicas            uint32            `json:"replicas,omitempty" jsonschema:"default replica count"`
-	ReplicasOnDifferent []string          `json:"replicas_on_different,omitempty" jsonschema:"node-label keys used to spread replicas"`
-	ReplicasOnSame      []string          `json:"replicas_on_same,omitempty" jsonschema:"node-label keys replicas must share"`
-	DrbdOptions         map[string]string `json:"drbd_options,omitempty" jsonschema:"default DRBD options"`
-	Labels              map[string]string `json:"labels,omitempty" jsonschema:"default resource labels"`
-}
-
-type resourceProfileNameIn struct {
-	Name string `json:"name" jsonschema:"resource profile name"`
 }
 
 type volumeSpecIn struct {
@@ -158,114 +149,26 @@ type resourceAdoptOut struct {
 	Detail   string   `json:"detail,omitempty"`
 }
 
-type volumeAddIn struct {
-	Resource string `json:"resource" jsonschema:"DRBD resource name"`
-	Volume   string `json:"volume" jsonschema:"volume name"`
-	Pool     string `json:"pool" jsonschema:"backing storage pool"`
-	SizeGB   uint32 `json:"size_gb" jsonschema:"volume size in GiB"`
-}
-
-type resourceSetOptionsIn struct {
-	Resource string            `json:"resource" jsonschema:"DRBD resource name"`
-	Options  map[string]string `json:"options" jsonschema:"DRBD options as section/key -> value (e.g. net/max-buffers: 8000, on-no-quorum: suspend-io, disk/on-io-error: detach); a bare key defaults to the resource-level options section"`
-}
-
-type volumeRemoveIn struct {
-	Resource string `json:"resource" jsonschema:"DRBD resource name"`
-	VolumeID uint32 `json:"volume_id" jsonschema:"volume ID within the resource"`
-}
-
-type volumeResizeIn struct {
-	Resource string `json:"resource" jsonschema:"DRBD resource name"`
-	VolumeID uint32 `json:"volume_id" jsonschema:"volume ID within the resource"`
-	SizeGB   uint32 `json:"size_gb" jsonschema:"new size in GiB (must be larger than current)"`
-}
-
-type filesystemIn struct {
-	Resource string `json:"resource" jsonschema:"DRBD resource name"`
-	VolumeID uint32 `json:"volume_id" jsonschema:"volume ID within the resource (0 for the first volume)"`
-	Fstype   string `json:"fstype" jsonschema:"filesystem type: ext4 or xfs"`
-	Node     string `json:"node" jsonschema:"node where the resource is Primary"`
-}
-
-type mountIn struct {
-	Resource string `json:"resource" jsonschema:"DRBD resource name"`
-	VolumeID uint32 `json:"volume_id" jsonschema:"volume ID within the resource (0 for the first volume)"`
-	Path     string `json:"path" jsonschema:"mount point, e.g. /mnt/data"`
-	Node     string `json:"node" jsonschema:"node where the resource is Primary"`
-	Fstype   string `json:"fstype,omitempty" jsonschema:"filesystem type (default ext4)"`
-}
-
-type unmountIn struct {
-	Resource string `json:"resource" jsonschema:"DRBD resource name"`
-	VolumeID uint32 `json:"volume_id" jsonschema:"volume ID within the resource"`
-	Node     string `json:"node" jsonschema:"node where the volume is mounted"`
-}
-
 // registerResourceTools adds DRBD resource and volume tools.
 func (s *Server) registerResourceTools(srv *mcp.Server) {
-	profileClient, profilesSupported := s.client.(interface {
-		CreateResourceProfile(context.Context, *haifypb.ResourceProfile) (*haifypb.ResourceProfile, error)
-		GetResourceProfile(context.Context, string) (*haifypb.ResourceProfile, error)
-		ListResourceProfiles(context.Context) ([]*haifypb.ResourceProfile, error)
-		DeleteResourceProfile(context.Context, string) error
-	})
-	if profilesSupported {
-		addRead(s, srv, readOnlyTool("haify_resource_profile_list", "List resource profiles",
-			"List reusable resource creation profiles."),
-			func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, resourceProfileListOut, error) {
-				profiles, err := profileClient.ListResourceProfiles(ctx)
-				if err != nil {
-					return nil, resourceProfileListOut{}, err
-				}
-				out := resourceProfileListOut{Profiles: make([]resourceProfileOut, 0, len(profiles))}
-				for _, profile := range profiles {
-					out.Profiles = append(out.Profiles, profileOut(profile))
-				}
-				return nil, out, nil
-			})
-		addRead(s, srv, readOnlyTool("haify_resource_profile_get", "Get resource profile",
-			"Get one reusable resource creation profile."),
-			func(ctx context.Context, _ *mcp.CallToolRequest, in resourceProfileNameIn) (*mcp.CallToolResult, resourceProfileOut, error) {
-				profile, err := profileClient.GetResourceProfile(ctx, in.Name)
-				if err != nil {
-					return nil, resourceProfileOut{}, err
-				}
-				return nil, profileOut(profile), nil
-			})
-		addWrite(s, srv, writeTool("haify_resource_profile_create", "Create resource profile",
-			"Create or replace a reusable resource creation profile. Existing resources are not changed."),
-			func(ctx context.Context, _ *mcp.CallToolRequest, in resourceProfileIn) (*mcp.CallToolResult, resourceProfileOut, error) {
-				profile, err := profileClient.CreateResourceProfile(ctx, &haifypb.ResourceProfile{
-					Name: in.Name, Protocol: in.Protocol, StorageType: in.StorageType, Pool: in.Pool,
-					Replicas: in.Replicas, ReplicasOnDifferent: in.ReplicasOnDifferent,
-					ReplicasOnSame: in.ReplicasOnSame, DrbdOptions: in.DrbdOptions, Labels: in.Labels,
-				})
-				if err != nil {
-					return nil, resourceProfileOut{}, err
-				}
-				return nil, profileOut(profile), nil
-			})
-		addWrite(s, srv, destructiveTool("haify_resource_profile_delete", "Delete resource profile",
-			"Delete a resource profile. Refused while any resource is still a member; take members out with haify_resource_set_profile first."),
-			func(ctx context.Context, _ *mcp.CallToolRequest, in resourceProfileNameIn) (*mcp.CallToolResult, opResult, error) {
-				if err := profileClient.DeleteResourceProfile(ctx, in.Name); err != nil {
-					return nil, opResult{}, err
-				}
-				return nil, ok(fmt.Sprintf("resource profile %s deleted", in.Name)), nil
-			})
-	}
+	s.registerResourceProfileTools(srv)
 	s.registerProfileGroupTools(srv)
 
 	addRead(s, srv, readOnlyTool("haify_resource_list", "List resources",
 		"List all DRBD resources with their nodes, volumes, and replication state."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, resourceListOut, error) {
+			s.logger.Debug("haify_resource_list: listing resources")
 			resources, err := s.client.ListResources(ctx)
 			if err != nil {
+				s.logger.Debug("haify_resource_list: list failed", zap.Error(err))
 				return nil, resourceListOut{}, err
 			}
 			out := resourceListOut{Resources: make([]resourceOut, 0, len(resources))}
 			for _, r := range resources {
+				s.logger.Debug("haify_resource_list: resource", zap.String("resource", r.Name), zap.Uint32("port", r.Port),
+					zap.Strings("nodes", r.Nodes), zap.String("role", r.Role), zap.Int("volumes", len(r.Volumes)),
+					zap.Strings("diskless_nodes", r.DisklessNodes), zap.Bool("quorum_risk", r.QuorumRisk),
+					zap.String("profile", r.Profile))
 				out.Resources = append(out.Resources, resourceOut{
 					Name:          r.Name,
 					Port:          r.Port,
@@ -280,16 +183,21 @@ func (s *Server) registerResourceTools(srv *mcp.Server) {
 					Labels:        r.Labels,
 				})
 			}
+			s.logger.Debug("haify_resource_list: listed", zap.Int("count", len(out.Resources)))
 			return nil, out, nil
 		})
 
 	addRead(s, srv, readOnlyTool("haify_resource_status", "Resource status",
 		"Show live DRBD status for one resource: per-node role and disk state (UpToDate, Inconsistent, ...)."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in resourceNameIn) (*mcp.CallToolResult, resourceOut, error) {
+			s.logger.Debug("haify_resource_status: reading status", zap.String("resource", in.Name))
 			st, err := s.client.ResourceStatus(ctx, in.Name)
 			if err != nil {
+				s.logger.Debug("haify_resource_status: read failed", zap.String("resource", in.Name), zap.Error(err))
 				return nil, resourceOut{}, err
 			}
+			s.logger.Debug("haify_resource_status: read", zap.String("resource", st.Name), zap.String("role", st.Role),
+				zap.Strings("nodes", st.Nodes), zap.Int("volumes", len(st.Volumes)), zap.Int("node_states", len(st.NodeStates)))
 			return nil, resourceOut{
 				Name:       st.Name,
 				Role:       st.Role,
@@ -306,26 +214,39 @@ func (s *Server) registerResourceTools(srv *mcp.Server) {
 			"the volumes array instead — each element is {size_gb, pool} and becomes DRBD volume 0..N; "+
 			"the top-level size_gb/pool are then ignored."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in resourceCreateIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_resource_create: creating resource", zap.String("resource", in.Name),
+				zap.Uint32("port", in.Port), zap.Strings("nodes", in.Nodes), zap.String("pool", in.Pool),
+				zap.Uint32("size_gb", in.SizeGB), zap.Int("volumes", len(in.Volumes)), zap.String("storage_type", in.StorageType),
+				zap.String("protocol", in.Protocol), zap.Array("drbd_option_keys", keysOf(in.DrbdOptions)),
+				zap.String("profile", in.Profile), zap.Array("label_keys", keysOf(in.Labels)))
 			if len(in.Nodes) == 0 {
+				s.logger.Debug("haify_resource_create: refusing, no nodes given")
 				return nil, opResult{}, fmt.Errorf("nodes are required")
 			}
 			storageType := in.StorageType
 			if storageType == "" {
+				s.logger.Debug("haify_resource_create: no storage type given, using lvm")
 				storageType = "lvm"
 			}
 			protocol := in.Protocol
 			if protocol == "" {
+				s.logger.Debug("haify_resource_create: no protocol given, using C")
 				protocol = "C"
 			}
 			requestClient, metadataAware := s.client.(interface {
 				CreateResourceRequest(context.Context, *haifypb.CreateResourceRequest) error
 			})
 			if in.Profile != "" || len(in.Labels) > 0 {
+				s.logger.Debug("haify_resource_create: profile or labels given, creating through the full request",
+					zap.String("profile", in.Profile), zap.Int("labels", len(in.Labels)))
 				if !metadataAware {
+					s.logger.Debug("haify_resource_create: refusing, client cannot send profiles or labels")
 					return nil, opResult{}, fmt.Errorf("controller client does not support resource profiles or labels")
 				}
 				volumes := make([]*haifypb.VolumeSpec, 0, len(in.Volumes))
-				for _, v := range in.Volumes {
+				for i, v := range in.Volumes {
+					s.logger.Debug("haify_resource_create: volume spec", zap.Int("volume", i), zap.Uint32("size_gb", v.SizeGB),
+						zap.String("pool", v.Pool))
 					volumes = append(volumes, &haifypb.VolumeSpec{SizeGb: v.SizeGB, Pool: v.Pool})
 				}
 				if err := requestClient.CreateResourceRequest(ctx, &haifypb.CreateResourceRequest{
@@ -333,27 +254,39 @@ func (s *Server) registerResourceTools(srv *mcp.Server) {
 					Volumes: volumes, StorageType: storageType, Protocol: protocol,
 					DrbdOptions: in.DrbdOptions, Profile: in.Profile, Labels: in.Labels,
 				}); err != nil {
+					s.logger.Debug("haify_resource_create: create failed", zap.String("resource", in.Name), zap.Error(err))
 					return nil, opResult{}, err
 				}
+				s.logger.Debug("haify_resource_create: created with profile", zap.String("resource", in.Name),
+					zap.String("profile", in.Profile))
 				return nil, ok(fmt.Sprintf("resource %s created with profile %s", in.Name, in.Profile)), nil
 			}
 			if len(in.Volumes) > 0 {
+				s.logger.Debug("haify_resource_create: creating a multi-volume resource", zap.Int("volumes", len(in.Volumes)))
 				volumes := make([]*haifypb.VolumeSpec, 0, len(in.Volumes))
-				for _, v := range in.Volumes {
+				for i, v := range in.Volumes {
+					s.logger.Debug("haify_resource_create: volume spec", zap.Int("volume", i), zap.Uint32("size_gb", v.SizeGB),
+						zap.String("pool", v.Pool))
 					volumes = append(volumes, &haifypb.VolumeSpec{SizeGb: v.SizeGB, Pool: v.Pool})
 				}
 				if err := s.client.CreateResourceWithVolumes(ctx, in.Name, in.Port, in.Nodes,
 					protocol, storageType, in.DrbdOptions, volumes); err != nil {
+					s.logger.Debug("haify_resource_create: create failed", zap.String("resource", in.Name), zap.Error(err))
 					return nil, opResult{}, err
 				}
+				s.logger.Debug("haify_resource_create: created", zap.String("resource", in.Name), zap.Int("volumes", len(volumes)))
 				return nil, ok(fmt.Sprintf("resource %s created on %d node(s) with %d volume(s)",
 					in.Name, len(in.Nodes), len(volumes))), nil
 			}
+			s.logger.Debug("haify_resource_create: creating a single-volume resource", zap.Uint32("size_gb", in.SizeGB),
+				zap.String("pool", in.Pool))
 			err := s.client.CreateResourceWithPoolAndType(ctx, in.Name, in.Port, in.Nodes,
 				protocol, in.SizeGB, in.Pool, storageType, in.DrbdOptions)
 			if err != nil {
+				s.logger.Debug("haify_resource_create: create failed", zap.String("resource", in.Name), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_resource_create: created", zap.String("resource", in.Name), zap.Strings("nodes", in.Nodes))
 			return nil, ok(fmt.Sprintf("resource %s created on %d node(s), %d GiB from pool %s",
 				in.Name, len(in.Nodes), in.SizeGB, in.Pool)), nil
 		})
@@ -361,9 +294,12 @@ func (s *Server) registerResourceTools(srv *mcp.Server) {
 	addWrite(s, srv, destructiveTool("haify_resource_delete", "Delete resource",
 		"Delete a DRBD resource and its backing volumes on all nodes. All data on the resource is lost."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in resourceNameIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_resource_delete: deleting resource", zap.String("resource", in.Name))
 			if err := s.client.DeleteResource(ctx, in.Name); err != nil {
+				s.logger.Debug("haify_resource_delete: delete failed", zap.String("resource", in.Name), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_resource_delete: deleted", zap.String("resource", in.Name))
 			return nil, ok(fmt.Sprintf("resource %s deleted", in.Name)), nil
 		})
 
@@ -375,24 +311,43 @@ func (s *Server) registerResourceTools(srv *mcp.Server) {
 			"for a safe hard-failover promote: the controller force-promotes only if the node "+
 			"holds DRBD quorum and refuses otherwise, avoiding split-brain."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in resourceSetRoleIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_resource_set_role: setting role", zap.String("resource", in.Resource),
+				zap.String("node", in.Node), zap.String("role", in.Role), zap.Bool("force", in.Force),
+				zap.Bool("quorum_guarded", in.QuorumGuarded))
 			switch in.Role {
 			case "primary":
 				if in.QuorumGuarded {
+					s.logger.Debug("haify_resource_set_role: quorum-guarded promote", zap.String("resource", in.Resource),
+						zap.String("node", in.Node))
 					if err := s.client.PromoteForNode(ctx, in.Resource, in.Node); err != nil {
+						s.logger.Debug("haify_resource_set_role: guarded promote failed", zap.String("resource", in.Resource),
+							zap.String("node", in.Node), zap.Error(err))
 						return nil, opResult{}, err
 					}
+					s.logger.Debug("haify_resource_set_role: promoted under quorum guard", zap.String("resource", in.Resource),
+						zap.String("node", in.Node))
 					return nil, ok(fmt.Sprintf("resource %s safely promoted to primary on %s (quorum-guarded)", in.Resource, in.Node)), nil
 				}
+				s.logger.Debug("haify_resource_set_role: promoting", zap.String("resource", in.Resource),
+					zap.String("node", in.Node), zap.Bool("force", in.Force))
 				if err := s.client.SetPrimary(ctx, in.Resource, in.Node, in.Force); err != nil {
+					s.logger.Debug("haify_resource_set_role: promote failed", zap.String("resource", in.Resource),
+						zap.String("node", in.Node), zap.Error(err))
 					return nil, opResult{}, err
 				}
 			case "secondary":
+				s.logger.Debug("haify_resource_set_role: demoting", zap.String("resource", in.Resource), zap.String("node", in.Node))
 				if err := s.client.SetSecondary(ctx, in.Resource, in.Node); err != nil {
+					s.logger.Debug("haify_resource_set_role: demote failed", zap.String("resource", in.Resource),
+						zap.String("node", in.Node), zap.Error(err))
 					return nil, opResult{}, err
 				}
 			default:
+				s.logger.Debug("haify_resource_set_role: refusing unknown role", zap.String("role", in.Role))
 				return nil, opResult{}, fmt.Errorf("invalid role %q (use primary or secondary)", in.Role)
 			}
+			s.logger.Debug("haify_resource_set_role: done", zap.String("resource", in.Resource), zap.String("node", in.Node),
+				zap.String("role", in.Role))
 			return nil, ok(fmt.Sprintf("resource %s is now %s on %s", in.Resource, in.Role, in.Node)), nil
 		})
 
@@ -404,12 +359,18 @@ func (s *Server) registerResourceTools(srv *mcp.Server) {
 			"their replication is asynchronous. Always close the window after the migration; "+
 			"closing is idempotent and verifies no node is left dual-primary."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in resourceDualPrimaryIn) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_resource_dual_primary: toggling dual-primary", zap.String("resource", in.Resource),
+				zap.Bool("enable", in.Enable))
 			if in.Resource == "" {
+				s.logger.Debug("haify_resource_dual_primary: refusing, no resource given")
 				return nil, opResult{}, fmt.Errorf("resource is required")
 			}
 			if err := s.client.SetDualPrimary(ctx, in.Resource, in.Enable); err != nil {
+				s.logger.Debug("haify_resource_dual_primary: failed", zap.String("resource", in.Resource),
+					zap.Bool("enable", in.Enable), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_resource_dual_primary: done", zap.String("resource", in.Resource), zap.Bool("enable", in.Enable))
 			if in.Enable {
 				return nil, ok(fmt.Sprintf("dual-primary window OPEN on %s — close it as soon as the migration finishes", in.Resource)), nil
 			}
@@ -421,13 +382,19 @@ func (s *Server) registerResourceTools(srv *mcp.Server) {
 			"nodes/port/volumes from the resource's .res on a node when omitted. Writes only "+
 			"Haify metadata — never touches the DRBD device or data."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in resourceAdoptIn) (*mcp.CallToolResult, resourceAdoptOut, error) {
+			s.logger.Debug("haify_resource_adopt: adopting resource", zap.String("resource", in.Resource),
+				zap.Strings("nodes", in.Nodes), zap.Uint32("port", in.Port), zap.String("protocol", in.Protocol))
 			if in.Resource == "" {
+				s.logger.Debug("haify_resource_adopt: refusing, no resource given")
 				return nil, resourceAdoptOut{}, fmt.Errorf("resource is required")
 			}
 			resp, err := s.client.AdoptResource(ctx, in.Resource, in.Nodes, in.Port, in.Protocol)
 			if err != nil {
+				s.logger.Debug("haify_resource_adopt: adopt failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, resourceAdoptOut{}, err
 			}
+			s.logger.Debug("haify_resource_adopt: adopted", zap.String("resource", in.Resource), zap.Strings("nodes", resp.Nodes),
+				zap.Uint32("port", resp.Port), zap.String("protocol", resp.Protocol), zap.Uint32("volumes", resp.Volumes))
 			return nil, resourceAdoptOut{
 				Resource: in.Resource,
 				Nodes:    resp.Nodes,
@@ -439,79 +406,5 @@ func (s *Server) registerResourceTools(srv *mcp.Server) {
 			}, nil
 		})
 
-	addWrite(s, srv, writeTool("haify_resource_add_volume", "Add volume",
-		"Add another replicated volume to an existing DRBD resource."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in volumeAddIn) (*mcp.CallToolResult, opResult, error) {
-			if err := s.client.AddVolume(ctx, in.Resource, in.Volume, in.Pool, in.SizeGB); err != nil {
-				return nil, opResult{}, err
-			}
-			return nil, ok(fmt.Sprintf("volume %s (%d GiB) added to resource %s", in.Volume, in.SizeGB, in.Resource)), nil
-		})
-
-	addWrite(s, srv, writeTool("haify_resource_set_options", "Set DRBD options",
-		"Update DRBD options on an existing resource and apply them live with "+
-			"`drbdadm adjust`, without recreating it. Options use the "+
-			"\"section/key\" form (e.g. net/max-buffers, disk/on-io-error); a bare "+
-			"key defaults to the resource-level options section."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in resourceSetOptionsIn) (*mcp.CallToolResult, opResult, error) {
-			if len(in.Options) == 0 {
-				return nil, opResult{}, fmt.Errorf("options must not be empty")
-			}
-			if err := s.client.UpdateResourceOptions(ctx, in.Resource, in.Options); err != nil {
-				return nil, opResult{}, err
-			}
-			return nil, ok(fmt.Sprintf("applied %d option(s) to resource %s and adjusted", len(in.Options), in.Resource)), nil
-		})
-
-	addWrite(s, srv, destructiveTool("haify_resource_remove_volume", "Remove volume",
-		"Remove a volume from a DRBD resource on all nodes. Data on the volume is lost."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in volumeRemoveIn) (*mcp.CallToolResult, opResult, error) {
-			if err := s.client.RemoveVolume(ctx, in.Resource, in.VolumeID); err != nil {
-				return nil, opResult{}, err
-			}
-			return nil, ok(fmt.Sprintf("volume %d removed from resource %s", in.VolumeID, in.Resource)), nil
-		})
-
-	addWrite(s, srv, writeTool("haify_resource_resize_volume", "Resize volume",
-		"Grow a DRBD volume on all nodes. Shrinking is not supported. The space is not usable "+
-			"until the filesystem on the Primary is grown too (resize2fs/xfs_growfs) — this tool "+
-			"does not do that."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in volumeResizeIn) (*mcp.CallToolResult, opResult, error) {
-			if err := s.client.ResizeVolume(ctx, in.Resource, in.VolumeID, in.SizeGB); err != nil {
-				return nil, opResult{}, err
-			}
-			return nil, ok(fmt.Sprintf("volume %d of resource %s resized to %d GiB", in.VolumeID, in.Resource, in.SizeGB)), nil
-		})
-
-	addWrite(s, srv, destructiveTool("haify_resource_create_filesystem", "Create filesystem",
-		"Format a DRBD volume with a filesystem on the Primary node. Any existing data is destroyed."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in filesystemIn) (*mcp.CallToolResult, opResult, error) {
-			if err := s.client.CreateFilesystem(ctx, in.Resource, in.VolumeID, in.Node, in.Fstype); err != nil {
-				return nil, opResult{}, err
-			}
-			return nil, ok(fmt.Sprintf("%s filesystem created on %s volume %d (node %s)",
-				in.Fstype, in.Resource, in.VolumeID, in.Node)), nil
-		})
-
-	addWrite(s, srv, writeTool("haify_resource_mount", "Mount volume",
-		"Mount a DRBD volume on its Primary node."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in mountIn) (*mcp.CallToolResult, opResult, error) {
-			fstype := in.Fstype
-			if fstype == "" {
-				fstype = "ext4"
-			}
-			if err := s.client.MountResource(ctx, in.Resource, in.VolumeID, in.Path, in.Node, fstype); err != nil {
-				return nil, opResult{}, err
-			}
-			return nil, ok(fmt.Sprintf("%s volume %d mounted at %s on %s", in.Resource, in.VolumeID, in.Path, in.Node)), nil
-		})
-
-	addWrite(s, srv, destructiveTool("haify_resource_unmount", "Unmount volume",
-		"Unmount a DRBD volume on a node."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in unmountIn) (*mcp.CallToolResult, opResult, error) {
-			if err := s.client.UnmountResource(ctx, in.Resource, in.VolumeID, in.Node); err != nil {
-				return nil, opResult{}, err
-			}
-			return nil, ok(fmt.Sprintf("%s volume %d unmounted on %s", in.Resource, in.VolumeID, in.Node)), nil
-		})
+	s.registerResourceVolumeTools(srv)
 }

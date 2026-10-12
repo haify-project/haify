@@ -28,91 +28,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
-
-// Role is what a token may do.
-type Role string
-
-const (
-	// RoleRead inspects the cluster and changes nothing.
-	RoleRead Role = "read"
-	// RoleOperate adds the day-to-day writes: create, grow, snapshot, start,
-	// mount. Nothing that deletes data or interrupts service.
-	RoleOperate Role = "operate"
-	// RoleAdmin is everything, including delete, restore, evict and drain.
-	RoleAdmin Role = "admin"
-)
-
-// ParseRole accepts the three role names.
-func ParseRole(s string) (Role, error) {
-	switch r := Role(strings.ToLower(strings.TrimSpace(s))); r {
-	case RoleRead, RoleOperate, RoleAdmin:
-		return r, nil
-	}
-	return "", fmt.Errorf("role %q is not one of read, operate, admin", s)
-}
-
-// Rank orders roles: a higher rank may do everything a lower one may.
-func (r Role) Rank() int {
-	switch r {
-	case RoleAdmin:
-		return 3
-	case RoleOperate:
-		return 2
-	case RoleRead:
-		return 1
-	}
-	return 0
-}
-
-// Min is the lesser of two roles.
-func Min(a, b Role) Role {
-	if a.Rank() <= b.Rank() {
-		return a
-	}
-	return b
-}
-
-// Scopes are the OAuth scopes a role is carried in. Each role includes the
-// ones below it, so a client asking for less than a token allows gets less.
-func (r Role) Scopes() []string {
-	switch r {
-	case RoleAdmin:
-		return []string{ScopeRead, ScopeOperate, ScopeAdmin}
-	case RoleOperate:
-		return []string{ScopeRead, ScopeOperate}
-	case RoleRead:
-		return []string{ScopeRead}
-	}
-	return nil
-}
-
-// OAuth scope names.
-const (
-	ScopeRead    = "haify:read"
-	ScopeOperate = "haify:operate"
-	ScopeAdmin   = "haify:admin"
-)
-
-// RoleFromScopes is the highest role the scopes name.
-func RoleFromScopes(scopes []string) Role {
-	var best Role
-	for _, s := range scopes {
-		var r Role
-		switch s {
-		case ScopeAdmin:
-			r = RoleAdmin
-		case ScopeOperate:
-			r = RoleOperate
-		case ScopeRead:
-			r = RoleRead
-		}
-		if r.Rank() > best.Rank() {
-			best = r
-		}
-	}
-	return best
-}
 
 // Token kinds.
 const (
@@ -179,69 +97,96 @@ type Store struct {
 // Open loads the store at path, creating it (and its directory, private to the
 // owner) when there is none yet.
 func Open(path string) (*Store, error) {
+	log := zap.L()
+	log.Debug("Open: opening token store", zap.String("path", path))
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Debug("Open: could not create the store directory", zap.String("dir", filepath.Dir(path)), zap.Error(err))
 		return nil, fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 	}
 	s := &Store{path: path, now: time.Now, data: fileData{Version: 1}}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
+		log.Debug("Open: initial load failed", zap.String("path", path), zap.Error(err))
 		return nil, err
 	}
+	log.Debug("Open: token store open", zap.String("path", path), zap.Int("tokens", len(s.data.Tokens)),
+		zap.Int("clients", len(s.data.Clients)))
 	return s, nil
 }
 
 func (s *Store) reloadLocked() error {
+	log := zap.L()
 	fi, err := os.Stat(s.path)
 	if errors.Is(err, os.ErrNotExist) {
+		log.Debug("Store.reloadLocked: no store file yet, creating it", zap.String("path", s.path))
 		return s.saveLocked()
 	}
 	if err != nil {
+		log.Debug("Store.reloadLocked: stat failed", zap.String("path", s.path), zap.Error(err))
 		return fmt.Errorf("stat %s: %w", s.path, err)
 	}
 	if fi.ModTime().Equal(s.mtime) {
 		return nil
 	}
+	start := time.Now()
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
+		log.Debug("Store.reloadLocked: read failed", zap.String("path", s.path), zap.Error(err))
 		return fmt.Errorf("read %s: %w", s.path, err)
 	}
 	var d fileData
 	if err := json.Unmarshal(raw, &d); err != nil {
+		log.Debug("Store.reloadLocked: file is not a token store", zap.String("path", s.path), zap.Error(err))
 		return fmt.Errorf("%s is not a token store: %w", s.path, err)
 	}
 	s.data, s.mtime = d, fi.ModTime()
+	log.Debug("Store.reloadLocked: store changed on disk, reloaded", zap.String("path", s.path),
+		zap.Time("mtime", fi.ModTime()), zap.Int("size_bytes", len(raw)), zap.Int("tokens", len(d.Tokens)),
+		zap.Int("clients", len(d.Clients)), zap.Duration("took", time.Since(start)))
 	return nil
 }
 
 func (s *Store) saveLocked() error {
+	log := zap.L()
+	start := time.Now()
 	s.pruneLocked()
 	raw, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
+		log.Debug("Store.saveLocked: marshal failed", zap.Error(err))
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".tokens-*")
 	if err != nil {
+		log.Debug("Store.saveLocked: could not create temp file", zap.String("dir", filepath.Dir(s.path)), zap.Error(err))
 		return err
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }()
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
+		log.Debug("Store.saveLocked: chmod temp file failed", zap.String("tmp", tmp.Name()), zap.Error(err))
 		return err
 	}
 	if _, err := tmp.Write(raw); err != nil {
 		_ = tmp.Close()
+		log.Debug("Store.saveLocked: write temp file failed", zap.String("tmp", tmp.Name()), zap.Error(err))
 		return err
 	}
 	if err := tmp.Close(); err != nil {
+		log.Debug("Store.saveLocked: close temp file failed", zap.String("tmp", tmp.Name()), zap.Error(err))
 		return err
 	}
 	if err := os.Rename(tmp.Name(), s.path); err != nil {
+		log.Debug("Store.saveLocked: rename into place failed", zap.String("path", s.path), zap.Error(err))
 		return err
 	}
 	if fi, err := os.Stat(s.path); err == nil {
 		s.mtime = fi.ModTime()
+	} else {
+		log.Debug("Store.saveLocked: stat after save failed, mtime not updated", zap.String("path", s.path), zap.Error(err))
 	}
+	log.Debug("Store.saveLocked: store written", zap.String("path", s.path), zap.Int("size_bytes", len(raw)),
+		zap.Int("tokens", len(s.data.Tokens)), zap.Int("clients", len(s.data.Clients)), zap.Duration("took", time.Since(start)))
 	return nil
 }
 
@@ -254,17 +199,26 @@ func (s *Store) pruneLocked() {
 			live[t.ID] = true
 		}
 	}
+	log := zap.L()
+	before := len(s.data.Tokens)
 	kept := s.data.Tokens[:0]
 	for _, t := range s.data.Tokens {
 		if !t.Expires.IsZero() && !t.Expires.After(now) {
+			log.Debug("Store.pruneLocked: dropping expired token", zap.String("token_id", t.ID),
+				zap.String("kind", t.Kind), zap.Time("expires", t.Expires))
 			continue
 		}
 		if t.Kind != KindStatic && !live[t.Parent] {
+			log.Debug("Store.pruneLocked: dropping OAuth token whose approving token is gone",
+				zap.String("token_id", t.ID), zap.String("kind", t.Kind), zap.String("parent_id", t.Parent))
 			continue
 		}
 		kept = append(kept, t)
 	}
 	s.data.Tokens = kept
+	if len(kept) != before {
+		log.Debug("Store.pruneLocked: pruned tokens", zap.Int("before", before), zap.Int("after", len(kept)))
+	}
 }
 
 func newSecret() (string, error) {
@@ -291,39 +245,54 @@ func newID(prefix string) (string, error) {
 // Create makes a static token. ttl zero means it does not expire. The secret
 // is returned once and is not recoverable afterwards.
 func (s *Store) Create(name string, role Role, ttl time.Duration) (string, Token, error) {
+	log := zap.L()
+	log.Debug("Store.Create: creating static token", zap.String("name", name), zap.String("role", string(role)),
+		zap.Duration("ttl", ttl))
 	name = strings.TrimSpace(name)
 	if name == "" {
+		log.Debug("Store.Create: refused, no name")
 		return "", Token{}, errors.New("a token needs a name")
 	}
 	if role.Rank() == 0 {
+		log.Debug("Store.Create: refused, unknown role", zap.String("role", string(role)))
 		return "", Token{}, fmt.Errorf("unknown role %q", role)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
+		log.Debug("Store.Create: reload failed", zap.Error(err))
 		return "", Token{}, err
 	}
 	for _, t := range s.data.Tokens {
 		if t.Kind == KindStatic && t.Name == name {
+			log.Debug("Store.Create: refused, name taken", zap.String("name", name), zap.String("token_id", t.ID))
 			return "", Token{}, fmt.Errorf("a token named %q already exists; revoke it or pick another name", name)
 		}
 	}
 	secret, err := newSecret()
 	if err != nil {
+		log.Debug("Store.Create: could not make a secret", zap.Error(err))
 		return "", Token{}, err
 	}
 	id, err := newID("t_")
 	if err != nil {
+		log.Debug("Store.Create: could not make a token id", zap.Error(err))
 		return "", Token{}, err
 	}
 	t := Token{ID: id, Name: name, Role: role, Kind: KindStatic, Hash: hashOf(secret), Created: s.now().UTC()}
 	if ttl > 0 {
 		t.Expires = t.Created.Add(ttl)
+		log.Debug("Store.Create: token expires", zap.Time("expires", t.Expires))
+	} else {
+		log.Debug("Store.Create: token never expires")
 	}
 	s.data.Tokens = append(s.data.Tokens, t)
 	if err := s.saveLocked(); err != nil {
+		log.Debug("Store.Create: save failed", zap.Error(err))
 		return "", Token{}, err
 	}
+	log.Debug("Store.Create: token created", zap.String("token_id", t.ID), zap.String("name", t.Name),
+		zap.String("role", string(t.Role)))
 	return secret, t, nil
 }
 
@@ -333,13 +302,19 @@ func (s *Store) Create(name string, role Role, ttl time.Duration) (string, Token
 func (s *Store) Verify(secret string) (Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	log := zap.L()
 	if err := s.reloadLocked(); err != nil {
+		log.Debug("Store.Verify: reload failed", zap.Error(err))
 		return Token{}, err
 	}
 	t, ok := s.findLocked(hashOf(secret))
 	if !ok || t.Kind == KindRefresh {
+		log.Debug("Store.Verify: credential rejected", zap.Bool("has_secret", secret != ""), zap.Bool("found", ok),
+			zap.String("kind", t.Kind))
 		return Token{}, ErrInvalid
 	}
+	log.Debug("Store.Verify: credential accepted", zap.String("token_id", t.ID), zap.String("kind", t.Kind),
+		zap.String("role", string(t.Role)), zap.Time("expires", t.Expires))
 	return t, nil
 }
 
@@ -358,13 +333,19 @@ func (s *Store) findLocked(hash string) (Token, bool) {
 			found = t
 		}
 	}
+	log := zap.L()
 	if found == nil {
+		log.Debug("Store.findLocked: no token with that hash", zap.Int("tokens", len(s.data.Tokens)))
 		return Token{}, false
 	}
 	if !found.Expires.IsZero() && !found.Expires.After(now) {
+		log.Debug("Store.findLocked: token expired", zap.String("token_id", found.ID), zap.String("kind", found.Kind),
+			zap.Time("expires", found.Expires))
 		return Token{}, false
 	}
 	if found.Kind != KindStatic && !live[found.Parent] {
+		log.Debug("Store.findLocked: approving token no longer live", zap.String("token_id", found.ID),
+			zap.String("kind", found.Kind), zap.String("parent_id", found.Parent))
 		return Token{}, false
 	}
 	return *found, true
@@ -373,9 +354,17 @@ func (s *Store) findLocked(hash string) (Token, bool) {
 // Revoke removes the static token with that ID or name, and everything issued
 // under it. It reports how many records went.
 func (s *Store) Revoke(ref string) (int, error) {
+	log := zap.L()
+	// A secret pasted here by mistake must not reach the log.
+	refField := zap.String("ref", ref)
+	if strings.HasPrefix(ref, "haifymcp_") {
+		refField = zap.String("ref", "<secret, not logged>")
+	}
+	log.Debug("Store.Revoke: revoking token", refField)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
+		log.Debug("Store.Revoke: reload failed", zap.Error(err))
 		return 0, err
 	}
 	var id string
@@ -385,19 +374,23 @@ func (s *Store) Revoke(ref string) (int, error) {
 		}
 	}
 	if id == "" {
+		log.Debug("Store.Revoke: no such token", refField)
 		return 0, fmt.Errorf("no token named or numbered %q", ref)
 	}
 	kept := s.data.Tokens[:0]
 	removed := 0
 	for _, t := range s.data.Tokens {
 		if t.ID == id || t.Parent == id {
+			log.Debug("Store.Revoke: removing token", zap.String("token_id", t.ID), zap.String("kind", t.Kind))
 			removed++
 			continue
 		}
 		kept = append(kept, t)
 	}
 	s.data.Tokens = kept
-	return removed, s.saveLocked()
+	err := s.saveLocked()
+	log.Debug("Store.Revoke: revoked", zap.String("token_id", id), zap.Int("removed", removed), zap.Error(err))
+	return removed, err
 }
 
 // List returns the static tokens, oldest first.
@@ -405,6 +398,7 @@ func (s *Store) List() ([]Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
+		zap.L().Debug("Store.List: reload failed", zap.Error(err))
 		return nil, err
 	}
 	var out []Token
@@ -414,119 +408,6 @@ func (s *Store) List() ([]Token, error) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Created.Before(out[j].Created) })
+	zap.L().Debug("Store.List: listed static tokens", zap.Int("count", len(out)), zap.Int("records", len(s.data.Tokens)))
 	return out, nil
-}
-
-// RegisterClient records an OAuth client. Past maxClients the oldest goes.
-func (s *Store) RegisterClient(name string, redirects []string) (Client, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.reloadLocked(); err != nil {
-		return Client{}, err
-	}
-	id, err := newID("c_")
-	if err != nil {
-		return Client{}, err
-	}
-	c := Client{ID: id, Name: name, RedirectURIs: redirects, Created: s.now().UTC()}
-	s.data.Clients = append(s.data.Clients, c)
-	if len(s.data.Clients) > maxClients {
-		s.data.Clients = s.data.Clients[len(s.data.Clients)-maxClients:]
-	}
-	return c, s.saveLocked()
-}
-
-// Client looks a registered client up.
-func (s *Store) Client(id string) (Client, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.reloadLocked(); err != nil {
-		return Client{}, false
-	}
-	for _, c := range s.data.Clients {
-		if c.ID == id {
-			return c, true
-		}
-	}
-	return Client{}, false
-}
-
-// IssueOAuth gives a client an access token and a refresh token under the
-// static token that approved it, replacing any it already held under that
-// approval so the file does not grow with every refresh.
-func (s *Store) IssueOAuth(parent Token, client Client, role Role, accessTTL, refreshTTL time.Duration) (access, refresh string, exp time.Time, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.reloadLocked(); err != nil {
-		return "", "", time.Time{}, err
-	}
-	return s.issueLocked(parent.ID, parent.Name, client, role, accessTTL, refreshTTL)
-}
-
-func (s *Store) issueLocked(parentID, parentName string, client Client, role Role, accessTTL, refreshTTL time.Duration) (string, string, time.Time, error) {
-	kept := s.data.Tokens[:0]
-	for _, t := range s.data.Tokens {
-		if t.Kind != KindStatic && t.Parent == parentID && t.Client == client.ID {
-			continue
-		}
-		kept = append(kept, t)
-	}
-	s.data.Tokens = kept
-
-	access, err := newSecret()
-	if err != nil {
-		return "", "", time.Time{}, err
-	}
-	refresh, err := newSecret()
-	if err != nil {
-		return "", "", time.Time{}, err
-	}
-	now := s.now().UTC()
-	exp := now.Add(accessTTL)
-	name := "oauth:" + client.Name + " (approved by " + parentName + ")"
-	for _, t := range []struct {
-		kind, secret string
-		ttl          time.Duration
-	}{{KindAccess, access, accessTTL}, {KindRefresh, refresh, refreshTTL}} {
-		id, err := newID("o_")
-		if err != nil {
-			return "", "", time.Time{}, err
-		}
-		s.data.Tokens = append(s.data.Tokens, Token{
-			ID: id, Name: name, Role: role, Kind: t.kind, Hash: hashOf(t.secret),
-			Created: now, Expires: now.Add(t.ttl), Parent: parentID, Client: client.ID,
-		})
-	}
-	return access, refresh, exp, s.saveLocked()
-}
-
-// Refresh exchanges a refresh token for a new pair. The old refresh token is
-// spent: presenting it again fails.
-func (s *Store) Refresh(refreshSecret, clientID string, accessTTL, refreshTTL time.Duration) (access, refresh string, exp time.Time, role Role, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.reloadLocked(); err != nil {
-		return "", "", time.Time{}, "", err
-	}
-	t, ok := s.findLocked(hashOf(refreshSecret))
-	if !ok || t.Kind != KindRefresh || t.Client != clientID {
-		return "", "", time.Time{}, "", ErrInvalid
-	}
-	var client Client
-	for _, c := range s.data.Clients {
-		if c.ID == clientID {
-			client = c
-		}
-	}
-	if client.ID == "" {
-		return "", "", time.Time{}, "", ErrInvalid
-	}
-	parentName := t.Parent
-	for _, p := range s.data.Tokens {
-		if p.ID == t.Parent {
-			parentName = p.Name
-		}
-	}
-	access, refresh, exp, err = s.issueLocked(t.Parent, parentName, client, t.Role, accessTTL, refreshTTL)
-	return access, refresh, exp, t.Role, err
 }

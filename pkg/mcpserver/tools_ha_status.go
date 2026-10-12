@@ -1,6 +1,8 @@
 package mcpserver
 
 import (
+	"go.uber.org/zap"
+
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
 
@@ -65,25 +67,39 @@ func haPromoterOutFrom(p *haifypb.HaPromoterStatus) haPromoterOut {
 		OutsideSessions:         p.GetOutsideSessions(),
 		OutsideSessionProcesses: p.GetOutsideSessionProcesses(),
 	}
+	log := zap.L()
+	log.Debug("haPromoterOutFrom: rendering promoter", zap.String("resource", out.Resource),
+		zap.String("primary_on", out.PrimaryOn), zap.String("status", out.Status), zap.String("active_node", out.ActiveNode))
 	units := append([]*haifypb.HaServiceStatus{}, p.GetDeps()...)
 	if t := p.GetTarget(); t.GetName() != "" {
+		log.Debug("haPromoterOutFrom: chain has a services target, listing it last", zap.String("unit", t.GetName()))
 		units = append(units, t)
 	}
 	for _, u := range units {
+		log.Debug("haPromoterOutFrom: chain unit", zap.String("resource", out.Resource), zap.String("unit", u.GetName()),
+			zap.String("kind", u.GetKind()), zap.String("status", u.GetStatus()), zap.String("sub_state", u.GetSubState()),
+			zap.Int32("restarts", u.GetRestarts()))
 		out.Chain = append(out.Chain, haServiceOut{
 			Unit: u.GetName(), Kind: u.GetKind(), Label: u.GetLabel(), Status: u.GetStatus(),
 			SubState: u.GetSubState(), Since: u.GetSince(), Restarts: u.GetRestarts(), MainPID: u.GetMainPid(),
 		})
 	}
 	for _, s := range p.GetStandbys() {
+		log.Debug("haPromoterOutFrom: standby", zap.String("resource", out.Resource), zap.String("node", s.GetNode()),
+			zap.Bool("ready", s.GetReady()), zap.Strings("reasons", s.GetReasons()), zap.String("disk_state", s.GetDiskState()))
 		out.Standbys = append(out.Standbys, haStandbyOut{
 			Node: s.GetNode(), Ready: s.GetReady(), Reasons: s.GetReasons(), DiskState: s.GetDiskState(),
 		})
 	}
 	for _, o := range p.GetOutside() {
+		log.Debug("haPromoterOutFrom: unit outside the chain uses the mounts", zap.String("resource", out.Resource),
+			zap.String("unit", o.GetUnit()), zap.Int32("processes", o.GetProcesses()), zap.Strings("mount_points", o.GetMountPoints()))
 		out.Outside = append(out.Outside, haOutsideOut{
 			Unit: o.GetUnit(), Description: o.GetDescription(), Processes: o.GetProcesses(), MountPoints: o.GetMountPoints(),
 		})
 	}
+	log.Debug("haPromoterOutFrom: rendered", zap.String("resource", out.Resource), zap.Int("chain", len(out.Chain)),
+		zap.Int("standbys", len(out.Standbys)), zap.Int("outside", len(out.Outside)),
+		zap.Int32("outside_sessions", out.OutsideSessions))
 	return out
 }

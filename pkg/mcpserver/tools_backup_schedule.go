@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 )
@@ -68,14 +69,20 @@ func (s *Server) registerBackupScheduleTools(srv *mcp.Server) {
 		"List the cron-driven backups, their retention, and how the last run went. A schedule with last_error "+
 			"set has not produced a backup since that run."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, backupScheduleListOut, error) {
+			s.logger.Debug("haify_backup_schedule_list: listing backup schedules")
 			list, err := s.client.ListBackupSchedules(ctx)
 			if err != nil {
+				s.logger.Debug("haify_backup_schedule_list: list failed", zap.Error(err))
 				return nil, backupScheduleListOut{}, err
 			}
 			out := backupScheduleListOut{Schedules: make([]backupScheduleOut, 0, len(list))}
 			for _, sc := range list {
+				s.logger.Debug("haify_backup_schedule_list: schedule", zap.String("name", sc.Name),
+					zap.String("resource", sc.Resource), zap.String("target", sc.Target), zap.String("cron", sc.Cron),
+					zap.Bool("enabled", sc.Enabled), zap.Bool("has_last_error", sc.LastError != ""))
 				out.Schedules = append(out.Schedules, backupScheduleToOut(sc))
 			}
+			s.logger.Debug("haify_backup_schedule_list: listed", zap.Int("count", len(out.Schedules)))
 			return nil, out, nil
 		})
 
@@ -83,14 +90,22 @@ func (s *Server) registerBackupScheduleTools(srv *mcp.Server) {
 		"Create or replace the cron schedule backing a resource up to a target. Retention keeps the newest backup "+
 			"per hour/day/week/month/year up to each count, plus every backup a kept incremental is built on."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in backupScheduleCreateIn) (*mcp.CallToolResult, backupScheduleOut, error) {
+			s.logger.Debug("haify_backup_schedule_create: creating schedule", zap.String("resource", in.Resource),
+				zap.String("target", in.Target), zap.String("cron", in.Cron), zap.Bool("disabled", in.Disabled),
+				zap.Int32("keep_hourly", in.KeepHourly), zap.Int32("keep_daily", in.KeepDaily),
+				zap.Int32("keep_weekly", in.KeepWeekly), zap.Int32("keep_monthly", in.KeepMonthly),
+				zap.Int32("keep_yearly", in.KeepYearly))
 			sc, err := s.client.CreateBackupSchedule(ctx, &haifypb.CreateBackupScheduleRequest{
 				Resource: in.Resource, Target: in.Target, Cron: in.Cron, Enabled: !in.Disabled,
 				Keep: &haifypb.GFSRetention{Hourly: in.KeepHourly, Daily: in.KeepDaily, Weekly: in.KeepWeekly,
 					Monthly: in.KeepMonthly, Yearly: in.KeepYearly},
 			})
 			if err != nil {
+				s.logger.Debug("haify_backup_schedule_create: create failed", zap.String("resource", in.Resource),
+					zap.String("target", in.Target), zap.Error(err))
 				return nil, backupScheduleOut{}, err
 			}
+			s.logger.Debug("haify_backup_schedule_create: created", zap.String("name", sc.Name), zap.String("next_run", sc.NextRun))
 			return nil, backupScheduleToOut(sc), nil
 		})
 
@@ -99,9 +114,12 @@ func (s *Server) registerBackupScheduleTools(srv *mcp.Server) {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 			Name string `json:"name" jsonschema:"resource@target"`
 		}) (*mcp.CallToolResult, opResult, error) {
+			s.logger.Debug("haify_backup_schedule_delete: deleting schedule", zap.String("name", in.Name))
 			if err := s.client.DeleteBackupSchedule(ctx, in.Name); err != nil {
+				s.logger.Debug("haify_backup_schedule_delete: delete failed", zap.String("name", in.Name), zap.Error(err))
 				return nil, opResult{}, err
 			}
+			s.logger.Debug("haify_backup_schedule_delete: deleted", zap.String("name", in.Name))
 			return nil, ok("backup schedule " + in.Name + " deleted"), nil
 		})
 
@@ -109,10 +127,15 @@ func (s *Server) registerBackupScheduleTools(srv *mcp.Server) {
 		"Record the backups a target holds that this controller does not know, from their manifests, chains "+
 			"included. For a rebuilt controller, or to restore another cluster's backups. Changes nothing on the target."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in backupImportIn) (*mcp.CallToolResult, backupImportOut, error) {
+			s.logger.Debug("haify_backup_import: importing backups", zap.String("target", in.Target), zap.String("node", in.Node))
 			res, err := s.client.ImportBackups(ctx, in.Target, in.Node)
 			if err != nil {
+				s.logger.Debug("haify_backup_import: import failed", zap.String("target", in.Target),
+					zap.String("node", in.Node), zap.Error(err))
 				return nil, backupImportOut{}, err
 			}
+			s.logger.Debug("haify_backup_import: imported", zap.String("target", in.Target),
+				zap.Int("imported", len(res.Imported)), zap.Int("skipped", len(res.Skipped)))
 			return nil, backupImportOut{Imported: res.Imported, Skipped: res.Skipped}, nil
 		})
 }
