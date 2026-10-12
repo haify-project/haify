@@ -3,9 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -29,18 +28,29 @@ import (
 // on a node with no path to the DR). The mounted filesystem is never touched,
 // so a promoted resource keeps serving throughout.
 func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoint string, wanPort uint32, egressAddr string) error {
+	log := rm.controller.traceLogger()
+	log.Debug("AddDR: start", zap.String("resource", resource), zap.String("dr_node", drNode),
+		zap.String("dr_endpoint", drEndpoint), zap.Uint32("wan_port", wanPort), zap.String("egress_addr", egressAddr))
 	if rm.deployment == nil {
+		log.Debug("AddDR: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("deployment client not set")
 	}
 	if rm.controller.db == nil {
+		log.Debug("AddDR: no database", zap.String("resource", resource))
 		return fmt.Errorf("database not available")
 	}
 
+	start := time.Now()
 	dbRes, err := rm.controller.db.GetResource(ctx, resource)
+	log.Debug("AddDR: db get resource", zap.String("resource", resource), zap.Bool("found", dbRes != nil),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil || dbRes == nil {
+		log.Debug("AddDR: resource not found", zap.String("resource", resource), zap.Error(err))
 		return fmt.Errorf("resource %q not found", resource)
 	}
 	if dbRes.WANMode {
+		log.Debug("AddDR: resource already has a DR site", zap.String("resource", resource),
+			zap.String("dr_node", dbRes.DRNode))
 		return fmt.Errorf("resource %q already replicates to DR node %q; remove it first to change the DR site",
 			resource, dbRes.DRNode)
 	}
@@ -48,30 +58,37 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	drNode = strings.TrimSpace(drNode)
 	drEndpoint = strings.TrimSpace(drEndpoint)
 	if drNode == "" {
+		log.Debug("AddDR: no DR node given", zap.String("resource", resource))
 		return fmt.Errorf("a DR node is required")
 	}
 	if drEndpoint == "" {
+		log.Debug("AddDR: no DR endpoint given", zap.String("resource", resource))
 		return fmt.Errorf("a DR endpoint is required (the address the primary site dials)")
 	}
 	if err := validDREndpoint(drEndpoint); err != nil {
+		log.Debug("AddDR: invalid DR endpoint", zap.String("dr_endpoint", drEndpoint), zap.Error(err))
 		return err
 	}
 	if rm.controller.nodes.GetNodeAddressByName(drNode) == "" {
+		log.Debug("AddDR: DR node not registered", zap.String("dr_node", drNode))
 		return fmt.Errorf("DR node %q is not a registered node", drNode)
 	}
 
 	primaries := splitCSV(dbRes.Nodes)
 	for _, n := range primaries {
 		if n == drNode {
+			log.Debug("AddDR: DR node already holds a replica", zap.String("dr_node", drNode))
 			return fmt.Errorf("node %q already holds a replica of %q; the DR site must be a different node", drNode, resource)
 		}
 	}
 	for _, n := range splitCSV(dbRes.DisklessNodes) {
 		if n == drNode {
+			log.Debug("AddDR: DR node is the tiebreaker", zap.String("dr_node", drNode))
 			return fmt.Errorf("node %q is the quorum tiebreaker of %q; it cannot also be the DR site", drNode, resource)
 		}
 	}
 	if len(primaries) == 0 {
+		log.Debug("AddDR: resource has no replicas", zap.String("resource", resource))
 		return fmt.Errorf("resource %q has no replicas to replicate from", resource)
 	}
 
@@ -86,6 +103,8 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	for _, n := range primaries {
 		primaryAddrs = append(primaryAddrs, rm.controller.ResolveHost(n))
 	}
+	log.Debug("AddDR: resolved addresses", zap.String("resource", resource), zap.String("dr_addr", drAddr),
+		zap.Strings("primaries", primaries), zap.Strings("primary_addrs", primaryAddrs))
 
 	rm.controller.logger.Info("Adding DR site to running resource",
 		zap.String("resource", resource),
@@ -98,13 +117,18 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	// before anything is provisioned.
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
+		log.Debug("AddDR: resource hosts lookup failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	if len(hosts) == 0 {
+		log.Debug("AddDR: no reachable hosts", zap.String("resource", resource))
 		return fmt.Errorf("resource %q has no reachable hosts", resource)
 	}
 	resPath := fmt.Sprintf("/etc/drbd.d/%s.res", resource)
+	start = time.Now()
 	catRes, err := rm.deployment.Exec(ctx, []string{hosts[0]}, "cat "+resPath)
+	log.Debug("AddDR: read live config", zap.String("host", hosts[0]), zap.String("path", resPath),
+		zap.Strings("failed_hosts", tracedFailedHosts(catRes)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("read resource config: %w", err)
 	}
@@ -114,9 +138,11 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 		break
 	}
 	if !readOK || strings.TrimSpace(liveConfig) == "" {
+		log.Debug("AddDR: live config unreadable or empty", zap.String("resource", resource), zap.Bool("read_ok", readOK))
 		return fmt.Errorf("read resource config for %q: %s", resource, catRes.FailureDetails())
 	}
 	if err := rm.assertMinorsFreeOn(ctx, drAddr, resource, resourceMinors(liveConfig)); err != nil {
+		log.Debug("AddDR: minors not free on DR node", zap.String("dr_addr", drAddr), zap.Error(err))
 		return err
 	}
 
@@ -126,6 +152,7 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	// request", by which point there are LVs, proxy units and a rewritten config
 	// to unwind, and nothing in the message says what to do about it.
 	if err := rm.assertBitmapSlotFree(ctx, primaryAddrs, primaries, resource); err != nil {
+		log.Debug("AddDR: bitmap slot check failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	// The DR copy of an encrypted resource is encrypted too, the way add-replica
@@ -133,8 +160,10 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	// the data at the site furthest from the operator, and nothing in `resource
 	// status` would say so. Refuse now if the DR node cannot do it, before any
 	// storage is provisioned there.
+	log.Debug("AddDR: encryption", zap.String("resource", resource), zap.Bool("encrypted", dbRes.Encrypted))
 	if dbRes.Encrypted {
 		if err := rm.assertEncryptionSupported(ctx, []string{drAddr}, []string{drNode}); err != nil {
+			log.Debug("AddDR: DR node cannot encrypt", zap.String("dr_node", drNode), zap.Error(err))
 			return err
 		}
 	}
@@ -142,23 +171,30 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	// The DR node needs backing volumes of its own: it is a full replica, not a
 	// diskless voter. Sizes and pools come from the resource record, which is
 	// where create wrote them.
+	start = time.Now()
 	dbVols, err := rm.controller.db.ListVolumes(ctx, resource)
+	log.Debug("AddDR: db list volumes", zap.String("resource", resource), zap.Int("count", len(dbVols)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("list volumes of %q: %w", resource, err)
 	}
 	if len(dbVols) == 0 {
+		log.Debug("AddDR: no recorded volumes", zap.String("resource", resource))
 		return fmt.Errorf("resource %q has no recorded volumes to replicate", resource)
 	}
 	// Size the DR's volumes from what the primary site is actually exporting,
 	// not from the recorded request — see primaryBackingSizes.
 	backingSizes, err := rm.primaryBackingSizes(ctx, primaryAddrs, resource, len(dbVols))
 	if err != nil {
+		log.Debug("AddDR: backing sizes unreadable", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 	backingSizes = replicaBackingSizes(backingSizes, dbRes.Encrypted)
+	log.Debug("AddDR: DR backing sizes", zap.String("resource", resource), zap.Uint64s("size_bytes", backingSizes))
 
 	bindPorts, err := rm.pickWANBindPorts(ctx, primaryAddrs, dbRes.Port)
 	if err != nil {
+		log.Debug("AddDR: bind port selection failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
@@ -168,6 +204,8 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 		lanHosts = append(lanHosts, rm.controller.ResolveHost(n))
 	}
 	allHosts := append(append([]string{}, lanHosts...), drAddr)
+	log.Debug("AddDR: hosts that get the new config", zap.String("resource", resource),
+		zap.Strings("lan_hosts", lanHosts), zap.Strings("hosts", allHosts))
 
 	multi := wanproxy.MultiSpec{
 		Resource:          resource,
@@ -195,12 +233,16 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 		if succeeded {
 			return
 		}
+		log.Debug("AddDR: failed part way, rolling back", zap.String("resource", resource))
 		rm.undoAddDR(context.WithoutCancel(ctx), resource, resPath, liveConfig, lanHosts, drAddr, multi, dbVols,
 			dbRes.Encrypted)
 	}()
 
 	for i, v := range dbVols {
+		log.Debug("AddDR: creating DR backing volume", zap.String("host", drAddr), zap.String("pool", v.Pool),
+			zap.String("volume", v.VolumeName), zap.Uint64("size_bytes", backingSizes[i]))
 		if err := rm.createBackingVolumeOn(ctx, drAddr, v.Pool, v.VolumeName, backingSizes[i]); err != nil {
+			log.Debug("AddDR: backing volume creation failed", zap.String("volume", v.VolumeName), zap.Error(err))
 			return fmt.Errorf("create backing volume %s/%s on DR node %q: %w", v.Pool, v.VolumeName, drNode, err)
 		}
 		// The DR generates its own key on the node, as every other replica
@@ -208,6 +250,7 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 		if dbRes.Encrypted {
 			if err := rm.encryptBackingVolumeOn(ctx, drAddr, drNode, v.Pool, v.VolumeName,
 				fmt.Sprintf("/dev/%s/%s", v.Pool, v.VolumeName)); err != nil {
+				log.Debug("AddDR: encrypting DR volume failed", zap.String("volume", v.VolumeName), zap.Error(err))
 				return err
 			}
 		}
@@ -215,13 +258,18 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 
 	// Proxy first: in WAN mode DRBD connects to a loopback port the proxy owns,
 	// so bringing DRBD up first would find nothing listening.
-	if err := wanproxy.ProvisionMulti(ctx, rm.wanproxyDeployClient(), multi); err != nil {
+	start = time.Now()
+	err = wanproxy.ProvisionMulti(ctx, rm.wanproxyDeployClient(), multi)
+	log.Debug("AddDR: provision WAN proxy legs", zap.String("resource", resource),
+		zap.Int("base_wan_port", multi.BaseWANPort), zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("provision WAN proxy for %s: %w", resource, err)
 	}
 	// After the push, not before: the controller may well have supplied the
 	// binary itself, and checking first would reject a case that works.
 	if err := rm.assertWANProxyBinary(ctx, append(append([]string{}, primaryAddrs...), drAddr),
 		append(append([]string{}, primaries...), drNode)); err != nil {
+		log.Debug("AddDR: haify-proxy binary missing", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
@@ -231,13 +279,18 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	newConfig, err := rm.addDRToConfig(liveConfig, resource, drNode, primaries,
 		splitCSV(dbRes.DisklessNodes), drAddr, dbVols, dbRes.Port, bindPorts, dbRes.Encrypted)
 	if err != nil {
+		log.Debug("AddDR: config rewrite failed", zap.String("resource", resource), zap.Error(err))
 		return fmt.Errorf("rewrite config for DR site: %w", err)
 	}
 	// The DR replicates but does not get a vote in whether the primary site may
 	// write; see setLocalSiteQuorum.
 	newConfig = setLocalSiteQuorum(newConfig, len(primaries)+len(splitCSV(dbRes.DisklessNodes)))
 
-	if _, err := rm.deployment.DistributeConfig(ctx, allHosts, newConfig, resPath); err != nil {
+	start = time.Now()
+	_, err = rm.deployment.DistributeConfig(ctx, allHosts, newConfig, resPath)
+	log.Debug("AddDR: distribute config", zap.Strings("hosts", allHosts), zap.String("path", resPath),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("distribute DR config: %w", err)
 	}
 
@@ -245,6 +298,7 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	if err := rm.execAllSuccess(ctx, []string{drAddr},
 		fmt.Sprintf("sudo drbdadm create-md --max-peers=%d --force %s", deployment.DefaultMaxPeers, resource),
 		"create metadata on DR node"); err != nil {
+		log.Debug("AddDR: create-md on DR failed", zap.String("host", drAddr), zap.Error(err))
 		return err
 	}
 
@@ -252,21 +306,28 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	if err := rm.execAllSuccess(ctx, allHosts,
 		fmt.Sprintf("sudo drbdadm adjust %s", resource),
 		"adjust peers for DR site"); err != nil {
+		log.Debug("AddDR: adjust failed", zap.Strings("hosts", allHosts), zap.Error(err))
 		return err
 	}
+	start = time.Now()
 	upRes, err := rm.deployment.Exec(ctx, []string{drAddr}, fmt.Sprintf("sudo drbdadm up %s", resource))
+	log.Debug("AddDR: drbdadm up on DR", zap.String("host", drAddr),
+		zap.Strings("failed_hosts", tracedFailedHosts(upRes)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("bring up DR replica: %w", err)
 	}
 	if !upRes.AllSuccess() {
 		detail := upRes.FailureDetails()
 		if !strings.Contains(detail, "exists already") && !strings.Contains(detail, "already? still?") {
+			log.Debug("AddDR: DR up failed", zap.String("dr_node", drNode))
 			return fmt.Errorf("bring up DR replica on %q: %s", drNode, detail)
 		}
+		log.Debug("AddDR: DR replica was already up", zap.String("dr_node", drNode))
 	}
 	// The DR is usually a node that holds nothing else of this cluster, so
 	// nothing has put the boot unit there yet.
 	if err := rm.ensureBootUnitOnMembers(ctx, resource, []string{drAddr}, dbRes.Encrypted); err != nil {
+		log.Debug("AddDR: boot unit install failed", zap.String("host", drAddr), zap.Error(err))
 		return err
 	}
 
@@ -283,162 +344,19 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 	if !strings.Contains(","+dbRes.Nodes+",", ","+drNode+",") {
 		dbRes.Nodes = dbRes.Nodes + "," + drNode
 	}
-	if err := rm.controller.db.SaveResource(ctx, dbRes); err != nil {
+	start = time.Now()
+	err = rm.controller.db.SaveResource(ctx, dbRes)
+	log.Debug("AddDR: db save resource", zap.String("resource", resource), zap.String("nodes", dbRes.Nodes),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		return fmt.Errorf("record DR site: %w", err)
 	}
 
+	log.Debug("AddDR: done", zap.String("resource", resource), zap.String("dr_node", drNode),
+		zap.Ints("bind_ports", bindPorts))
 	rm.controller.logger.Info("DR site added; initial sync runs in the background",
 		zap.String("resource", resource), zap.String("dr_node", drNode))
 	return nil
-}
-
-// addDRToConfig rewrites a LAN resource config into the two-site shape.
-//
-// Three edits, all additive to the primary site:
-//   - a host stanza for the DR node, with its own volumes and a fresh node-id
-//     (on an encrypted resource each volume's disk is its crypt container);
-//   - connection-mesh narrowed to the primary site, because a mesh entry for the
-//     DR would pair it with the replicas on their LAN addresses, which cannot
-//     reach it;
-//   - one explicit `connection` per replica carrying the loopback endpoints of
-//     that replica's WAN leg, plus protocol A and pull-ahead so the WAN cannot
-//     stall writes in the primary site.
-func (rm *ResourceManager) addDRToConfig(content, resource, drNode string, primaries, tiebreakers []string,
-	drAddr string, vols []*database.Volume, port int, bindPorts []int, encrypted bool) (string, error) {
-
-	drName := rm.controller.nodes.GetDRBDNameByRef(drNode)
-	blocks := parseOnBlocks(content)
-	for _, b := range blocks {
-		if b.name == drName {
-			return "", fmt.Errorf("node %q is already in the config of %q", drNode, resource)
-		}
-	}
-	nextID := 0
-	for _, b := range blocks {
-		if b.nodeID >= nextID {
-			nextID = b.nodeID + 1
-		}
-	}
-
-	// 1. The DR host stanza. Its address is loopback: every connection it has
-	//    is a WAN leg terminated by its local acceptor.
-	var dr strings.Builder
-	fmt.Fprintf(&dr, "\n    on %s {\n", drName)
-	fmt.Fprintf(&dr, "        address   127.0.0.1:%d;\n", port)
-	fmt.Fprintf(&dr, "        node-id   %d;\n", nextID)
-	for _, v := range vols {
-		// The container's name comes from pool and volume, so it matches the
-		// primaries' stanzas although the key behind it is the DR's own.
-		disk := fmt.Sprintf("/dev/%s/%s", v.Pool, v.VolumeName)
-		if encrypted {
-			disk = luksMapperPath(v.Pool, v.VolumeName)
-		}
-		fmt.Fprintf(&dr, "        volume %d {\n", v.VolumeID)
-		fmt.Fprintf(&dr, "            device    minor %d;\n", minorForVolume(content, v.VolumeID))
-		fmt.Fprintf(&dr, "            disk      %s;\n", disk)
-		fmt.Fprintf(&dr, "            meta-disk internal;\n")
-		fmt.Fprintf(&dr, "        }\n")
-	}
-	fmt.Fprintf(&dr, "    }\n")
-
-	// 2 + 3. Insert before the resource's closing brace, dropping any existing
-	//        connection-mesh so it can be re-emitted for the primary site only.
-	lines := strings.Split(content, "\n")
-	out := make([]string, 0, len(lines)+40)
-	inMesh := false
-	closeIdx := -1
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "connection-mesh") {
-			inMesh = true
-			continue
-		}
-		if inMesh {
-			if strings.Contains(line, "}") {
-				inMesh = false
-			}
-			continue
-		}
-		if trimmed == "}" {
-			closeIdx = len(out) // resource-level close; keep updating, last wins
-		}
-		out = append(out, line)
-	}
-	if closeIdx < 0 {
-		return "", fmt.Errorf("malformed config for %q: no closing brace", resource)
-	}
-
-	var tail strings.Builder
-	tail.WriteString(dr.String())
-
-	lanHosts := make([]string, 0, len(primaries)+len(tiebreakers))
-	for _, n := range append(append([]string{}, primaries...), tiebreakers...) {
-		lanHosts = append(lanHosts, rm.controller.nodes.GetDRBDNameByRef(n))
-	}
-	if len(lanHosts) > 1 {
-		tail.WriteString("\n    connection-mesh {\n        hosts")
-		for _, h := range lanHosts {
-			fmt.Fprintf(&tail, " %s", h)
-		}
-		tail.WriteString(";\n    }\n")
-	}
-
-	for i, p := range primaries {
-		legPort := port + i
-		fmt.Fprintf(&tail, "\n    connection {\n")
-		bind := legPort + wanDRBDBindOffset
-		if i < len(bindPorts) && bindPorts[i] > 0 {
-			bind = bindPorts[i]
-		}
-		fmt.Fprintf(&tail, "        host %s address 127.0.0.1:%d;\n",
-			rm.controller.nodes.GetDRBDNameByRef(p), bind)
-		fmt.Fprintf(&tail, "        host %s address 127.0.0.1:%d;\n", drName, legPort)
-		fmt.Fprintf(&tail, "        net {\n")
-		fmt.Fprintf(&tail, "            protocol A;\n")
-		fmt.Fprintf(&tail, "            on-congestion pull-ahead;\n")
-		fmt.Fprintf(&tail, "            congestion-fill 400M;\n")
-		fmt.Fprintf(&tail, "            csums-alg %s;\n", wanCsumsAlg)
-		fmt.Fprintf(&tail, "        }\n")
-		fmt.Fprintf(&tail, "    }\n")
-	}
-
-	final := append([]string{}, out[:closeIdx]...)
-	final = append(final, strings.Split(strings.TrimRight(tail.String(), "\n"), "\n")...)
-	final = append(final, out[closeIdx:]...)
-	return strings.Join(final, "\n"), nil
-}
-
-// minorForVolume finds the device minor an existing config assigns to a volume,
-// so the DR's stanza uses the same one (a resource's minor is cluster-wide).
-func minorForVolume(content string, volumeID int) int {
-	inVol := false
-	depth := 0
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !inVol && strings.HasPrefix(trimmed, fmt.Sprintf("volume %d", volumeID)) {
-			inVol = true
-			depth = strings.Count(line, "{") - strings.Count(line, "}")
-			continue
-		}
-		if inVol {
-			if m, ok := parseAnyDeviceMinor(line); ok {
-				return m
-			}
-			depth += strings.Count(line, "{") - strings.Count(line, "}")
-			if depth <= 0 {
-				inVol = false
-			}
-		}
-	}
-	// Volume 0 may be written without an explicit `volume 0 {` wrapper.
-	if volumeID == 0 {
-		for _, line := range strings.Split(content, "\n") {
-			if m, ok := parseAnyDeviceMinor(line); ok {
-				return m
-			}
-		}
-	}
-	return volumeID
 }
 
 // undoAddDR returns the cluster to the LAN shape after a failed AddDR.
@@ -454,85 +372,58 @@ func (rm *ResourceManager) undoAddDR(ctx context.Context, resource, resPath, ori
 
 	log := rm.controller.logger.With(zap.String("resource", resource), zap.String("dr_node", drAddr))
 	log.Warn("Rolling back DR site")
+	log.Debug("undoAddDR: start", zap.Strings("lan_hosts", lanHosts), zap.Int("volumes", len(vols)),
+		zap.Bool("encrypted", encrypted), zap.Bool("has_original_config", strings.TrimSpace(originalConfig) != ""))
 
 	if len(lanHosts) > 0 && strings.TrimSpace(originalConfig) != "" {
+		start := time.Now()
 		if _, err := rm.deployment.DistributeConfig(ctx, lanHosts, originalConfig, resPath); err != nil {
 			log.Error("Rollback: failed to restore config on the primary site", zap.Error(err))
 		} else if _, err := rm.deployment.Exec(ctx, lanHosts,
 			fmt.Sprintf("sudo drbdadm adjust %s", resource)); err != nil {
 			log.Error("Rollback: failed to re-adjust the primary site", zap.Error(err))
 		}
+		log.Debug("undoAddDR: primary site config restored and adjusted", zap.Strings("hosts", lanHosts),
+			zap.Duration("took", time.Since(start)))
+	} else {
+		log.Debug("undoAddDR: no original config to restore")
 	}
 
-	if _, err := rm.deployment.Exec(ctx, []string{drAddr},
-		fmt.Sprintf("sudo drbdadm down %s 2>/dev/null; sudo rm -f %s", resource, resPath)); err != nil {
+	start := time.Now()
+	_, err := rm.deployment.Exec(ctx, []string{drAddr},
+		fmt.Sprintf("sudo drbdadm down %s 2>/dev/null; sudo rm -f %s", resource, resPath))
+	log.Debug("undoAddDR: DR replica down and config removed", zap.String("host", drAddr),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		log.Error("Rollback: failed to tear down the DR replica", zap.Error(err))
 	}
 
-	if err := wanproxy.DeprovisionMulti(ctx, rm.wanproxyDeployClient(), multi); err != nil {
+	start = time.Now()
+	err = wanproxy.DeprovisionMulti(ctx, rm.wanproxyDeployClient(), multi)
+	log.Debug("undoAddDR: WAN proxy legs deprovisioned", zap.Duration("took", time.Since(start)), zap.Error(err))
+	if err != nil {
 		log.Error("Rollback: failed to remove the WAN proxy legs", zap.Error(err))
 	}
 
 	// The volumes go last: while the config still names them, removing them
 	// would only produce a replica that is up and broken.
 	for _, v := range vols {
+		log.Debug("undoAddDR: removing DR backing volume", zap.String("host", drAddr), zap.String("pool", v.Pool),
+			zap.String("volume", v.VolumeName))
 		// The open container holds the LV, and its key is worth destroying
 		// whether or not the lvremove that follows succeeds.
 		if encrypted {
 			rm.closeBackingVolumeOn(ctx, []string{drAddr}, v.Pool, v.VolumeName)
 		}
-		if _, err := rm.deployment.Exec(ctx, []string{drAddr},
-			fmt.Sprintf("sudo lvremove -f %s/%s", v.Pool, v.VolumeName)); err != nil {
+		start := time.Now()
+		_, err := rm.deployment.Exec(ctx, []string{drAddr},
+			fmt.Sprintf("sudo lvremove -f %s/%s", v.Pool, v.VolumeName))
+		log.Debug("undoAddDR: lvremove done", zap.String("volume", v.VolumeName),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err != nil {
 			log.Error("Rollback: failed to remove a backing volume on the DR node",
 				zap.String("volume", v.Pool+"/"+v.VolumeName), zap.Error(err))
 		}
 	}
-}
-
-// quorumLineRe matches the `quorum <value>;` line inside a resource's options.
-var quorumLineRe = regexp.MustCompile(`(?m)^(\s*)quorum\s+\S+;`)
-
-// primarySiteQuorum renders the `quorum` value for a resource with an off-site
-// DR: a majority of the nodes that could actually take over.
-//
-// DRBD counts every configured node toward a majority, but the DR is an
-// asynchronous copy that is never promoted automatically — it cannot take over,
-// so letting it vote on whether the primary site may accept writes is backwards.
-// Worse, it actively costs availability: adding a DR to a 3-node resource lifts
-// the bar from 2 votes to 3, so the site that used to survive one local failure
-// no longer does. That is how a quorum tiebreaker can be added, a DR attached,
-// and the tiebreaker's vote silently cancelled out.
-//
-// The narrower guarantee is deliberate and bounded: the excluded node is
-// unreachable from the primary site's network by construction — it is reached
-// only through a proxy tunnel — so it cannot form a rival quorate partition with
-// any local node. This is not the same as picking a small number arbitrarily.
-//
-// This is the only place the number is computed. It used to be derived here and
-// again, independently, at each of the two call sites that narrow a resource's
-// quorum, while the tests asserted on a third copy that nothing called — so the
-// arithmetic the cluster actually ran was unguarded.
-func primarySiteQuorum(localVoters int) string {
-	if localVoters < 1 {
-		localVoters = 1
-	}
-	return strconv.Itoa(localVoters/2 + 1)
-}
-
-// setLocalSiteQuorum rewrites a config's quorum to a majority of the primary
-// site, so attaching a DR does not raise the bar the local nodes must clear.
-//
-// Without this, add-dr makes a resource LESS available: DRBD counts the new
-// member toward `majority`, so a 3-node resource that survived one local failure
-// suddenly needs 3 of 4 votes and no longer does. The operator asked for an
-// off-site copy and silently got a downgrade to local resilience.
-func setLocalSiteQuorum(content string, localVoters int) string {
-	want := primarySiteQuorum(localVoters)
-	if quorumLineRe.MatchString(content) {
-		return quorumLineRe.ReplaceAllString(content, "${1}quorum "+want+";")
-	}
-	// No explicit quorum: the resource is relying on DRBD's default, so state it
-	// rather than leaving the new member to shift a majority nobody wrote down.
-	return strings.Replace(content, "    options {",
-		"    options {\n        quorum "+want+";", 1)
+	log.Debug("undoAddDR: done")
 }

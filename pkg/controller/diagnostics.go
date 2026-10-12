@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	pb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/deployment"
 )
@@ -175,7 +177,9 @@ func diagCollectorNames() []string {
 // their product with the number of nodes. A node that cannot be reached comes
 // back as unreachable rather than as nine identical failures.
 func (s *Server) CollectNodeDiagnostics(ctx context.Context, req *pb.CollectNodeDiagnosticsRequest) (*pb.CollectNodeDiagnosticsResponse, error) {
+	log := s.ctrl.traceLogger()
 	if s.ctrl == nil || s.ctrl.deployment == nil {
+		log.Debug("Server.CollectNodeDiagnostics: no deployment client, cannot reach nodes")
 		return &pb.CollectNodeDiagnosticsResponse{
 			Success: false,
 			Message: "this controller has no deployment client, so it cannot reach nodes",
@@ -183,7 +187,10 @@ func (s *Server) CollectNodeDiagnostics(ctx context.Context, req *pb.CollectNode
 	}
 
 	chosen, unknown := resolveDiagCollectors(req.GetCollectors())
+	log.Debug("Server.CollectNodeDiagnostics: collectors resolved", zap.Strings("requested", req.GetCollectors()),
+		zap.Int("chosen", len(chosen)), zap.Strings("unknown", unknown))
 	if len(chosen) == 0 {
+		log.Debug("Server.CollectNodeDiagnostics: no known collector named")
 		return &pb.CollectNodeDiagnosticsResponse{
 			Success:             false,
 			Message:             "no known collector was named",
@@ -194,9 +201,11 @@ func (s *Server) CollectNodeDiagnostics(ctx context.Context, req *pb.CollectNode
 
 	targets, err := s.diagTargets(ctx, req.GetNodes())
 	if err != nil {
+		log.Debug("Server.CollectNodeDiagnostics: resolving target nodes failed", zap.Strings("nodes", req.GetNodes()), zap.Error(err))
 		return nil, err
 	}
 	if len(targets) == 0 {
+		log.Debug("Server.CollectNodeDiagnostics: no registered node matched", zap.Strings("nodes", req.GetNodes()))
 		return &pb.CollectNodeDiagnosticsResponse{
 			Success:             false,
 			Message:             "no registered node matched the request",
@@ -207,6 +216,8 @@ func (s *Server) CollectNodeDiagnostics(ctx context.Context, req *pb.CollectNode
 
 	since := clampInt(int(req.GetSinceMinutes()), defaultDiagWindowMinutes, 1, maxDiagWindowMinutes)
 	maxLines := clampInt(int(req.GetMaxLines()), defaultDiagMaxLines, 1, maxDiagMaxLines)
+	log.Debug("Server.CollectNodeDiagnostics: collecting", zap.Int("targets", len(targets)),
+		zap.Int("since_minutes", since), zap.Int("max_lines", maxLines))
 
 	hosts := make([]string, 0, len(targets))
 	byHost := make(map[string]*pb.NodeDiagnostics, len(targets))
@@ -221,6 +232,7 @@ func (s *Server) CollectNodeDiagnostics(ctx context.Context, req *pb.CollectNode
 	for _, c := range chosen {
 		s.runDiagCollector(ctx, c, hosts, byHost, since, maxLines)
 	}
+	log.Debug("Server.CollectNodeDiagnostics: collected", zap.Int("nodes", len(out)), zap.Int("collectors", len(chosen)))
 
 	return &pb.CollectNodeDiagnosticsResponse{
 		Success:             true,
@@ -241,10 +253,16 @@ func (s *Server) CollectNodeDiagnostics(ctx context.Context, req *pb.CollectNode
 func (s *Server) runDiagCollector(ctx context.Context, c diagCollector, hosts []string,
 	byHost map[string]*pb.NodeDiagnostics, since, maxLines int) {
 
+	log := s.ctrl.traceLogger()
 	cmd := c.cmd(since, maxLines)
+	log.Debug("Server.runDiagCollector: running collector", zap.String("collector", c.Name),
+		zap.Strings("hosts", hosts), zap.Int("since_minutes", since), zap.Int("max_lines", maxLines))
+	start := time.Now()
 	res, err := s.ctrl.deployment.Exec(ctx, hosts, cmd,
 		deployment.WithExecTimeout(diagCollectorTimeout))
 	if err != nil {
+		log.Debug("Server.runDiagCollector: exec failed for every host", zap.String("collector", c.Name),
+			zap.Strings("hosts", hosts), zap.Duration("took", time.Since(start)), zap.Error(err))
 		for _, nd := range byHost {
 			nd.Collectors = append(nd.Collectors, &pb.NodeCollectorOutput{
 				Collector: c.Name, Command: cmd, Ok: false,
@@ -254,16 +272,23 @@ func (s *Server) runDiagCollector(ctx context.Context, c diagCollector, hosts []
 		return
 	}
 
+	if ce := log.Check(zap.DebugLevel, "Server.runDiagCollector: exec finished"); ce != nil {
+		ce.Write(zap.String("collector", c.Name), zap.Strings("failed_hosts", res.FailedHosts()),
+			zap.Duration("took", time.Since(start)))
+	}
 	answered := make(map[string]bool, len(hosts))
 	// Keyed by host, and the key is what identifies it: HostResult.Host is set
 	// by the current implementation and the map key is set by definition.
 	for host, h := range res.Hosts {
 		nd, ok := byHost[host]
 		if !ok {
+			log.Debug("Server.runDiagCollector: result for unrequested host ignored", zap.String("host", host))
 			continue
 		}
 		answered[host] = true
 		lines, truncated := diagLines(h.Output, maxLines)
+		log.Debug("Server.runDiagCollector: host answered", zap.String("collector", c.Name), zap.String("host", host),
+			zap.Bool("success", h.Success), zap.Int("lines", len(lines)), zap.Bool("truncated", truncated))
 		co := &pb.NodeCollectorOutput{
 			Collector: c.Name, Command: cmd,
 			Lines: lines, Ok: h.Success, Truncated: truncated,
@@ -274,6 +299,7 @@ func (s *Server) runDiagCollector(ctx context.Context, c diagCollector, hosts []
 		// A node that answers nothing at all is not reachable for the purpose
 		// of this call, whatever the registry last recorded about it.
 		if !h.Success && len(lines) == 0 {
+			log.Debug("Server.runDiagCollector: host unreachable for this call", zap.String("host", host))
 			nd.Reachable = false
 			if nd.Error == "" && co.Error != "" {
 				nd.Error = co.Error
@@ -285,6 +311,7 @@ func (s *Server) runDiagCollector(ctx context.Context, c diagCollector, hosts []
 		if answered[h] {
 			continue
 		}
+		log.Debug("Server.runDiagCollector: host did not answer", zap.String("collector", c.Name), zap.String("host", h))
 		nd.Collectors = append(nd.Collectors, &pb.NodeCollectorOutput{
 			Collector: c.Name, Command: cmd, Ok: false,
 			Error: "the node did not answer this collector",
@@ -307,8 +334,11 @@ type diagTarget struct {
 // ssh into, and it means an unknown name comes back as "no registered node
 // matched" rather than as a connection timeout forty seconds later.
 func (s *Server) diagTargets(ctx context.Context, want []string) ([]diagTarget, error) {
+	log := s.ctrl.traceLogger()
+	log.Debug("Server.diagTargets: resolving nodes", zap.Strings("want", want))
 	nodes, err := s.ctrl.nodes.ListNodes(ctx)
 	if err != nil {
+		log.Debug("Server.diagTargets: listing nodes failed", zap.Error(err))
 		return nil, err
 	}
 	keep := make(map[string]bool, len(want))
@@ -324,6 +354,7 @@ func (s *Server) diagTargets(ctx context.Context, want []string) ([]diagTarget, 
 			!keep[strings.ToLower(n.Name)] &&
 			!keep[strings.ToLower(n.Hostname)] &&
 			!keep[strings.ToLower(n.Address)] {
+			log.Debug("Server.diagTargets: node not requested", zap.String("node", n.Name))
 			continue
 		}
 		host := n.Address
@@ -336,12 +367,15 @@ func (s *Server) diagTargets(ctx context.Context, want []string) ([]diagTarget, 
 		// Two registry entries can resolve to one address; collecting twice
 		// would double every finding built from this.
 		if seen[host] {
+			log.Debug("Server.diagTargets: address already targeted, skipped", zap.String("node", n.Name), zap.String("host", host))
 			continue
 		}
 		seen[host] = true
+		log.Debug("Server.diagTargets: targeting node", zap.String("node", n.Name), zap.String("host", host))
 		out = append(out, diagTarget{name: n.Name, host: host})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	log.Debug("Server.diagTargets: resolved", zap.Int("count", len(out)))
 	return out, nil
 }
 
@@ -349,6 +383,7 @@ func (s *Server) diagTargets(ctx context.Context, want []string) ([]diagTarget, 
 // table order so two callers asking for the same set get the same order.
 func resolveDiagCollectors(want []string) (chosen []diagCollector, unknown []string) {
 	if len(want) == 0 {
+		zap.L().Debug("resolveDiagCollectors: none named, using all", zap.Int("count", len(diagCollectors)))
 		return diagCollectors, nil
 	}
 	asked := make(map[string]bool, len(want))
@@ -360,6 +395,7 @@ func resolveDiagCollectors(want []string) (chosen []diagCollector, unknown []str
 		if _, ok := diagCollectorByName[w]; ok {
 			asked[w] = true
 		} else {
+			zap.L().Debug("resolveDiagCollectors: unknown collector", zap.String("collector", w))
 			unknown = append(unknown, w)
 		}
 	}
@@ -382,6 +418,7 @@ func diagLines(output string, max int) (lines []string, truncated bool) {
 	}
 	lines = strings.Split(output, "\n")
 	if len(lines) > max {
+		zap.L().Debug("diagLines: output over the cap, keeping the tail", zap.Int("lines", len(lines)), zap.Int("max_lines", max))
 		lines = lines[len(lines)-max:]
 		truncated = true
 	}

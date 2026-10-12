@@ -36,20 +36,28 @@ var backupRuns sync.Map
 // one for the same resource and target, and reloads the cron.
 func (sm *ScheduleManager) CreateBackupSchedule(ctx context.Context, resource, target, cronExpr string,
 	policy database.GFSPolicy, enabled bool) (*database.BackupSchedule, error) {
+	log := sm.controller.traceLogger()
+	log.Debug("ScheduleManager.CreateBackupSchedule: start", zap.String("resource", resource), zap.String("target", target),
+		zap.String("cron", cronExpr), zap.Bool("enabled", enabled))
 	if err := validateCron(cronExpr); err != nil {
+		log.Debug("ScheduleManager.CreateBackupSchedule: invalid cron", zap.String("cron", cronExpr), zap.Error(err))
 		return nil, err
 	}
 	if !gfsHasRetention(policy) {
+		log.Debug("ScheduleManager.CreateBackupSchedule: policy keeps nothing")
 		return nil, fmt.Errorf("retention policy keeps nothing: set at least one of hourly/daily/weekly/monthly/yearly")
 	}
 	db := sm.controller.db
 	if db == nil {
+		log.Debug("ScheduleManager.CreateBackupSchedule: no database")
 		return nil, fmt.Errorf("database not available")
 	}
 	if _, err := db.GetResource(ctx, resource); err != nil {
+		log.Debug("ScheduleManager.CreateBackupSchedule: resource not found", zap.String("resource", resource), zap.Error(err))
 		return nil, fmt.Errorf("resource %q not found", resource)
 	}
 	if _, err := db.GetBackupTarget(ctx, target); err != nil {
+		log.Debug("ScheduleManager.CreateBackupSchedule: target not found", zap.String("target", target), zap.Error(err))
 		return nil, err
 	}
 	s := &database.BackupSchedule{
@@ -57,11 +65,16 @@ func (sm *ScheduleManager) CreateBackupSchedule(ctx context.Context, resource, t
 		Resource: resource, Target: target, Cron: cronExpr, Enabled: enabled, Keep: policy,
 	}
 	if old, err := db.GetBackupSchedule(ctx, s.Name); err == nil {
+		log.Debug("ScheduleManager.CreateBackupSchedule: replacing existing schedule, keeping its history", zap.String("schedule", s.Name))
 		s.CreatedAt, s.LastRun, s.LastBackup, s.LastError = old.CreatedAt, old.LastRun, old.LastBackup, old.LastError
 	}
+	start := time.Now()
 	if err := db.SaveBackupSchedule(ctx, s); err != nil {
+		log.Debug("ScheduleManager.CreateBackupSchedule: db save failed", zap.String("schedule", s.Name),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, fmt.Errorf("save backup schedule: %w", err)
 	}
+	log.Debug("ScheduleManager.CreateBackupSchedule: db saved", zap.String("schedule", s.Name), zap.Duration("took", time.Since(start)))
 	sm.controller.logger.Info("Saved backup schedule",
 		zap.String("schedule", s.Name), zap.String("cron", cronExpr), zap.Bool("enabled", enabled))
 	return s, sm.reload(ctx)
@@ -69,39 +82,58 @@ func (sm *ScheduleManager) CreateBackupSchedule(ctx context.Context, resource, t
 
 // DeleteBackupSchedule stops a schedule. The backups it made stay.
 func (sm *ScheduleManager) DeleteBackupSchedule(ctx context.Context, name string) error {
+	log := sm.controller.traceLogger()
 	if sm.controller.db == nil {
+		log.Debug("ScheduleManager.DeleteBackupSchedule: no database")
 		return fmt.Errorf("database not available")
 	}
+	start := time.Now()
 	if err := sm.controller.db.DeleteBackupSchedule(ctx, name); err != nil {
+		log.Debug("ScheduleManager.DeleteBackupSchedule: db delete failed", zap.String("schedule", name),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return err
 	}
+	log.Debug("ScheduleManager.DeleteBackupSchedule: db deleted", zap.String("schedule", name), zap.Duration("took", time.Since(start)))
 	sm.controller.logger.Info("Deleted backup schedule", zap.String("schedule", name))
 	return sm.reload(ctx)
 }
 
 // ListBackupSchedules returns every backup schedule.
 func (sm *ScheduleManager) ListBackupSchedules(ctx context.Context) ([]*database.BackupSchedule, error) {
+	log := sm.controller.traceLogger()
 	if sm.controller.db == nil {
+		log.Debug("ScheduleManager.ListBackupSchedules: no database")
 		return nil, fmt.Errorf("database not available")
 	}
-	return sm.controller.db.ListBackupSchedules(ctx)
+	start := time.Now()
+	out, err := sm.controller.db.ListBackupSchedules(ctx)
+	log.Debug("ScheduleManager.ListBackupSchedules: db list", zap.Int("count", len(out)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
+	return out, err
 }
 
 // addBackupSchedules registers every enabled backup schedule on c.
 func (sm *ScheduleManager) addBackupSchedules(ctx context.Context, c *cron.Cron) error {
+	log := sm.controller.traceLogger()
+	start := time.Now()
 	schedules, err := sm.controller.db.ListBackupSchedules(ctx)
+	log.Debug("ScheduleManager.addBackupSchedules: db list", zap.Int("count", len(schedules)),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return fmt.Errorf("load backup schedules: %w", err)
 	}
 	for _, s := range schedules {
 		if !s.Enabled {
+			log.Debug("ScheduleManager.addBackupSchedules: schedule disabled, skipped", zap.String("schedule", s.Name))
 			continue
 		}
 		name := s.Name
 		if _, err := c.AddFunc(s.Cron, func() { sm.runBackupTick(name) }); err != nil {
 			sm.controller.logger.Warn("Skipping backup schedule with invalid cron",
 				zap.String("schedule", name), zap.String("cron", s.Cron), zap.Error(err))
+			continue
 		}
+		log.Debug("ScheduleManager.addBackupSchedules: schedule registered", zap.String("schedule", name), zap.String("cron", s.Cron))
 	}
 	return nil
 }
@@ -110,16 +142,22 @@ func (sm *ScheduleManager) addBackupSchedules(ctx context.Context, c *cron.Cron)
 // the schedule as it stands after the run, carrying the run's outcome. A run
 // still going when the next tick fires makes that tick a no-op.
 func (sm *ScheduleManager) RunBackupSchedule(ctx context.Context, name string) (*database.BackupSchedule, error) {
+	trace := sm.controller.traceLogger()
 	if _, busy := backupRuns.LoadOrStore(name, true); busy {
+		trace.Debug("ScheduleManager.RunBackupSchedule: already running, skipped", zap.String("schedule", name))
 		return nil, fmt.Errorf("backup schedule %q is already running", name)
 	}
 	defer backupRuns.Delete(name)
 
 	db, log := sm.controller.db, sm.controller.logger
 	if db == nil {
+		trace.Debug("ScheduleManager.RunBackupSchedule: no database")
 		return nil, fmt.Errorf("database not available")
 	}
+	start := time.Now()
 	s, err := db.GetBackupSchedule(ctx, name)
+	trace.Debug("ScheduleManager.RunBackupSchedule: db get schedule", zap.String("schedule", name),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +166,8 @@ func (sm *ScheduleManager) RunBackupSchedule(ctx context.Context, name string) (
 	rec, runErr := sm.controller.backups.createBackup(ctx, s.Resource, s.Target, "", false, s.Name)
 	failedBefore := s.LastError != ""
 	s.LastRun = time.Now()
+	trace.Debug("ScheduleManager.RunBackupSchedule: backup run finished", zap.String("schedule", name),
+		zap.Bool("failed_before", failedBefore), zap.Error(runErr))
 	if runErr != nil {
 		s.LastBackup, s.LastError = "", runErr.Error()
 		sm.publishBackupEvent(s, event.StatusFiring, event.SeverityWarning,
@@ -143,6 +183,7 @@ func (sm *ScheduleManager) RunBackupSchedule(ctx context.Context, name string) (
 		log.Warn("Backup schedule: failed to record the run", zap.String("schedule", name), zap.Error(err))
 	}
 	if runErr == nil {
+		trace.Debug("ScheduleManager.RunBackupSchedule: pruning", zap.String("schedule", name))
 		sm.pruneBackups(ctx, s)
 	}
 	return s, nil
@@ -150,9 +191,12 @@ func (sm *ScheduleManager) RunBackupSchedule(ctx context.Context, name string) (
 
 // runBackupTick is the cron entry for a schedule.
 func (sm *ScheduleManager) runBackupTick(name string) {
+	log := sm.controller.traceLogger()
+	log.Debug("ScheduleManager.runBackupTick: tick", zap.String("schedule", name))
 	ctx, cancel := context.WithTimeout(context.Background(), scheduledBackupTimeout)
 	defer cancel()
 	if s, err := sm.controller.db.GetBackupSchedule(ctx, name); err != nil || !s.Enabled {
+		log.Debug("ScheduleManager.runBackupTick: schedule gone or disabled, skipping", zap.String("schedule", name), zap.Error(err))
 		return
 	}
 	if _, err := sm.RunBackupSchedule(ctx, name); err != nil {
@@ -162,8 +206,12 @@ func (sm *ScheduleManager) runBackupTick(name string) {
 
 func (sm *ScheduleManager) publishBackupEvent(s *database.BackupSchedule, status event.Status, sev event.Severity, msg string) {
 	if sm.controller.events == nil {
+		sm.controller.traceLogger().Debug("ScheduleManager.publishBackupEvent: notifications off, not published",
+			zap.String("schedule", s.Name))
 		return
 	}
+	sm.controller.traceLogger().Debug("ScheduleManager.publishBackupEvent: publishing", zap.String("schedule", s.Name),
+		zap.String("status", string(status)), zap.String("severity", string(sev)))
 	sm.controller.events.Publish(event.Event{
 		Type: event.TypeBackupFailed, Severity: sev, Status: status,
 		Resource: s.Resource, Message: msg,
@@ -180,7 +228,11 @@ func (sm *ScheduleManager) publishBackupEvent(s *database.BackupSchedule, status
 // built on them.
 func (sm *ScheduleManager) pruneBackups(ctx context.Context, s *database.BackupSchedule) {
 	log := sm.controller.logger
+	trace := sm.controller.traceLogger()
+	start := time.Now()
 	backups, err := sm.controller.db.ListBackups(ctx, s.Resource, s.Target)
+	trace.Debug("ScheduleManager.pruneBackups: db list backups", zap.String("schedule", s.Name),
+		zap.Int("count", len(backups)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		log.Warn("Backup schedule: list backups failed", zap.String("schedule", s.Name), zap.Error(err))
 		return
@@ -194,14 +246,18 @@ func (sm *ScheduleManager) pruneBackups(ctx context.Context, s *database.BackupS
 	doomed := selectExpiredBackups(backups, s.Keep, s.Name)
 	for _, b := range backups {
 		if b.State == database.BackupStateFailed && b.Schedule == s.Name && b.StartedAt.Before(newest) {
+			trace.Debug("ScheduleManager.pruneBackups: superseded failed record", zap.String("backup", b.ID))
 			doomed = append(doomed, b)
 		}
 	}
+	trace.Debug("ScheduleManager.pruneBackups: selected for deletion", zap.String("schedule", s.Name), zap.Int("count", len(doomed)))
 	now := lockNow()
 	for _, b := range doomed {
 		// A locked backup cannot go yet; a later run prunes it once the lock
 		// has expired.
 		if lockedNow(b, now) {
+			trace.Debug("ScheduleManager.pruneBackups: still locked, kept for now", zap.String("backup", b.ID),
+				zap.Time("retain_until", b.RetainUntil))
 			continue
 		}
 		if err := sm.controller.backups.DeleteBackup(ctx, b.ID, "", false); err != nil {
@@ -243,6 +299,10 @@ func selectExpiredBackups(backups []*database.Backup, policy database.GFSPolicy,
 			if parent == nil {
 				break
 			}
+			if expired[parent.ID] {
+				zap.L().Debug("selectExpiredBackups: kept as the base of a kept backup", zap.String("backup", parent.ID),
+					zap.String("kept_by", id))
+			}
 			delete(expired, parent.ID)
 			cur = parent
 		}
@@ -253,5 +313,7 @@ func selectExpiredBackups(backups []*database.Backup, policy database.GFSPolicy,
 			out = append(out, byID[c.Name])
 		}
 	}
+	zap.L().Debug("selectExpiredBackups: decided", zap.String("schedule", schedule), zap.Int("completed", len(byID)),
+		zap.Int("own", len(snaps)), zap.Int("candidates", len(candidates)), zap.Int("expired", len(out)))
 	return out
 }

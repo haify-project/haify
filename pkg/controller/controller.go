@@ -4,7 +4,6 @@ package controller
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -78,6 +77,16 @@ type Controller struct {
 // over here rather than built by New.
 func (c *Controller) SetLogRing(r *logbuf.Ring) { c.logRing = r }
 
+// traceLogger is the logger for Debug traces: the controller's own, or the
+// global one for a Controller (or a nil one) built without a logger, as tests
+// and bare managers do, so a trace never turns into a nil dereference.
+func (c *Controller) traceLogger() *zap.Logger {
+	if c == nil || c.logger == nil {
+		return zap.L()
+	}
+	return c.logger
+}
+
 // closeDBAfterFailedStart hands the metadata database back when New gives up
 // part way through.
 //
@@ -89,11 +98,13 @@ func (c *Controller) SetLogRing(r *logbuf.Ring) { c.logRing = r }
 // could not be built, not how the cleanup went.
 func closeDBAfterFailedStart(logger *zap.Logger, db *database.DB) {
 	if db == nil {
+		zap.L().Debug("closeDBAfterFailedStart: no database to close")
 		return
 	}
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+	logger.Debug("closeDBAfterFailedStart: closing database after aborted start")
 	if err := db.Close(); err != nil {
 		logger.Warn("Failed to close database after an aborted controller start", zap.Error(err))
 	}
@@ -102,13 +113,21 @@ func closeDBAfterFailedStart(logger *zap.Logger, db *database.DB) {
 // New creates a new controller
 func New(cfg *config.Config, logger *zap.Logger) (*Controller, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+	logger.Debug("New: building controller",
+		zap.String("db_path", cfg.Database.Path),
+		zap.String("dispatch_config", cfg.Dispatch.ConfigPath),
+		zap.Int("dispatch_parallel", cfg.Dispatch.Parallel),
+		zap.Bool("metrics_enabled", cfg.Metrics.Enabled))
 
 	// Open database
+	start := time.Now()
 	db, err := database.Open(&database.Config{
 		Path:           cfg.Database.Path,
 		AuditRetention: cfg.Audit.MaxEntries,
 		AuditMaxAge:    time.Duration(cfg.Audit.RetentionDays) * 24 * time.Hour,
 	}, logger)
+	logger.Debug("New: opened database", zap.String("path", cfg.Database.Path),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		// A schema this binary cannot safely write is the one open failure that
 		// must not degrade into "continue without persistence". Running on with
@@ -118,6 +137,7 @@ func New(cfg *config.Config, logger *zap.Logger) (*Controller, error) {
 		// exists to prevent. Refuse to start and let the operator roll forward
 		// or restore.
 		if database.IsSchemaIncompatible(err) {
+			logger.Debug("New: database schema incompatible, refusing to start", zap.Error(err))
 			cancel()
 			return nil, fmt.Errorf("cannot open database: %w", err)
 		}
@@ -130,6 +150,7 @@ func New(cfg *config.Config, logger *zap.Logger) (*Controller, error) {
 	// controller fails resource creation at "mkdir /var/lib/haify: permission
 	// denied" — after it has already created the backing volumes.
 	if cfg.WAN.PKIDir != "" {
+		logger.Debug("New: using configured WAN PKI directory", zap.String("pki_dir", cfg.WAN.PKIDir))
 		wanproxy.PKIDir = cfg.WAN.PKIDir
 	}
 
@@ -141,6 +162,7 @@ func New(cfg *config.Config, logger *zap.Logger) (*Controller, error) {
 		Parallel:   cfg.Dispatch.Parallel,
 	})
 	if err != nil {
+		logger.Debug("New: deployment client creation failed", zap.Error(err))
 		cancel()
 		closeDBAfterFailedStart(logger, db)
 		return nil, fmt.Errorf("failed to create deployment client: %w", err)
@@ -183,6 +205,7 @@ func New(cfg *config.Config, logger *zap.Logger) (*Controller, error) {
 	if cfg.Metrics.Enabled {
 		metricsInstance, err := metrics.New(logger)
 		if err != nil {
+			logger.Debug("New: metrics initialization failed", zap.Error(err))
 			cancel()
 			closeDBAfterFailedStart(logger, db)
 			return nil, fmt.Errorf("failed to initialize metrics: %w", err)
@@ -198,68 +221,28 @@ func New(cfg *config.Config, logger *zap.Logger) (*Controller, error) {
 		if err := ctrl.loadFromDatabase(ctx); err != nil {
 			logger.Warn("Failed to load data from database", zap.Error(err))
 		}
+	} else {
+		logger.Debug("New: no database, skipping load")
 	}
 
+	logger.Debug("New: controller built", zap.Bool("has_db", db != nil), zap.Bool("has_metrics", ctrl.metrics != nil))
 	return ctrl, nil
-}
-
-// initHostsMapping initializes hostname to address mapping
-func (c *Controller) initHostsMapping() {
-	// Get hostnames from all hosts
-	if len(c.hosts) == 0 {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	for _, host := range c.hosts {
-		result, err := c.deployment.Exec(ctx, []string{host}, "hostname")
-		if err == nil && result.AllSuccess() {
-			for h, r := range result.Hosts {
-				if r.Success && r.Output != "" {
-					hostname := r.Output
-					c.hostsMap[hostname] = h
-					c.logger.Debug("Host mapping",
-						zap.String("hostname", hostname),
-						zap.String("address", h))
-				}
-			}
-		}
-	}
-}
-
-// loadHostsFromDatabase loads hosts from registered nodes in database
-func (c *Controller) loadHostsFromDatabase(ctx context.Context) error {
-	nodes, err := c.nodes.ListNodes(ctx)
-	if err != nil {
-		return err
-	}
-
-	if len(nodes) == 0 {
-		return fmt.Errorf("no nodes found in database")
-	}
-
-	var hosts []string
-	for _, node := range nodes {
-		hosts = append(hosts, node.Address)
-	}
-
-	c.hosts = hosts
-	c.logger.Info("Loaded hosts from database", zap.Strings("hosts", hosts))
-	return nil
 }
 
 // Start starts the controller
 func (c *Controller) Start() error {
 	c.logger.Info("Starting Haify controller")
+	log := c.traceLogger()
 
 	// Load hosts from registered nodes in database
 	if c.db != nil {
 		if err := c.loadHostsFromDatabase(context.Background()); err != nil {
 			c.logger.Warn("Failed to load hosts from database", zap.Error(err))
 		}
+	} else {
+		log.Debug("Controller.Start: no database, hosts not loaded")
 	}
+	log.Debug("Controller.Start: handing hosts to managers", zap.Strings("hosts", c.hosts))
 
 	// Initialize deployment client with hosts
 	c.resources.SetDeployment(c.deployment)
@@ -268,9 +251,14 @@ func (c *Controller) Start() error {
 
 	// Start metrics server if enabled
 	if c.config.Metrics.Enabled && c.metrics != nil {
+		log.Debug("Controller.Start: starting metrics server")
 		if err := c.startMetricsServer(); err != nil {
+			log.Debug("Controller.Start: metrics server failed", zap.Error(err))
 			return fmt.Errorf("failed to start metrics server: %w", err)
 		}
+	} else {
+		log.Debug("Controller.Start: metrics server disabled",
+			zap.Bool("enabled", c.config.Metrics.Enabled), zap.Bool("has_metrics", c.metrics != nil))
 	}
 
 	// Bring up the event bus, health detector and Webhook receivers before the
@@ -280,28 +268,36 @@ func (c *Controller) Start() error {
 
 	// Start gRPC server
 	if err := c.startGRPCServer(); err != nil {
+		log.Debug("Controller.Start: gRPC server failed", zap.Error(err))
 		return fmt.Errorf("failed to start gRPC server: %w", err)
 	}
 
 	// Start UI server on whatever [ui] asks for.
 	if c.config.UI.UIEnabled() {
 		uiAddr, uiPort := c.config.UI.UIAddress(c.config.Server.ListenAddress)
+		log.Debug("Controller.Start: starting UI server", zap.String("address", uiAddr), zap.Int("port", uiPort))
 		// The UI proxies its own-origin /v1 and /ai to these, so that publishing
 		// the UI port alone is enough to use it from outside the LAN.
 		uiServer, err := NewUIServer(c.logger, uiAddr, uiPort, c.restPort(), defaultAIPort, c.restLoopbackTLS)
 		if err != nil {
+			log.Debug("Controller.Start: UI server creation failed", zap.Error(err))
 			return fmt.Errorf("failed to create UI server: %w", err)
 		}
 		c.uiServer = uiServer
 		if err := c.uiServer.Start(); err != nil {
+			log.Debug("Controller.Start: UI server start failed", zap.Error(err))
 			return fmt.Errorf("failed to start UI server: %w", err)
 		}
+	} else {
+		log.Debug("Controller.Start: UI disabled")
 	}
 
 	// Start the snapshot scheduler. Only the active controller reaches here
 	// (self-HA promotes a single node), so no distributed coordination is
 	// needed. Schedules persist in the DB and reload on the next active node
 	// after failover.
+	log.Debug("Controller.Start: snapshot scheduler decision",
+		zap.Bool("schedule_enabled", c.config.Schedule.Enabled), zap.Bool("has_db", c.db != nil))
 	if c.config.Schedule.Enabled && c.db != nil {
 		if err := c.schedules.Start(context.Background()); err != nil {
 			c.logger.Warn("Failed to start snapshot scheduler", zap.Error(err))
@@ -310,6 +306,7 @@ func (c *Controller) Start() error {
 
 	// The audit trail is sent off the cluster and pruned by the active
 	// controller only; its cursor moves with the database on failover.
+	log.Debug("Controller.Start: starting background loops")
 	c.startAuditShipper(c.ctx)
 	go c.watchLockClock(c.ctx)
 	c.startAutoEvict(c.ctx)
@@ -322,6 +319,8 @@ func (c *Controller) Start() error {
 	// only the active controller ships backups, so nothing can still be in
 	// flight here. Resolve it now so an incomplete copy is never listed as
 	// something that could be restored.
+	log.Debug("Controller.Start: reconciling interrupted backups and self-HA services",
+		zap.Bool("has_db", c.db != nil), zap.Bool("has_backups", c.backups != nil))
 	if c.db != nil && c.backups != nil {
 		if err := c.backups.ReconcileInterrupted(context.Background()); err != nil {
 			c.logger.Warn("Failed to reconcile interrupted backups", zap.Error(err))
@@ -346,6 +345,11 @@ func (c *Controller) Events() *event.Bus { return c.events }
 // Stop stops the controller
 func (c *Controller) Stop() {
 	c.logger.Info("Stopping Haify controller")
+	log := c.traceLogger()
+	log.Debug("Controller.Stop: stopping components",
+		zap.Bool("has_schedules", c.schedules != nil), zap.Bool("has_alert_monitor", c.alertMonitor != nil),
+		zap.Bool("has_metrics_server", c.metricsServer != nil), zap.Bool("has_grpc_server", c.server != nil),
+		zap.Bool("has_rest_server", c.restServer != nil), zap.Bool("has_ui_server", c.uiServer != nil))
 
 	c.cancel()
 
@@ -364,32 +368,40 @@ func (c *Controller) Stop() {
 	if c.metricsServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		start := time.Now()
 		if err := c.metricsServer.Shutdown(ctx); err != nil {
 			c.logger.Error("Failed to shutdown metrics server", zap.Error(err))
 		}
+		log.Debug("Controller.Stop: metrics server shut down", zap.Duration("took", time.Since(start)))
 	}
 
 	// Stop gRPC server
 	if c.server != nil {
+		start := time.Now()
 		c.server.GracefulStop()
+		log.Debug("Controller.Stop: gRPC server stopped", zap.Duration("took", time.Since(start)))
 	}
 
 	// Stop REST gateway server
 	if c.restServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		start := time.Now()
 		if err := c.restServer.Shutdown(ctx); err != nil {
 			c.logger.Error("Failed to shutdown REST gateway server", zap.Error(err))
 		}
+		log.Debug("Controller.Stop: REST gateway server shut down", zap.Duration("took", time.Since(start)))
 	}
 
 	// Stop UI server
 	if c.uiServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		start := time.Now()
 		if err := c.uiServer.Shutdown(ctx); err != nil {
 			c.logger.Error("Failed to shutdown UI server", zap.Error(err))
 		}
+		log.Debug("Controller.Stop: UI server shut down", zap.Duration("took", time.Since(start)))
 	}
 
 	c.logger.Info("Haify controller stopped")
@@ -410,155 +422,11 @@ func (c *Controller) GetMetrics() *metrics.Metrics {
 	return c.metrics
 }
 
-// NodeName is the reverse of ResolveHost: the node name registered for an
-// address, or the address itself when none is. Messages meant for an operator
-// name nodes the way every command takes them.
-//
-// The registered node name wins. The hosts map also carries each node's
-// hostname as an alias of the same address, and taking whichever map entry
-// came first returned one name on one call and the other on the next: alerts
-// keyed by node (pool.data_near_full) then cleared as "no longer exists" and
-// fired again under the other name every poll.
-func (c *Controller) NodeName(address string) string {
-	if c.nodes != nil {
-		if name := c.nodes.GetNodeNameByAddress(address); name != "" {
-			return name
-		}
-	}
-	c.hostsLock.RLock()
-	defer c.hostsLock.RUnlock()
-	best := ""
-	for name, addr := range c.hostsMap {
-		if addr == address && name != address && (best == "" || name < best) {
-			best = name
-		}
-	}
-	if best != "" {
-		return best
-	}
-	return address
-}
-
-// ResolveHost resolves a hostname to an address
-func (c *Controller) ResolveHost(hostOrAddr string) string {
-	c.hostsLock.RLock()
-	defer c.hostsLock.RUnlock()
-
-	// Try to resolve hostname to address first
-	if addr, ok := c.hostsMap[hostOrAddr]; ok {
-		return addr
-	}
-
-	// If it's already an address in our hosts list, return as is
-	for _, addr := range c.hosts {
-		if addr == hostOrAddr {
-			return hostOrAddr
-		}
-	}
-
-	// Return as-is (might be a hostname that SSH can resolve)
-	return hostOrAddr
-}
-
-// NormalizeHost converts an address to hostname if available
-// Used for display purposes to avoid showing duplicates
-func (c *Controller) NormalizeHost(addrOrHost string) string {
-	c.hostsLock.RLock()
-	defer c.hostsLock.RUnlock()
-
-	// If it's already in hosts list, return as is (prefer hostnames over IPs)
-	for _, host := range c.hosts {
-		if host == addrOrHost {
-			return host
-		}
-	}
-
-	// Reverse lookup: check if this address maps to a hostname
-	for hostname, addr := range c.hostsMap {
-		if addr == addrOrHost {
-			return hostname
-		}
-	}
-
-	// Return as-is
-	return addrOrHost
-}
-
-// ==================== DATABASE ====================
-
-// loadFromDatabase loads nodes and gateways from database
-func (c *Controller) loadFromDatabase(ctx context.Context) error {
-	// Load nodes
-	dbNodes, err := c.db.ListNodes(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to load nodes: %w", err)
-	}
-
-	for _, dbNode := range dbNodes {
-		var labels map[string]string
-		if dbNode.Labels != "" {
-			if err := json.Unmarshal([]byte(dbNode.Labels), &labels); err != nil {
-				c.logger.Warn("Failed to decode node labels; ignoring",
-					zap.String("node", dbNode.Name), zap.Error(err))
-			}
-		}
-		c.nodes.mu.Lock()
-		c.nodes.nodes[dbNode.Address] = &NodeInfo{
-			Name:               dbNode.Name,
-			Address:            dbNode.Address,
-			ReplicationAddress: dbNode.ReplicationAddress,
-			ReplicationPaths:   dbNode.ReplicationPaths,
-			Hostname:           dbNode.Hostname,
-			State:              NodeState(dbNode.State),
-			LastSeen:           dbNode.LastSeen,
-			Version:            dbNode.Version,
-			Capacity:           make(map[string]interface{}),
-			Labels:             labels,
-			OfflineSince:       dbNode.OfflineSince,
-		}
-		c.nodes.mu.Unlock()
-
-		// Build hostname -> IP address mapping for DRBD config
-		if dbNode.Hostname != "" && dbNode.Address != "" {
-			c.hostsLock.Lock()
-			c.hostsMap[dbNode.Hostname] = dbNode.Address
-			c.hostsLock.Unlock()
-		}
-		// Also map name -> IP if different from hostname
-		if dbNode.Name != "" && dbNode.Name != dbNode.Hostname && dbNode.Address != "" {
-			c.hostsLock.Lock()
-			c.hostsMap[dbNode.Name] = dbNode.Address
-			c.hostsLock.Unlock()
-		}
-
-		c.logger.Debug("Loaded node from database",
-			zap.String("name", dbNode.Name),
-			zap.String("address", dbNode.Address))
-	}
-
-	// Load gateways
-	dbGateways, err := c.db.ListGateways(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to load gateways: %w", err)
-	}
-
-	for _, dbGateway := range dbGateways {
-		c.logger.Debug("Loaded gateway from database",
-			zap.String("name", dbGateway.Name),
-			zap.String("type", string(dbGateway.Type)),
-			zap.String("resource", dbGateway.Resource))
-	}
-
-	c.logger.Info("Loaded data from database",
-		zap.Int("nodes", len(dbNodes)),
-		zap.Int("gateways", len(dbGateways)))
-
-	return nil
-}
-
 // Close closes the controller and its resources
 func (c *Controller) Close() error {
 	c.logger.Info("Closing controller")
+	log := c.traceLogger()
+	log.Debug("Controller.Close: closing", zap.Bool("has_grpc_server", c.server != nil), zap.Bool("has_db", c.db != nil))
 
 	// Stop gRPC server
 	if c.server != nil {
@@ -567,9 +435,11 @@ func (c *Controller) Close() error {
 
 	// Close database
 	if c.db != nil {
+		start := time.Now()
 		if err := c.db.Close(); err != nil {
 			c.logger.Error("Failed to close database", zap.Error(err))
 		}
+		log.Debug("Controller.Close: database closed", zap.Duration("took", time.Since(start)))
 	}
 
 	// Cancel context

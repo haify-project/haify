@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -56,11 +57,16 @@ func (rm *ResourceManager) SetDualPrimary(ctx context.Context, resource string, 
 // live migration of that guest. Disabling is unchanged: it always covers every
 // participant, because a window left open anywhere is what it exists to close.
 func (rm *ResourceManager) SetDualPrimaryOn(ctx context.Context, resource string, enable bool, nodes []string) error {
+	log := rm.controller.traceLogger()
 	resource = strings.TrimSpace(resource)
+	log.Debug("ResourceManager.SetDualPrimaryOn: start", zap.String("resource", resource), zap.Bool("enable", enable),
+		zap.Strings("nodes", nodes))
 	if resource == "" {
+		log.Debug("ResourceManager.SetDualPrimaryOn: resource name missing")
 		return fmt.Errorf("resource name is required")
 	}
 	if rm.deployment == nil {
+		log.Debug("ResourceManager.SetDualPrimaryOn: no deployment client")
 		return fmt.Errorf("deployment client not set")
 	}
 
@@ -68,16 +74,21 @@ func (rm *ResourceManager) SetDualPrimaryOn(ctx context.Context, resource string
 	// async link is data corruption, not a performance trade-off, so the guard
 	// lives here rather than in any caller.
 	if rm.controller.db != nil {
+		start := time.Now()
 		dbRes, err := rm.controller.db.GetResource(ctx, resource)
+		log.Debug("ResourceManager.SetDualPrimaryOn: db get resource", zap.String("resource", resource),
+			zap.Bool("found", dbRes != nil), zap.Duration("took", time.Since(start)), zap.Error(err))
 		switch {
 		case err != nil || dbRes == nil:
 			// Unknown resource: for disable there is nothing to restore, so the
 			// cleanup path succeeds. For enable it is a genuine error, and the
 			// host lookup below produces the descriptive one.
 			if !enable {
+				log.Debug("ResourceManager.SetDualPrimaryOn: unknown resource, nothing to disable", zap.String("resource", resource))
 				return nil
 			}
 		case dbRes.WANMode && enable:
+			log.Debug("ResourceManager.SetDualPrimaryOn: WAN resource, enable refused", zap.String("resource", resource))
 			return fmt.Errorf(
 				"resource %q replicates over WAN (protocol A, asynchronous); dual-primary is refused because two Primaries over an async link corrupts data",
 				resource)
@@ -86,12 +97,14 @@ func (rm *ResourceManager) SetDualPrimaryOn(ctx context.Context, resource string
 
 	hosts, err := rm.dualPrimaryHosts(ctx, resource)
 	if err != nil {
+		log.Debug("ResourceManager.SetDualPrimaryOn: resolving hosts failed", zap.Bool("enable", enable), zap.Error(err))
 		if !enable {
 			return nil
 		}
 		return err
 	}
 	if len(hosts) == 0 {
+		log.Debug("ResourceManager.SetDualPrimaryOn: resource has no hosts", zap.Bool("enable", enable))
 		if !enable {
 			return nil
 		}
@@ -101,14 +114,18 @@ func (rm *ResourceManager) SetDualPrimaryOn(ctx context.Context, resource string
 	if enable && len(nodes) > 0 {
 		hosts, err = pickDualPrimaryHosts(hosts, rm.resolveAll(nodes))
 		if err != nil {
+			log.Debug("ResourceManager.SetDualPrimaryOn: requested node not a participant", zap.Error(err))
 			return fmt.Errorf("resource %q: %w", resource, err)
 		}
+		log.Debug("ResourceManager.SetDualPrimaryOn: limited to requested nodes", zap.Strings("hosts", hosts))
 	}
 
 	if enable {
+		log.Debug("ResourceManager.SetDualPrimaryOn: enabling allow-two-primaries", zap.Strings("hosts", hosts))
 		if err := rm.execAllSuccess(ctx, hosts,
 			fmt.Sprintf(dualPrimaryEnableCmdFmt, resource),
 			fmt.Sprintf("failed to enable dual-primary on %s", resource)); err != nil {
+			log.Debug("ResourceManager.SetDualPrimaryOn: enable failed", zap.Error(err))
 			return err
 		}
 		rm.controller.logger.Info("Enabled DRBD dual-primary (live-migration window)",
@@ -118,16 +135,23 @@ func (rm *ResourceManager) SetDualPrimaryOn(ctx context.Context, resource string
 
 	// Disable: issue the command everywhere, ignoring per-host failures, then
 	// confirm no node is left dual-primary.
-	if _, err := rm.deployment.Exec(ctx, hosts, fmt.Sprintf(dualPrimaryDisableCmdFmt, resource)); err != nil {
+	start := time.Now()
+	res, err := rm.deployment.Exec(ctx, hosts, fmt.Sprintf(dualPrimaryDisableCmdFmt, resource))
+	if err != nil {
 		rm.controller.logger.Warn("Dual-primary disable command failed; verifying effective state",
 			zap.String("resource", resource), zap.Error(err))
+	} else if ce := log.Check(zap.DebugLevel, "ResourceManager.SetDualPrimaryOn: disable command sent"); ce != nil {
+		ce.Write(zap.Strings("hosts", hosts), zap.Strings("failed_hosts", tracedFailedHosts(res)),
+			zap.Duration("took", time.Since(start)))
 	}
 
 	stranded, err := rm.dualPrimaryStrandedHosts(ctx, hosts, resource)
 	if err != nil {
+		log.Debug("ResourceManager.SetDualPrimaryOn: verifying disable failed", zap.Error(err))
 		return fmt.Errorf("failed to verify dual-primary was disabled on %s: %w", resource, err)
 	}
 	if len(stranded) > 0 {
+		log.Debug("ResourceManager.SetDualPrimaryOn: hosts still dual-primary", zap.Strings("stranded", stranded))
 		return fmt.Errorf(
 			"resource %q is still in dual-primary on %v — allow-two-primaries must be cleared before the resource is used again",
 			resource, stranded)
@@ -146,8 +170,10 @@ func (rm *ResourceManager) SetDualPrimaryOn(ctx context.Context, resource string
 // matters most here: a PVE host that contributes no disks attaches diskless and
 // is exactly the node that live-migration promotes.
 func (rm *ResourceManager) dualPrimaryHosts(ctx context.Context, resource string) ([]string, error) {
+	log := rm.controller.traceLogger()
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
+		log.Debug("ResourceManager.dualPrimaryHosts: resolving replica hosts failed", zap.String("resource", resource), zap.Error(err))
 		return nil, err
 	}
 
@@ -161,13 +187,18 @@ func (rm *ResourceManager) dualPrimaryHosts(ctx context.Context, resource string
 			for _, node := range append(splitCSV(dbRes.DisklessNodes), splitCSV(dbRes.DisklessClients)...) {
 				addr := rm.controller.ResolveHost(node)
 				if addr != "" && !seen[addr] {
+					log.Debug("ResourceManager.dualPrimaryHosts: adding diskless participant", zap.String("node", node), zap.String("host", addr))
 					seen[addr] = true
 					hosts = append(hosts, addr)
 				}
 			}
+		} else {
+			log.Debug("ResourceManager.dualPrimaryHosts: resource record unreadable, replicas only",
+				zap.String("resource", resource), zap.Error(derr))
 		}
 	}
 
+	log.Debug("ResourceManager.dualPrimaryHosts: resolved", zap.String("resource", resource), zap.Strings("hosts", hosts))
 	return hosts, nil
 }
 
@@ -176,10 +207,16 @@ func (rm *ResourceManager) dualPrimaryHosts(ctx context.Context, resource string
 // and an unconfigured resource prints nothing — so both "already single-primary"
 // and "resource is down" read as not stranded, which is correct.
 func (rm *ResourceManager) dualPrimaryStrandedHosts(ctx context.Context, hosts []string, resource string) ([]string, error) {
+	log := rm.controller.traceLogger()
+	start := time.Now()
 	result, err := rm.deployment.Exec(ctx, hosts, fmt.Sprintf(dualPrimaryShowCmdFmt, resource))
 	if err != nil {
+		log.Debug("ResourceManager.dualPrimaryStrandedHosts: drbdsetup show failed", zap.Strings("hosts", hosts),
+			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, err
 	}
+	log.Debug("ResourceManager.dualPrimaryStrandedHosts: drbdsetup show ran", zap.Strings("hosts", hosts),
+		zap.Duration("took", time.Since(start)))
 
 	var stranded []string
 	for host, hr := range result.Hosts {
@@ -193,7 +230,10 @@ func (rm *ResourceManager) dualPrimaryStrandedHosts(ctx context.Context, hosts [
 				zap.String("output", strings.TrimSpace(hr.Output)))
 			continue
 		}
-		if hasAllowTwoPrimaries(hr.Output) {
+		two := hasAllowTwoPrimaries(hr.Output)
+		log.Debug("ResourceManager.dualPrimaryStrandedHosts: host checked", zap.String("host", host),
+			zap.Bool("allow_two_primaries", two))
+		if two {
 			stranded = append(stranded, host)
 		}
 	}
@@ -227,6 +267,7 @@ func pickDualPrimaryHosts(participants, requested []string) ([]string, error) {
 	seen := map[string]bool{}
 	for _, h := range requested {
 		if !in[h] {
+			zap.L().Debug("pickDualPrimaryHosts: requested host not a participant", zap.String("host", h))
 			return nil, fmt.Errorf("%s does not take part in it, so it cannot open a dual-primary window", h)
 		}
 		if !seen[h] {

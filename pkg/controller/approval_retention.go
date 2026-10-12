@@ -3,7 +3,9 @@ package controller
 import (
 	"context"
 	"strings"
+	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
@@ -23,26 +25,47 @@ import (
 // the call lowers what an existing schedule keeps.
 var conditionalApproval = map[string]func(ctx context.Context, db *database.DB, req proto.Message) bool{
 	"CreateSnapshotSchedule": func(ctx context.Context, db *database.DB, req proto.Message) bool {
+		log := zap.L()
 		r, ok := req.(*haifypb.CreateSnapshotScheduleRequest)
 		if !ok {
+			log.Debug("conditionalApproval: unexpected request type, approval needed", zap.String("method", "CreateSnapshotSchedule"))
 			return true
 		}
+		start := time.Now()
 		old, err := db.GetSnapshotSchedule(ctx, r.Resource)
 		if err != nil {
-			return !strings.Contains(err.Error(), "not found")
+			missing := strings.Contains(err.Error(), "not found")
+			log.Debug("conditionalApproval: no existing snapshot schedule readable",
+				zap.String("resource", r.Resource), zap.Bool("not_found", missing),
+				zap.Bool("needs_approval", !missing), zap.Duration("took", time.Since(start)), zap.Error(err))
+			return !missing
 		}
-		return keepsLess(gfsFromProto(r.Keep), old.Keep)
+		less := keepsLess(gfsFromProto(r.Keep), old.Keep)
+		log.Debug("conditionalApproval: compared snapshot schedule retention",
+			zap.String("resource", r.Resource), zap.Bool("keeps_less", less), zap.Duration("took", time.Since(start)))
+		return less
 	},
 	"CreateBackupSchedule": func(ctx context.Context, db *database.DB, req proto.Message) bool {
+		log := zap.L()
 		r, ok := req.(*haifypb.CreateBackupScheduleRequest)
 		if !ok {
+			log.Debug("conditionalApproval: unexpected request type, approval needed", zap.String("method", "CreateBackupSchedule"))
 			return true
 		}
-		old, err := db.GetBackupSchedule(ctx, database.BackupScheduleName(r.Resource, r.Target))
+		name := database.BackupScheduleName(r.Resource, r.Target)
+		start := time.Now()
+		old, err := db.GetBackupSchedule(ctx, name)
 		if err != nil {
-			return !strings.Contains(err.Error(), "not found")
+			missing := strings.Contains(err.Error(), "not found")
+			log.Debug("conditionalApproval: no existing backup schedule readable",
+				zap.String("schedule", name), zap.Bool("not_found", missing),
+				zap.Bool("needs_approval", !missing), zap.Duration("took", time.Since(start)), zap.Error(err))
+			return !missing
 		}
-		return keepsLess(gfsFromProto(r.Keep), old.Keep)
+		less := keepsLess(gfsFromProto(r.Keep), old.Keep)
+		log.Debug("conditionalApproval: compared backup schedule retention",
+			zap.String("schedule", name), zap.Bool("keeps_less", less), zap.Duration("took", time.Since(start)))
+		return less
 	},
 }
 

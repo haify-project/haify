@@ -57,6 +57,11 @@ func (c *Controller) alertOptions() alert.Options {
 	if len(obs) > 0 {
 		opts.Observer = obs
 	}
+	c.traceLogger().Debug("Controller.alertOptions: built", zap.Duration("interval", opts.Interval),
+		zap.Duration("idle_interval", opts.IdleInterval), zap.Bool("check_nodes", c.config.Alert.CheckNodes),
+		zap.Bool("check_pools", c.config.Alert.CheckPools), zap.Bool("metrics_observer", c.metrics != nil),
+		zap.Bool("write_anomaly", c.config.Alert.WriteAnomaly.Enabled),
+		zap.Int("thin_autoextend_threshold", c.config.Storage.Thin.AutoextendThreshold), zap.Int("observers", len(obs)))
 	return opts
 }
 
@@ -67,7 +72,10 @@ func (c *Controller) alertOptions() alert.Options {
 // stream and the SSE endpoint, so an operator who wants to tail events without
 // standing up an HTTP receiver just sets enabled = true.
 func (c *Controller) startNotifications() {
+	log := c.traceLogger()
 	if !c.config.Alert.Enabled {
+		log.Debug("Controller.startNotifications: alerts disabled, no event bus",
+			zap.Bool("metrics_enabled", c.config.Metrics.Enabled))
 		// The health poll is the only thing that reads cluster state on a
 		// schedule, so it is also the only source the storage and DRBD gauges
 		// have. Disabling alerts silently empties half of /metrics, which is
@@ -82,6 +90,8 @@ func (c *Controller) startNotifications() {
 		return
 	}
 
+	log.Debug("Controller.startNotifications: starting event bus", zap.Int("history_size", c.config.Alert.HistorySize),
+		zap.Bool("watch_drbd_events", c.config.Alert.WatchDRBDEvents))
 	c.events = event.NewBus(c.config.Alert.HistorySize)
 	c.persistEvents()
 
@@ -100,6 +110,9 @@ func (c *Controller) startNotifications() {
 	}
 
 	for _, wh := range c.config.Alert.Receivers() {
+		// The URL and headers can carry a token: presence only.
+		log.Debug("Controller.startNotifications: registering webhook receiver", zap.Bool("has_url", wh.URL != ""),
+			zap.Int("headers", len(wh.Headers)), zap.String("min_severity", wh.MinSeverity))
 		event.NewWebhook(event.WebhookConfig{
 			URL:      wh.URL,
 			Headers:  wh.Headers,
@@ -123,14 +136,19 @@ func (c *Controller) startNotifications() {
 // controller restarting — which under Self-HA is every failover, the moment an
 // operator most wants to read what just happened.
 func (c *Controller) persistEvents() {
+	log := c.traceLogger()
 	if c.db == nil {
+		log.Debug("Controller.persistEvents: no database, history stays in memory")
 		return
 	}
 	retention := c.config.Alert.HistorySize
 	if retention <= 0 {
 		retention = event.DefaultHistory
 	}
+	start := time.Now()
 	records, err := c.db.RecentEventRecords(c.ctx, retention)
+	log.Debug("Controller.persistEvents: db read event history", zap.Int("retention", retention),
+		zap.Int("count", len(records)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		c.logger.Warn("Could not load the event history", zap.Error(err))
 	}
@@ -141,17 +159,24 @@ func (c *Controller) persistEvents() {
 			restored = append(restored, e)
 		}
 	}
+	log.Debug("Controller.persistEvents: decoded history", zap.Int("restored", len(restored)),
+		zap.Int("undecodable", len(records)-len(restored)))
 	c.events.Restore(restored)
 	c.events.SetPersister(func(e event.Event) {
 		data, err := json.Marshal(e)
 		if err != nil {
+			log.Debug("Controller.persistEvents: event not encodable, not persisted", zap.String("type", string(e.Type)), zap.Error(err))
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		start := time.Now()
 		if err := c.db.AppendEventRecord(ctx, data, retention); err != nil {
 			c.logger.Warn("Could not record an event", zap.Error(err))
+			return
 		}
+		log.Debug("Controller.persistEvents: event persisted", zap.String("type", string(e.Type)),
+			zap.String("resource", e.Resource), zap.Int("bytes", len(data)), zap.Duration("took", time.Since(start)))
 	})
 	if len(restored) > 0 {
 		c.logger.Info("Event history restored", zap.Int("events", len(restored)))

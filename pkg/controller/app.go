@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
+
+	"go.uber.org/zap"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/apptemplate"
@@ -51,9 +54,11 @@ func (am *AppManager) rm() *ResourceManager { return am.c.resources }
 
 func (am *AppManager) ready() error {
 	if am.c.db == nil {
+		am.c.traceLogger().Debug("AppManager.ready: no database")
 		return fmt.Errorf("database not available")
 	}
 	if am.rm() == nil || am.rm().deployment == nil {
+		am.c.traceLogger().Debug("AppManager.ready: no deployment client")
 		return fmt.Errorf("deployment client not set")
 	}
 	return nil
@@ -61,10 +66,15 @@ func (am *AppManager) ready() error {
 
 // get loads an app's record, failing when there is none.
 func (am *AppManager) get(ctx context.Context, name string) (*database.App, error) {
+	log := am.c.traceLogger()
+	log.Debug("AppManager.get: loading app", zap.String("app", name))
 	if err := am.ready(); err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	app, err := am.c.db.GetApp(ctx, name)
+	log.Debug("AppManager.get: db get app", zap.String("app", name), zap.Bool("found", app != nil),
+		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +120,14 @@ func appInfo(a *database.App) *haifypb.AppInfo {
 // runs commands through sh -c "...", whose quoting empties every $variable
 // a plain command would carry.
 func (am *AppManager) runAppScript(ctx context.Context, hosts []string, script string) (*deployment.ExecResult, error) {
-	return am.rm().deployment.Exec(ctx, hosts, "echo "+base64Std(script)+" | base64 -d | sudo /bin/bash")
+	// The script body can carry an engine password; only its size is traced.
+	log := am.c.traceLogger()
+	log.Debug("AppManager.runAppScript: running", zap.Strings("hosts", hosts), zap.Int("script_bytes", len(script)))
+	start := time.Now()
+	res, err := am.rm().deployment.Exec(ctx, hosts, "echo "+base64Std(script)+" | base64 -d | sudo /bin/bash")
+	log.Debug("AppManager.runAppScript: done", zap.Strings("hosts", hosts),
+		zap.Strings("failed_hosts", tracedFailedHosts(res)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return res, err
 }
 
 // appHostOutput is what host printed, and whether the script succeeded there.
@@ -134,22 +151,32 @@ func primaryHost(res *deployment.ExecResult, hosts []string) string {
 	for _, h := range hosts {
 		out, ok := appHostOutput(res, h)
 		if !ok {
+			zap.L().Debug("primaryHost: no status from host", zap.String("host", h))
 			continue
 		}
-		if parseRoleFromStatus(out) == "Primary" {
+		role := parseRoleFromStatus(out)
+		zap.L().Debug("primaryHost: host role", zap.String("host", h), zap.String("role", role))
+		if role == "Primary" {
 			return h
 		}
 	}
+	zap.L().Debug("primaryHost: no Primary among hosts", zap.Strings("hosts", hosts))
 	return ""
 }
 
 // primaryOf is the host among hosts where resource is Primary, or "".
 func (am *AppManager) primaryOf(ctx context.Context, resource string, hosts []string) (string, error) {
+	log := am.c.traceLogger()
+	start := time.Now()
 	res, err := am.rm().deployment.DRBDStatus(ctx, hosts, resource)
+	log.Debug("AppManager.primaryOf: drbdadm status", zap.String("resource", resource), zap.Strings("hosts", hosts),
+		zap.Strings("failed_hosts", tracedFailedHosts(res)), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return "", fmt.Errorf("read the DRBD status of %s: %w", resource, err)
 	}
-	return primaryHost(res, hosts), nil
+	primary := primaryHost(res, hosts)
+	log.Debug("AppManager.primaryOf: result", zap.String("resource", resource), zap.String("primary", primary))
+	return primary, nil
 }
 
 // nodeName shows a host as its node name.
@@ -177,6 +204,7 @@ func keyValues(out string) map[string]string {
 func generatePassword() (string, error) {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
+		zap.L().Debug("generatePassword: random source failed", zap.Error(err))
 		return "", fmt.Errorf("generate a password: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil

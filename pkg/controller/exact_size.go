@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
 )
 
 // Byte-exact volume sizes.
@@ -26,20 +29,26 @@ const sectorBytes = 512
 // volumeSize resolves a VolumeSpec into the backing size in GiB and the exact
 // device size in bytes (zero for a whole-GiB volume).
 func volumeSize(v VolumeSpec) (uint32, uint64, error) {
+	log := zap.L()
 	if v.SizeBytes == 0 {
 		if v.SizeGB == 0 {
+			log.Debug("volumeSize: no size given")
 			return 0, 0, fmt.Errorf("size must be greater than 0 GB")
 		}
+		log.Debug("volumeSize: whole-GiB volume", zap.Uint32("size_gb", v.SizeGB))
 		return v.SizeGB, 0, nil
 	}
 	exact := roundUpSectors(v.SizeBytes)
 	gb := uint32((exact + 1<<30 - 1) >> 30)
 	if v.SizeGB != 0 && uint64(v.SizeGB)<<30 < exact {
+		log.Debug("volumeSize: exact size does not fit the given GiB", zap.Uint64("size_bytes", v.SizeBytes),
+			zap.Uint32("size_gb", v.SizeGB))
 		return 0, 0, fmt.Errorf("size of %d bytes does not fit in %d GB", v.SizeBytes, v.SizeGB)
 	}
 	if v.SizeGB > gb {
 		gb = v.SizeGB
 	}
+	log.Debug("volumeSize: exact-size volume", zap.Uint64("size_bytes", exact), zap.Uint32("backing_gb", gb))
 	return gb, exact, nil
 }
 
@@ -84,16 +93,20 @@ func setVolumeSizeInConfig(conf string, volumeID int, b uint64) (string, error) 
 			entry := "            size " + drbdSizeSectors(b) + ";"
 			switch {
 			case sizeLine >= 0:
+				zap.L().Debug("setVolumeSizeInConfig: replacing size line", zap.Int("volume", volumeID), zap.Uint64("size_bytes", b))
 				lines[sizeLine] = entry
 			case diskOpen >= 0:
+				zap.L().Debug("setVolumeSizeInConfig: adding size to disk section", zap.Int("volume", volumeID), zap.Uint64("size_bytes", b))
 				lines = append(lines[:diskOpen+1], append([]string{entry}, lines[diskOpen+1:]...)...)
 			default:
+				zap.L().Debug("setVolumeSizeInConfig: adding disk section with size", zap.Int("volume", volumeID), zap.Uint64("size_bytes", b))
 				block := []string{"        disk {", entry, "        }"}
 				lines = append(lines[:i], append(block, lines[i:]...)...)
 			}
 			return strings.Join(lines, "\n"), nil
 		}
 	}
+	zap.L().Debug("setVolumeSizeInConfig: volume block not found", zap.Int("volume", volumeID))
 	return "", fmt.Errorf("volume %d not found in the resource config", volumeID)
 }
 
@@ -102,30 +115,43 @@ func setVolumeSizeInConfig(conf string, volumeID int, b uint64) (string, error) 
 // many GiB exactly, so the config's size never caps the device below what was
 // grown. A shrink is refused.
 func (rm *ResourceManager) exactResizeBytes(ctx context.Context, resource string, volumeID uint32, newSizeGB, exact uint64) (uint64, error) {
+	log := rm.controller.traceLogger()
+	log.Debug("ResourceManager.exactResizeBytes: deciding", zap.String("resource", resource), zap.Uint32("volume", volumeID),
+		zap.Uint64("new_size_gb", newSizeGB), zap.Uint64("exact_bytes", exact))
 	var current uint64
 	if rm.controller.db != nil {
-		if vols, err := rm.controller.db.ListVolumes(ctx, resource); err == nil {
+		start := time.Now()
+		vols, err := rm.controller.db.ListVolumes(ctx, resource)
+		log.Debug("ResourceManager.exactResizeBytes: db list volumes", zap.String("resource", resource),
+			zap.Int("count", len(vols)), zap.Duration("took", time.Since(start)), zap.Error(err))
+		if err == nil {
 			if v := findVolumeRecord(vols, volumeID); v != nil {
 				current = uint64(max(v.SizeBytes, 0))
 				if current == 0 {
 					current = uint64(max(v.SizeGB, 0)) << 30
 				}
 				if exact == 0 && v.SizeBytes > 0 {
+					log.Debug("ResourceManager.exactResizeBytes: exact-size volume grown in GiB, keeping it exact",
+						zap.Uint64("exact_bytes", newSizeGB<<30))
 					exact = newSizeGB << 30
 				}
 			}
 		}
 	}
 	if exact == 0 {
+		log.Debug("ResourceManager.exactResizeBytes: whole-GiB resize, no exact size")
 		return 0, nil
 	}
 	exact = roundUpSectors(exact)
 	if exact > newSizeGB<<30 {
+		log.Debug("ResourceManager.exactResizeBytes: exact size does not fit", zap.Uint64("exact_bytes", exact))
 		return 0, fmt.Errorf("%d bytes does not fit in %d GB", exact, newSizeGB)
 	}
 	if exact < current {
+		log.Debug("ResourceManager.exactResizeBytes: shrink refused", zap.Uint64("current_bytes", current), zap.Uint64("exact_bytes", exact))
 		return 0, fmt.Errorf("%s/%d is %d bytes; shrinking it to %d is not supported", resource, volumeID, current, exact)
 	}
+	log.Debug("ResourceManager.exactResizeBytes: decided", zap.Uint64("current_bytes", current), zap.Uint64("exact_bytes", exact))
 	return exact, nil
 }
 
@@ -133,5 +159,8 @@ func (rm *ResourceManager) exactResizeBytes(ctx context.Context, resource string
 func (rm *ResourceManager) ResizeVolumeBytes(ctx context.Context, resource string, volumeID uint32, sizeBytes uint64, ignoreFreeSpace bool) error {
 	exact := roundUpSectors(sizeBytes)
 	gb := (exact + 1<<30 - 1) >> 30
+	rm.controller.traceLogger().Debug("ResourceManager.ResizeVolumeBytes: resizing to exact size", zap.String("resource", resource),
+		zap.Uint32("volume", volumeID), zap.Uint64("size_bytes", exact), zap.Uint64("size_gb", gb),
+		zap.Bool("ignore_free_space", ignoreFreeSpace))
 	return rm.resizeVolume(ctx, resource, volumeID, gb, exact, ignoreFreeSpace)
 }

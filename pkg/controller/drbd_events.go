@@ -64,8 +64,10 @@ type drbdEventStream struct {
 func (c *Controller) watchDRBDEvents(ctx context.Context, monitor eventMonitor) {
 	streamer, ok := c.deployment.(lineStreamer)
 	if !ok {
+		c.traceLogger().Debug("Controller.watchDRBDEvents: deployment client cannot stream, not watching events")
 		return
 	}
+	c.traceLogger().Debug("Controller.watchDRBDEvents: starting event watcher")
 	w := &drbdEventWatcher{
 		streamer: streamer,
 		monitor:  monitor,
@@ -74,7 +76,7 @@ func (c *Controller) watchDRBDEvents(ctx context.Context, monitor eventMonitor) 
 			defer c.hostsLock.RUnlock()
 			return append([]string(nil), c.hosts...)
 		},
-		log:     c.logger,
+		log:     c.traceLogger(),
 		streams: map[string]*drbdEventStream{},
 	}
 	go w.run(ctx)
@@ -84,9 +86,11 @@ func (w *drbdEventWatcher) run(ctx context.Context) {
 	t := time.NewTicker(drbdEventsReconcile)
 	defer t.Stop()
 	for {
+		w.log.Debug("drbdEventWatcher.run: reconcile tick")
 		w.reconcile(ctx)
 		select {
 		case <-ctx.Done():
+			w.log.Debug("drbdEventWatcher.run: context done, stopping")
 			w.monitor.SetEventDriven(false)
 			return
 		case <-t.C:
@@ -106,6 +110,7 @@ func (w *drbdEventWatcher) reconcile(ctx context.Context) {
 	w.mu.Lock()
 	for h, s := range w.streams {
 		if !want[h] {
+			w.log.Debug("drbdEventWatcher.reconcile: node no longer registered, stopping stream", zap.String("host", h))
 			s.cancel()
 			delete(w.streams, h)
 		}
@@ -114,11 +119,14 @@ func (w *drbdEventWatcher) reconcile(ctx context.Context) {
 		if _, ok := w.streams[h]; ok {
 			continue
 		}
+		w.log.Debug("drbdEventWatcher.reconcile: starting stream", zap.String("host", h))
 		sctx, cancel := context.WithCancel(ctx)
 		w.streams[h] = &drbdEventStream{cancel: cancel}
 		go w.follow(sctx, h)
 	}
+	n := len(w.streams)
 	w.mu.Unlock()
+	w.log.Debug("drbdEventWatcher.reconcile: done", zap.Int("wanted", len(want)), zap.Int("streams", n))
 	w.updateLive()
 }
 
@@ -127,14 +135,22 @@ func (w *drbdEventWatcher) follow(ctx context.Context, host string) {
 	backoff := 5 * time.Second
 	for ctx.Err() == nil {
 		started := time.Now()
+		w.log.Debug("drbdEventWatcher.follow: opening event stream", zap.String("host", host))
+		var lines, changes int
 		err := w.streamer.StreamLines(ctx, host, drbdEventsCmd, func(line string) {
+			lines++
 			switch drbdEventKind(line) {
 			case eventsInitialDone:
+				w.log.Debug("drbdEventWatcher.follow: initial state received, stream live",
+					zap.String("host", host), zap.Int("lines", lines), zap.Duration("took", time.Since(started)))
 				w.setLive(host, true)
 			case eventsChange:
+				changes++
 				w.monitor.Kick()
 			}
 		})
+		w.log.Debug("drbdEventWatcher.follow: event stream closed", zap.String("host", host),
+			zap.Int("lines", lines), zap.Int("changes", changes), zap.Duration("took", time.Since(started)), zap.Error(err))
 		if ctx.Err() != nil {
 			return
 		}
@@ -160,8 +176,11 @@ func (w *drbdEventWatcher) setLive(host string, live bool) {
 	w.mu.Lock()
 	if s, ok := w.streams[host]; ok {
 		s.live = live
+	} else {
+		w.log.Debug("drbdEventWatcher.setLive: stream no longer tracked", zap.String("host", host))
 	}
 	w.mu.Unlock()
+	w.log.Debug("drbdEventWatcher.setLive: stream liveness", zap.String("host", host), zap.Bool("live", live))
 	w.updateLive()
 }
 
@@ -180,6 +199,8 @@ func (w *drbdEventWatcher) updateLive() {
 	w.allLive = all
 	n := len(w.streams)
 	w.mu.Unlock()
+	w.log.Debug("drbdEventWatcher.updateLive: event-driven decision", zap.Bool("all_live", all),
+		zap.Bool("changed", changed), zap.Int("streams", n), zap.Int("down", len(down)))
 	w.monitor.SetEventDriven(all)
 	if changed && all {
 		w.log.Info("Receiving DRBD events from every node; polling a healthy cluster less often", zap.Int("nodes", n))
