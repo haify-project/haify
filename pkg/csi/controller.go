@@ -420,11 +420,14 @@ func bytesToGiB(b int64) uint32 {
 //
 // DRBD runs one Primary per resource, and only the Primary can do I/O. So every
 // single-node mode works — including ReadWriteOncePod, which only narrows
-// single-node further to single-Pod — and no multi-node mode does. Before this
-// check CreateVolume looked at no access mode at all: a ReadWriteMany PVC was
+// single-node further to single-Pod. The one multi-node mode is ReadWriteMany
+// on a raw block volume, for the live migration of a virtual machine: the node
+// plugin lets two nodes be Primary while both have it staged
+// (node_multiwriter.go). A filesystem would be corrupted by two writers, so
+// ReadWriteMany stays refused for filesystem volumes, and the read-only and
+// single-writer multi-node modes are refused as before. Before this check
+// CreateVolume looked at no access mode at all: a ReadWriteMany PVC was
 // provisioned, and failed only when a second node tried to promote.
-//
-// Filesystem and raw block are both fine; a DRBD device is a block device.
 func unsupportedCapability(c *csi.VolumeCapability) string {
 	zap.L().Debug("unsupportedCapability: checking access mode", zap.Stringer("access_mode", c.GetAccessMode().GetMode()),
 		zap.Bool("block", c.GetBlock() != nil))
@@ -433,10 +436,13 @@ func unsupportedCapability(c *csi.VolumeCapability) string {
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY,
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER:
+	case csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
+		if c.GetBlock() == nil {
+			return "access mode MULTI_NODE_MULTI_WRITER (ReadWriteMany) is supported only with volumeMode: Block, for the live migration of a virtual machine; a filesystem cannot be written from two nodes"
+		}
 	case csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
-		csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
-		csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
-		return fmt.Sprintf("access mode %s is not supported: a DRBD resource has one Primary, so a volume is usable from one node at a time; use ReadWriteOnce or ReadWriteOncePod",
+		csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER:
+		return fmt.Sprintf("access mode %s is not supported: a DRBD resource has one Primary, so a volume is usable from one node at a time; use ReadWriteOnce or ReadWriteOncePod (or ReadWriteMany with volumeMode: Block for live migration)",
 			c.GetAccessMode().GetMode())
 	default:
 		return fmt.Sprintf("access mode %s is not supported", c.GetAccessMode().GetMode())

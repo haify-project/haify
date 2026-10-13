@@ -45,6 +45,9 @@ type HaifyBackend interface {
 	// holds DRBD quorum, refusing otherwise to avoid split-brain.
 	PromoteForNode(ctx context.Context, resource, node string) error
 	SetSecondary(ctx context.Context, resource, node string) error
+	// SetDualPrimary allows or disallows two Primaries for a resource, for
+	// the live migration of a ReadWriteMany block volume.
+	SetDualPrimary(ctx context.Context, resource string, enable bool) error
 	// AttachDisklessClient adds node to resource as a diskless data client so a
 	// Pod on a node with no local replica can still mount the volume (I/O over
 	// the DRBD network). Idempotent.

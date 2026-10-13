@@ -30,6 +30,8 @@ type fakeBackend struct {
 	attachCalls []string // "resource/node" passed to AttachDisklessClient
 	detachCalls []string // "resource/node" passed to DetachDisklessClient
 
+	dualPrimaryCalls []string // "resource=true|false" passed to SetDualPrimary
+
 	// snapshots maps "<volumePath>|<node>" to the snapshot names taken there,
 	// mirroring the backend's per-node, per-backing-volume snapshot namespace.
 	snapshots     map[string][]*haifypb.SnapshotInfo
@@ -224,6 +226,11 @@ func (f *fakeBackend) PromoteForNode(_ context.Context, resource, node string) e
 		return f.promoteErr
 	}
 	f.primary[resource] = node
+	return nil
+}
+
+func (f *fakeBackend) SetDualPrimary(_ context.Context, resource string, enable bool) error {
+	f.dualPrimaryCalls = append(f.dualPrimaryCalls, fmt.Sprintf("%s=%t", resource, enable))
 	return nil
 }
 

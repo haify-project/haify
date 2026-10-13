@@ -36,8 +36,14 @@ func capWith(mode csi.VolumeCapability_AccessMode_Mode, block bool) *csi.VolumeC
 // promote. It has to be refused where the message reaches the PVC.
 func TestMultiNodeAccessIsRefusedAtProvisioning(t *testing.T) {
 	ctrl := newTestController(newFakeBackend("n1", "n2"))
+	_, err := ctrl.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "pvc-rwx-fs", Parameters: map[string]string{"pool": "vg0"},
+		VolumeCapabilities: []*csi.VolumeCapability{capWith(csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER, false)},
+	})
+	require.Error(t, err)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	assert.Contains(t, err.Error(), "volumeMode: Block", "a filesystem cannot be written from two nodes")
 	for _, mode := range []csi.VolumeCapability_AccessMode_Mode{
-		csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
 		csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
 		csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER,
 	} {
@@ -61,6 +67,7 @@ func TestReadWriteOncePodAndBlockProvision(t *testing.T) {
 		{"rwop-block", csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER, true},
 		{"rwo-block", csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, true},
 		{"multi-writer-same-node", csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER, false},
+		{"rwx-block-live-migration", csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctrl := newTestController(newFakeBackend("n1", "n2"))

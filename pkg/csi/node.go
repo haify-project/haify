@@ -99,6 +99,12 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 		}
 	}
 
+	if isMultiWriterBlock(req.GetVolumeCapability()) {
+		if err := s.openMultiWriter(ctx, res, staging); err != nil {
+			return nil, err
+		}
+	}
+
 	// Promote this node to DRBD Primary using a quorum-guarded promote.
 	//
 	// A graceful move (old node demoted first) succeeds via the normal
@@ -185,6 +191,7 @@ func (s *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstage
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "set secondary: %v", err)
 	}
+	s.closeMultiWriter(ctx, res, staging)
 	// A node with no local replica only participates because a diskless client
 	// was attached at stage time; detach it now so the resource sheds the stale
 	// connection once the Pod leaves. A replica node is left in place. Detach is
