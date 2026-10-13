@@ -374,6 +374,11 @@ func (rm *ResourceManager) GetResourceStatusList(ctx context.Context) ([]alert.R
 			default:
 				item.WANHealthy = st.Healthy()
 				item.WANMessage = wanStatusMessage(st)
+				// The proxy's counters, for the WAN gauges in /metrics: one small
+				// file read from a live primary, on a poll that already talks to it.
+				if host := liveWANPrimary(st); host != "" {
+					item.WANProxy = wanproxy.ReadNodeMetrics(ctx, rm.wanproxyDeployClient(), host, wanLegFor(st, host))
+				}
 			}
 			log.Debug("GetResourceStatusList: WAN proxy status", zap.String("resource", dbRes.Name),
 				zap.Bool("healthy", item.WANHealthy), zap.Duration("took", time.Since(start)), zap.Error(err))

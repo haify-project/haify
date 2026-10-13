@@ -4,6 +4,7 @@ import (
 	"context"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
+	"github.com/haify-project/haify/pkg/wanproxy"
 	"go.uber.org/zap"
 )
 
@@ -233,20 +234,11 @@ func (s *Server) ResourceStatus(ctx context.Context, req *haifypb.ResourceStatus
 		// Left nil when the proxy published nothing, so the client can tell
 		// "unknown" from "no backlog".
 		if m := wan.Metrics; m != nil {
-			status.WanMetrics = &haifypb.WANMetrics{
-				BufferUsedBytes:   m.BufferUsedBytes,
-				BufferCapBytes:    m.BufferCapBytes,
-				BufferFillPercent: m.BufferFillPercent,
-				DrbdToWanBytes:    m.DRBDToWANBytes,
-				WanWireBytes:      m.WANWireBytes,
-				WanToDrbdBytes:    m.WANToDRBDBytes,
-				FramesSent:        m.FramesSent,
-				CompressionRatio:  m.CompressionRat,
-				WanConnected:      m.WANConnected,
-				Reconnects:        m.Reconnects,
-				RingFullEvents:    m.RingFullEvents,
-			}
+			status.WanMetrics = wanMetricsProto(m)
 		}
+		buffer, _ := wan.Tuning.Effective()
+		status.WanBufferBytes = uint64(buffer)
+		status.WanCompression = wanproxy.CompressionString(wan.Tuning.ZstdLevel)
 	} else {
 		log.Debug("ResourceStatus: no WAN view", zap.String("resource", req.Name), zap.Error(werr))
 	}

@@ -152,6 +152,7 @@ func (o *metricsObserver) observeResources(res alert.ResourceObservation) {
 	o.metrics.RecordResourceCount("healthy", healthy)
 	o.metrics.RecordResourceCount("degraded", degraded)
 	o.metrics.SetReplication(snap)
+	o.metrics.SetWANProxies(wanProxyReadings(res.Items))
 	log.Debug("metricsObserver.observeResources: exported", zap.Float64("healthy", healthy),
 		zap.Float64("degraded", degraded), zap.Int("replicas", len(snap.Replicas)))
 }
@@ -310,4 +311,41 @@ func kibToBytes(kib *uint64) *uint64 {
 	}
 	b := *kib * 1024
 	return &b
+}
+
+// wanLinkMinSamples is how many saturated seconds the proxy needs behind its
+// link figure before it is exported; fewer is noise, not a measurement.
+const wanLinkMinSamples = 10
+
+// wanProxyReadings turns the proxy counters gathered for WAN resources into the
+// /metrics view. Resources without a reading are left out.
+func wanProxyReadings(items []alert.ResourceStatusInfo) []metrics.WANProxyReading {
+	var out []metrics.WANProxyReading
+	for _, item := range items {
+		p := item.WANProxy
+		if !item.WANEnabled || p == nil {
+			continue
+		}
+		r := metrics.WANProxyReading{
+			Resource:         item.Name,
+			BacklogBytes:     p.BufferUsedBytes,
+			BufferCapBytes:   p.BufferCapBytes,
+			Connected:        p.WANConnected,
+			CompressionRatio: p.CompressionRat,
+			Reconnects:       p.Reconnects,
+			RingFullEvents:   p.RingFullEvents,
+			WireBytes:        p.WANWireBytes,
+			HighWaterBytes:   p.BufferHighWaterBytes,
+			InputBytes:       p.DRBDInBytes,
+			InputP99Bps:      p.InputP99Bps,
+			InputPeakBps:     p.InputPeakBps,
+			CPUSeconds:       p.CPUSeconds,
+		}
+		if p.LinkSamplesSecs != nil && *p.LinkSamplesSecs >= wanLinkMinSamples {
+			r.LinkBps = p.LinkP50Bps
+		}
+		out = append(out, r)
+	}
+	zap.L().Debug("wanProxyReadings: built", zap.Int("items", len(items)), zap.Int("readings", len(out)))
+	return out
 }

@@ -241,7 +241,7 @@ func TestDeprovisionSequence(t *testing.T) {
 	instance := UnitInstance(resource)
 	want := []event{
 		{kind: "exec", hosts: both, cmd: "sudo systemctl disable --now " + instance + " 2>/dev/null || true"},
-		{kind: "exec", hosts: both, cmd: "sudo rm -f " + NodeConfigPath(resource)},
+		{kind: "exec", hosts: both, cmd: "sudo rm -f " + NodeConfigPath(resource) + " " + NodeMetricsPath(resource)},
 	}
 	if len(f.events) != len(want) {
 		t.Fatalf("event count = %d, want %d\ngot: %s", len(f.events), len(want), dumpEvents(f.events))

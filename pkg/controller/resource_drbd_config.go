@@ -64,8 +64,9 @@ func (rm *ResourceManager) generateDrbdConfig(name string, port uint32, volumes 
 		log.Debug("generateDrbdConfig: two-endpoint WAN; async with pull-ahead", zap.String("resource", name))
 		protocol = "A"
 		setOption("net", "on-congestion", "pull-ahead")
-		setOption("net", "congestion-fill", "2M")
+		setOption("net", "congestion-fill", wanCongestionFill(wan.Tuning))
 		setOption("net", "congestion-extents", "500")
+		setOption("net", "ko-count", wanKoCount)
 		setOption("net", "ping-timeout", "20")
 		setOption("net", "csums-alg", wanCsumsAlg)
 	}
@@ -116,6 +117,18 @@ func (rm *ResourceManager) generateDrbdConfig(name string, port uint32, volumes 
 			}
 			config.WriteString("    }\n")
 			processed[s] = true
+			// The resync settings of a two-endpoint WAN resource sit beside its
+			// net block, where they apply to its one, WAN, peer (see
+			// wan_drbd_options.go). An explicit disk option still wins.
+			if wan != nil && !wan.multiPrimary() {
+				config.WriteString("\n    disk {\n")
+				for _, kv := range [][2]string{{"c-fill-target", wanCFillTarget}, {"c-plan-ahead", wanCPlanAhead}} {
+					if _, set := sections["disk"][kv[0]]; !set {
+						fmt.Fprintf(&config, "        %s %s;\n", kv[0], kv[1])
+					}
+				}
+				config.WriteString("    }\n")
+			}
 			continue
 		}
 
@@ -330,12 +343,7 @@ func (rm *ResourceManager) generateDrbdConfig(name string, port uint32, volumes 
 			fmt.Fprintf(&config, "        host %s address 127.0.0.1:%d;\n", drName, legPort)
 			// Async across the WAN, whatever the LAN mesh uses. pull-ahead lets
 			// a stalled tunnel drop behind instead of blocking the primary.
-			config.WriteString("        net {\n")
-			config.WriteString("            protocol A;\n")
-			config.WriteString("            on-congestion pull-ahead;\n")
-			config.WriteString("            congestion-fill 400M;\n")
-			fmt.Fprintf(&config, "            csums-alg %s;\n", wanCsumsAlg)
-			config.WriteString("        }\n")
+			writeWANLegOptions(&config, wan.Tuning)
 			config.WriteString("    }\n")
 		}
 	} else if len(allNodes) > 2 {

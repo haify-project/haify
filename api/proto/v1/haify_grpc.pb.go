@@ -190,6 +190,8 @@ const (
 	HaifyController_RepairWanProxy_FullMethodName            = "/v1.HaifyController/RepairWanProxy"
 	HaifyController_DRFailback_FullMethodName                = "/v1.HaifyController/DRFailback"
 	HaifyController_SetWanEndpoint_FullMethodName            = "/v1.HaifyController/SetWanEndpoint"
+	HaifyController_SetWanTuning_FullMethodName              = "/v1.HaifyController/SetWanTuning"
+	HaifyController_GetWanSizing_FullMethodName              = "/v1.HaifyController/GetWanSizing"
 	HaifyController_VerifyResource_FullMethodName            = "/v1.HaifyController/VerifyResource"
 	HaifyController_WatchEvents_FullMethodName               = "/v1.HaifyController/WatchEvents"
 	HaifyController_GetRbacWhoami_FullMethodName             = "/v1.HaifyController/GetRbacWhoami"
@@ -521,6 +523,15 @@ type HaifyControllerClient interface {
 	RepairWanProxy(ctx context.Context, in *RepairWanProxyRequest, opts ...grpc.CallOption) (*RepairWanProxyResponse, error)
 	DRFailback(ctx context.Context, in *DRFailbackRequest, opts ...grpc.CallOption) (*DRFailbackResponse, error)
 	SetWanEndpoint(ctx context.Context, in *SetWanEndpointRequest, opts ...grpc.CallOption) (*SetWanEndpointResponse, error)
+	// SetWanTuning changes a WAN resource's proxy buffer and compression, and
+	// restarts its tunnels on the new settings.
+	SetWanTuning(ctx context.Context, in *SetWanTuningRequest, opts ...grpc.CallOption) (*SetWanTuningResponse, error)
+	// GetWanSizing weighs a resource's measured write rates, compressibility and
+	// a link bandwidth, and says whether the link carries the workload, needs the
+	// buffer, needs compression, or cannot keep up (ship snapshots instead), and
+	// how big the buffer should be. Works for LAN resources too: whether to put
+	// one on the WAN is the first question.
+	GetWanSizing(ctx context.Context, in *GetWanSizingRequest, opts ...grpc.CallOption) (*GetWanSizingResponse, error)
 	VerifyResource(ctx context.Context, in *VerifyResourceRequest, opts ...grpc.CallOption) (*VerifyResourceResponse, error)
 	// WatchEvents streams notifications as they happen, so an operator (or the
 	// web UI, or a script) can react without polling. Over REST this is a
@@ -2282,6 +2293,26 @@ func (c *haifyControllerClient) SetWanEndpoint(ctx context.Context, in *SetWanEn
 	return out, nil
 }
 
+func (c *haifyControllerClient) SetWanTuning(ctx context.Context, in *SetWanTuningRequest, opts ...grpc.CallOption) (*SetWanTuningResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetWanTuningResponse)
+	err := c.cc.Invoke(ctx, HaifyController_SetWanTuning_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) GetWanSizing(ctx context.Context, in *GetWanSizingRequest, opts ...grpc.CallOption) (*GetWanSizingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetWanSizingResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetWanSizing_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *haifyControllerClient) VerifyResource(ctx context.Context, in *VerifyResourceRequest, opts ...grpc.CallOption) (*VerifyResourceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(VerifyResourceResponse)
@@ -2764,6 +2795,15 @@ type HaifyControllerServer interface {
 	RepairWanProxy(context.Context, *RepairWanProxyRequest) (*RepairWanProxyResponse, error)
 	DRFailback(context.Context, *DRFailbackRequest) (*DRFailbackResponse, error)
 	SetWanEndpoint(context.Context, *SetWanEndpointRequest) (*SetWanEndpointResponse, error)
+	// SetWanTuning changes a WAN resource's proxy buffer and compression, and
+	// restarts its tunnels on the new settings.
+	SetWanTuning(context.Context, *SetWanTuningRequest) (*SetWanTuningResponse, error)
+	// GetWanSizing weighs a resource's measured write rates, compressibility and
+	// a link bandwidth, and says whether the link carries the workload, needs the
+	// buffer, needs compression, or cannot keep up (ship snapshots instead), and
+	// how big the buffer should be. Works for LAN resources too: whether to put
+	// one on the WAN is the first question.
+	GetWanSizing(context.Context, *GetWanSizingRequest) (*GetWanSizingResponse, error)
 	VerifyResource(context.Context, *VerifyResourceRequest) (*VerifyResourceResponse, error)
 	// WatchEvents streams notifications as they happen, so an operator (or the
 	// web UI, or a script) can react without polling. Over REST this is a
@@ -3327,6 +3367,12 @@ func (UnimplementedHaifyControllerServer) DRFailback(context.Context, *DRFailbac
 }
 func (UnimplementedHaifyControllerServer) SetWanEndpoint(context.Context, *SetWanEndpointRequest) (*SetWanEndpointResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetWanEndpoint not implemented")
+}
+func (UnimplementedHaifyControllerServer) SetWanTuning(context.Context, *SetWanTuningRequest) (*SetWanTuningResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetWanTuning not implemented")
+}
+func (UnimplementedHaifyControllerServer) GetWanSizing(context.Context, *GetWanSizingRequest) (*GetWanSizingResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetWanSizing not implemented")
 }
 func (UnimplementedHaifyControllerServer) VerifyResource(context.Context, *VerifyResourceRequest) (*VerifyResourceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method VerifyResource not implemented")
@@ -6475,6 +6521,42 @@ func _HaifyController_SetWanEndpoint_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HaifyController_SetWanTuning_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetWanTuningRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).SetWanTuning(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_SetWanTuning_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).SetWanTuning(ctx, req.(*SetWanTuningRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_GetWanSizing_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetWanSizingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetWanSizing(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetWanSizing_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetWanSizing(ctx, req.(*GetWanSizingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _HaifyController_VerifyResource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(VerifyResourceRequest)
 	if err := dec(in); err != nil {
@@ -7446,6 +7528,14 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetWanEndpoint",
 			Handler:    _HaifyController_SetWanEndpoint_Handler,
+		},
+		{
+			MethodName: "SetWanTuning",
+			Handler:    _HaifyController_SetWanTuning_Handler,
+		},
+		{
+			MethodName: "GetWanSizing",
+			Handler:    _HaifyController_GetWanSizing_Handler,
 		},
 		{
 			MethodName: "VerifyResource",

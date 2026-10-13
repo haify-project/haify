@@ -167,6 +167,7 @@ func (s *Server) MCPServer() *mcp.Server {
 	s.registerDataLifecycleTools(srv)
 	s.registerBackupScheduleTools(srv)
 	s.registerReplicationTLSTools(srv)
+	s.registerWANSizingTools(srv)
 	s.registerRunbooks(srv)
 	s.logger.Debug("Server.MCPServer: tools registered", zap.Int("write_tools_known", len(s.writeToolNames)))
 	return srv

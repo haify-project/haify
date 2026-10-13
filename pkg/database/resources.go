@@ -57,6 +57,12 @@ type Resource struct {
 	// Persisted because the proxy config is re-rendered from this record, so a
 	// controller restart would otherwise silently drop the pinned egress.
 	WANEgressAddress string
+	// WANBufferBytes and WANZstdLevel are the proxy tuning (haify wan tune):
+	// the per-connection RAM buffer, and the zstd level with -1 for off. Zero
+	// is the default for both, which is what every record written before
+	// tuning existed holds.
+	WANBufferBytes int64 `json:",omitempty"`
+	WANZstdLevel   int   `json:",omitempty"`
 	// Encrypted records that every replica's backing volume is a LUKS2
 	// container, so DRBD consumes /dev/mapper/<container> instead of the LV or
 	// zvol directly. False for every record written before this existed, which
@@ -272,6 +278,13 @@ func (db *DB) DeleteResource(ctx context.Context, name string) error {
 
 	start := time.Now()
 	err := db.db.Update(func(tx *bolt.Tx) error {
+		// Its write history goes with it: a new resource that reuses the name
+		// must not inherit the old one's rates.
+		if h := tx.Bucket([]byte(writeHistoryBucket)); h != nil {
+			if err := h.Delete([]byte(name)); err != nil {
+				return err
+			}
+		}
 		b := tx.Bucket([]byte(resourcesBucket))
 		return b.Delete([]byte(name))
 	})

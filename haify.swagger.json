@@ -4065,6 +4065,98 @@
         ]
       }
     },
+    "/v1/resources/{name}/wan/sizing": {
+      "get": {
+        "summary": "GetWanSizing weighs a resource's measured write rates, compressibility and\na link bandwidth, and says whether the link carries the workload, needs the\nbuffer, needs compression, or cannot keep up (ship snapshots instead), and\nhow big the buffer should be. Works for LAN resources too: whether to put\none on the WAN is the first question.",
+        "operationId": "HaifyController_GetWanSizing",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetWanSizingResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "bandwidth",
+            "description": "bandwidth is the link's usable bandwidth, such as \"100Mbit\", \"12MiB/s\" or\n\"1Gbit\". Without it the proxy's own measurement is used, when it has one.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "days",
+            "description": "days of controller history to weigh; 0 is 7.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int64"
+          },
+          {
+            "name": "sampleCompression",
+            "description": "sample_compression reads 64 MiB from the volume's backing device on one\nreplica and compresses it with zstd -3, for a ratio on the real data.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
+    "/v1/resources/{name}/wan/tuning": {
+      "post": {
+        "summary": "SetWanTuning changes a WAN resource's proxy buffer and compression, and\nrestarts its tunnels on the new settings.",
+        "operationId": "HaifyController_SetWanTuning",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SetWanTuningResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/HaifyControllerSetWanTuningBody"
+            }
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
     "/v1/resources/{resource}/diskless-clients": {
       "post": {
         "operationId": "HaifyController_AttachDisklessClient",
@@ -7405,6 +7497,20 @@
       },
       "description": "SetWanEndpointRequest changes where a WAN resource's primary site reaches its\nDR site, and rebuilds the tunnels on it. An empty field keeps its value."
     },
+    "HaifyControllerSetWanTuningBody": {
+      "type": "object",
+      "properties": {
+        "buffer": {
+          "type": "string",
+          "description": "buffer is the RAM each DRBD connection of a leg may queue for the WAN,\nsuch as \"2GiB\", or \"default\" (4 GiB)."
+        },
+        "compression": {
+          "type": "string",
+          "description": "compression is \"off\", \"default\" (zstd level 3) or \"zstd:\u003c1-19\u003e\"."
+        }
+      },
+      "description": "SetWanTuningRequest changes a WAN resource's proxy tuning. An empty field\nkeeps its value."
+    },
     "HaifyControllerShipResourceBody": {
       "type": "object",
       "properties": {
@@ -9816,6 +9922,100 @@
         "activeNode": {
           "type": "string",
           "title": "node currently running the controller (DRBD Primary)"
+        }
+      }
+    },
+    "v1GetWanSizingResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "wan": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "type": "string",
+          "description": "outcome is link_sufficient, buffer, compress, async_backup or undecided."
+        },
+        "summary": {
+          "type": "string"
+        },
+        "avgBps": {
+          "type": "number",
+          "format": "double"
+        },
+        "avgSource": {
+          "type": "string"
+        },
+        "peakBps": {
+          "type": "number",
+          "format": "double"
+        },
+        "peakSource": {
+          "type": "string"
+        },
+        "compressionRatio": {
+          "type": "number",
+          "format": "double"
+        },
+        "ratioSource": {
+          "type": "string"
+        },
+        "linkBps": {
+          "type": "number",
+          "format": "double"
+        },
+        "linkSource": {
+          "type": "string"
+        },
+        "recommendedBufferBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "bufferBasis": {
+          "type": "string"
+        },
+        "currentBufferBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "recommendedCompression": {
+          "type": "string"
+        },
+        "currentCompression": {
+          "type": "string"
+        },
+        "cpuCoresAtPeak": {
+          "type": "number",
+          "format": "double"
+        },
+        "outageSecs": {
+          "type": "number",
+          "format": "double"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "history": {
+          "$ref": "#/definitions/v1WanSizingHistory"
+        },
+        "proxy": {
+          "$ref": "#/definitions/v1WANMetrics"
+        },
+        "sample": {
+          "$ref": "#/definitions/v1WanSizingSample"
+        },
+        "drainSecs": {
+          "type": "number",
+          "format": "double",
+          "description": "drain_secs is how long a full configured buffer takes to reach the DR\nsite; closing the device (unmount, VM shutdown, planned switchover) waits\nfor the backlog."
         }
       }
     },
@@ -12241,6 +12441,14 @@
         "encrypted": {
           "type": "boolean",
           "description": "encrypted mirrors ResourceInfo.encrypted: the backing volumes are LUKS2\ncontainers. Reported here because \"is this volume encrypted?\" is a question\nan auditor asks of the running system, not of the creation request."
+        },
+        "wanBufferBytes": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The WAN proxy tuning in effect: the per-connection buffer and the\ncompression setting (\"off\" or \"zstd:\u003clevel\u003e\")."
+        },
+        "wanCompression": {
+          "type": "string"
         }
       }
     },
@@ -12709,6 +12917,24 @@
         }
       }
     },
+    "v1SetWanTuningResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "bufferBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "compression": {
+          "type": "string"
+        }
+      }
+    },
     "v1SetupReplicationTLSRequest": {
       "type": "object",
       "properties": {
@@ -13151,9 +13377,117 @@
         "ringFullEvents": {
           "type": "string",
           "format": "uint64"
+        },
+        "bufferHighWaterBytes": {
+          "type": "string",
+          "format": "uint64",
+          "description": "Sizing figures, published by haify-proxy 0.2 and later and absent from an\nolder one. All of them describe the time since the proxy started, which is\nrate_window_secs of per-second samples."
+        },
+        "inputAvgBps": {
+          "type": "number",
+          "format": "double"
+        },
+        "inputP99Bps": {
+          "type": "number",
+          "format": "double"
+        },
+        "inputPeakBps": {
+          "type": "number",
+          "format": "double"
+        },
+        "linkBps": {
+          "type": "number",
+          "format": "double",
+          "description": "link_bps is the median WAN rate over the seconds a backlog waited for the\nlink: its usable bandwidth. Absent until the link has been the bottleneck\nfor long enough to say."
+        },
+        "rateWindowSecs": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "longestBurstSecs": {
+          "type": "string",
+          "format": "uint64",
+          "description": "longest_burst_secs is the longest run of seconds in which the backlog\ngrew: how long a burst outran the link."
+        },
+        "cpuSeconds": {
+          "type": "number",
+          "format": "double"
+        },
+        "proxyVersion": {
+          "type": "string"
         }
       },
       "description": "WANMetrics is what the primary site's haify-proxy reports about the WAN leg."
+    },
+    "v1WanSizingHistory": {
+      "type": "object",
+      "properties": {
+        "windowSecs": {
+          "type": "number",
+          "format": "double"
+        },
+        "days": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "samples": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "resolutionSecs": {
+          "type": "number",
+          "format": "double"
+        },
+        "avgBps": {
+          "type": "number",
+          "format": "double"
+        },
+        "p99Bps": {
+          "type": "number",
+          "format": "double"
+        },
+        "peakBps": {
+          "type": "number",
+          "format": "double"
+        },
+        "firstDay": {
+          "type": "string"
+        },
+        "lastDay": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        }
+      },
+      "description": "WanSizingHistory is what the controller's health polls recorded of the\nresource's DRBD write counter."
+    },
+    "v1WanSizingSample": {
+      "type": "object",
+      "properties": {
+        "ratio": {
+          "type": "number",
+          "format": "double"
+        },
+        "sampledBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "chunks": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "zeroChunks": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "node": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
     }
   }
 }

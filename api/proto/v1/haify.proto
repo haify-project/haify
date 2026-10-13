@@ -711,6 +711,19 @@ service HaifyController {
   rpc SetWanEndpoint(SetWanEndpointRequest) returns (SetWanEndpointResponse) {
     option (google.api.http) = { post: "/v1/resources/{name}/wan/endpoint"; body: "*"; };
   }
+  // SetWanTuning changes a WAN resource's proxy buffer and compression, and
+  // restarts its tunnels on the new settings.
+  rpc SetWanTuning(SetWanTuningRequest) returns (SetWanTuningResponse) {
+    option (google.api.http) = { post: "/v1/resources/{name}/wan/tuning"; body: "*"; };
+  }
+  // GetWanSizing weighs a resource's measured write rates, compressibility and
+  // a link bandwidth, and says whether the link carries the workload, needs the
+  // buffer, needs compression, or cannot keep up (ship snapshots instead), and
+  // how big the buffer should be. Works for LAN resources too: whether to put
+  // one on the WAN is the first question.
+  rpc GetWanSizing(GetWanSizingRequest) returns (GetWanSizingResponse) {
+    option (google.api.http) = { get: "/v1/resources/{name}/wan/sizing"; };
+  }
   rpc VerifyResource(VerifyResourceRequest) returns (VerifyResourceResponse) {
     option (google.api.http) = { post: "/v1/resources/{name}/verify"; body: "*"; };
   }
@@ -2181,6 +2194,10 @@ message ResourceStatus {
   // containers. Reported here because "is this volume encrypted?" is a question
   // an auditor asks of the running system, not of the creation request.
   bool encrypted = 14;
+  // The WAN proxy tuning in effect: the per-connection buffer and the
+  // compression setting ("off" or "zstd:<level>").
+  uint64 wan_buffer_bytes = 15;
+  string wan_compression = 16;
 }
 
 // QuorumInfo is the vote arithmetic behind "will this resource survive?".
@@ -2225,6 +2242,23 @@ message WANMetrics {
   // with the write workload and DRBD was pushed into Ahead.
   uint64 reconnects = 10;
   uint64 ring_full_events = 11;
+  // Sizing figures, published by haify-proxy 0.2 and later and absent from an
+  // older one. All of them describe the time since the proxy started, which is
+  // rate_window_secs of per-second samples.
+  optional uint64 buffer_high_water_bytes = 12;
+  optional double input_avg_bps = 13;
+  optional double input_p99_bps = 14;
+  optional double input_peak_bps = 15;
+  // link_bps is the median WAN rate over the seconds a backlog waited for the
+  // link: its usable bandwidth. Absent until the link has been the bottleneck
+  // for long enough to say.
+  optional double link_bps = 16;
+  optional uint64 rate_window_secs = 17;
+  // longest_burst_secs is the longest run of seconds in which the backlog
+  // grew: how long a burst outran the link.
+  optional uint64 longest_burst_secs = 18;
+  optional double cpu_seconds = 19;
+  string proxy_version = 20;
 }
 
 message NodeResourceState {
@@ -3473,6 +3507,92 @@ message SetWanEndpointResponse {
   string message = 2;
   string dr_endpoint = 3;
   string egress_address = 4;
+}
+
+// SetWanTuningRequest changes a WAN resource's proxy tuning. An empty field
+// keeps its value.
+message SetWanTuningRequest {
+  string name = 1;
+  // buffer is the RAM each DRBD connection of a leg may queue for the WAN,
+  // such as "2GiB", or "default" (4 GiB).
+  string buffer = 2;
+  // compression is "off", "default" (zstd level 3) or "zstd:<1-19>".
+  string compression = 3;
+}
+
+message SetWanTuningResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 buffer_bytes = 3;
+  string compression = 4;
+}
+
+message GetWanSizingRequest {
+  string name = 1;
+  // bandwidth is the link's usable bandwidth, such as "100Mbit", "12MiB/s" or
+  // "1Gbit". Without it the proxy's own measurement is used, when it has one.
+  string bandwidth = 2;
+  // days of controller history to weigh; 0 is 7.
+  uint32 days = 3;
+  // sample_compression reads 64 MiB from the volume's backing device on one
+  // replica and compresses it with zstd -3, for a ratio on the real data.
+  bool sample_compression = 4;
+}
+
+// WanSizingHistory is what the controller's health polls recorded of the
+// resource's DRBD write counter.
+message WanSizingHistory {
+  double window_secs = 1;
+  uint32 days = 2;
+  uint32 samples = 3;
+  double resolution_secs = 4;
+  double avg_bps = 5;
+  double p99_bps = 6;
+  double peak_bps = 7;
+  string first_day = 8;
+  string last_day = 9;
+  string node = 10;
+}
+
+message WanSizingSample {
+  double ratio = 1;
+  uint64 sampled_bytes = 2;
+  uint32 chunks = 3;
+  uint32 zero_chunks = 4;
+  string node = 5;
+  string error = 6;
+}
+
+message GetWanSizingResponse {
+  bool success = 1;
+  string message = 2;
+  bool wan = 3;
+  // outcome is link_sufficient, buffer, compress, async_backup or undecided.
+  string outcome = 4;
+  string summary = 5;
+  double avg_bps = 6;
+  string avg_source = 7;
+  double peak_bps = 8;
+  string peak_source = 9;
+  double compression_ratio = 10;
+  string ratio_source = 11;
+  double link_bps = 12;
+  string link_source = 13;
+  uint64 recommended_buffer_bytes = 14;
+  string buffer_basis = 15;
+  uint64 current_buffer_bytes = 16;
+  string recommended_compression = 17;
+  string current_compression = 18;
+  double cpu_cores_at_peak = 19;
+  double outage_secs = 20;
+  repeated string notes = 21;
+  WanSizingHistory history = 22;
+  WANMetrics proxy = 23;
+  WanSizingSample sample = 24;
+  // drain_secs is how long a full configured buffer takes to reach the DR
+  // site; closing the device (unmount, VM shutdown, planned switchover) waits
+  // for the backlog.
+  double drain_secs = 25;
 }
 
 // DRFailbackRequest returns a WAN resource from its DR node to the primary site

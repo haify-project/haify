@@ -58,16 +58,22 @@ On a running resource:
   unless `--skip-check`.
 - `haify wan repair <res> [--dry-run]` re-provisions the legs a resource
   should have and removes instances orphaned by a renumbered or removed node.
+- `haify wan tune <res> [--buffer] [--compression]` changes the proxy buffer
+  and compression, moves DRBD's congestion-fill with the buffer, and restarts
+  the legs.
+- `haify wan sizing <res> [--bandwidth] [--days] [--sample-compression]` says
+  which setup the workload needs and how big the buffer should be (below).
 
 gRPC: `CreateResourceRequest` fields `wan`, `dr_node`, `dr_endpoint`,
 `wan_port`, `wan_egress_address`; RPCs `AddDR`, `SetWanEndpoint`,
-`RepairWanProxy`, `DRFailback`.
+`SetWanTuning`, `GetWanSizing`, `RepairWanProxy`, `DRFailback`.
 
 ## Data model
 
-`database.Resource` carries `WANMode`, `DRNode`, `DREndpoint`, `WANPort` and
-`WANEgressAddress`. Records written before these fields existed deserialize
-with them zero-valued, i.e. LAN.
+`database.Resource` carries `WANMode`, `DRNode`, `DREndpoint`, `WANPort`,
+`WANEgressAddress`, `WANBufferBytes` and `WANZstdLevel`. Records written before
+these fields existed deserialize with them zero-valued, i.e. LAN, and a zero
+buffer or level means the default.
 
 ## DRBD config generation
 
@@ -78,9 +84,11 @@ With two endpoints the resource uses protocol A, plus these `net` defaults
 (user options still override them):
 
 ```
-on-congestion pull-ahead; congestion-fill 2M; congestion-extents 500;
-ping-timeout 20; csums-alg sha256;
+on-congestion pull-ahead; congestion-fill <90% of the proxy buffer>;
+congestion-extents 500; ko-count 0; ping-timeout 20; csums-alg sha256;
 ```
+
+and a resource-level `disk { c-plan-ahead 200; c-fill-target 15M; }`.
 
 Addresses are loopback so each node talks to its local proxy:
 
@@ -97,9 +105,39 @@ address (the DR's is loopback and unused). The primary-site nodes get a
 connection {
     host <primary-i> address 127.0.0.1:<bind port>;
     host <dr>        address 127.0.0.1:<P+i>;
-    net { protocol A; on-congestion pull-ahead; congestion-fill 400M; csums-alg sha256; }
+    net  { protocol A; on-congestion pull-ahead; congestion-fill <90% of the buffer>;
+           ko-count 0; csums-alg sha256; }
+    disk { c-plan-ahead 200; c-fill-target 15M; }
 }
 ```
+
+### Why these options
+
+DRBD counts every write it has sent and the peer has not acknowledged as in
+flight, and the proxy's buffer is exactly that. So three DRBD settings decide
+whether the buffer is used at all (`pkg/controller/wan_drbd_options.go`):
+
+- `congestion-fill` follows the proxy buffer at 90% of it, so DRBD goes Ahead
+  just before the buffer is full and never sends into a full buffer (which
+  would make application writes wait). It was 2M on two-endpoint resources and
+  400M on legs, against a 4 GiB buffer: on a 40 Mbit/s link a 60 MiB/s burst
+  put DRBD in Ahead within three seconds while the buffer held 3 MiB.
+- `ko-count 0`. DRBD drops a peer that leaves a write unacknowledged for
+  `ko-count` x `timeout` (42 s by default). A backlog that takes longer than
+  that to drain is not a dead peer: with the default, a burst the buffer had
+  absorbed ended in "Remote failed to answer a P_BARRIER", a disconnect and a
+  resync. Protocol A with pull-ahead never makes the primary wait for the DR.
+- `c-fill-target 15M`, `c-plan-ahead 200` (the values LINBIT gives for DRBD
+  Proxy). The resync controller keeps `c-fill-target` in flight. On a
+  40 Mbit/s link with a 40 ms round trip, a resync of incompressible data runs
+  at 1.8 MiB/s with DRBD's 50 KiB default and at 4.5 MiB/s, 94% of the link,
+  with these.
+
+`haify wan tune` moves `congestion-fill` with the buffer: a smaller buffer
+lowers it before the proxies restart, a larger one raises it after. Both are
+applied with `drbdadm adjust`, which changes them on live connections. A
+resource created by an earlier version is brought up to date by running
+`haify wan tune <res>` with any setting, even an unchanged one.
 
 The bind port starts at `P + 100 + i` and is probed on the host for a free
 loopback port (`pickWANBindPorts`), because a fixed offset collides with
@@ -131,7 +169,9 @@ layer through a small `DeploymentClient` interface.
    The acceptor (DR) gets `wan_listen = 0.0.0.0:<wan-port>`,
    `drbd_listen = 127.0.0.1:<P+i>`, `acceptor_park_secs = 30`,
    `synthesize_ping_acks = true`. Both get `on_congestion = "pull-ahead"`,
-   `zstd_level = 3`, `bulk_cap_bytes = 4 GiB`, metrics every 5 s.
+   the record's buffer and compression (`bulk_cap_bytes`, default 4 GiB, at
+   most 10 GiB since DRBD will not keep more in flight; `zstd_level`, default
+   3, 0 for off), and metrics every 5 s.
 4. Deploy: push the `haify-proxy` binary to `/usr/local/bin/haify-proxy`,
    certs and config to `/etc/haify-proxy/`, and the `haify-proxy@.service`
    template, then enable and start each instance. The controller picks a binary
@@ -169,7 +209,38 @@ layer through a small `DeploymentClient` interface.
   on a WAN-facing host). `buffer_used_bytes` is the amount a DR failover would
   lose; throughput, achieved compression ratio, reconnect count and ring-full
   events are shown alongside. An unreadable snapshot renders as unknown, never
-  as zero.
+  as zero. haify-proxy 0.2 adds, sampled every second since it started: input
+  rate (mean, 99th percentile, busiest second), largest backlog, the wire rate
+  while a backlog waited for the link (the link's bandwidth, measured without
+  sending anything extra), the longest burst, and its CPU time. The health poll
+  exports them as `haify_wan_*` gauges.
+
+## Sizing (`pkg/wansizing`, `GetWanSizing`)
+
+`haify wan sizing <res>` applies four rules to the best figures it has: the
+link carries the 99th-percentile burst (`link_sufficient`); it carries the
+average and the buffer absorbs the bursts (`buffer`); compression brings the
+average under it (`compress`); or nothing does and snapshots should be shipped
+instead (`async_backup`). The inputs, each reported with its source and window:
+
+- write rates: the controller's own history (`write_history.go`), one rate per
+  health poll from DRBD's written counter, kept per UTC day for 14 days in the
+  database, for every resource, so a LAN resource can be sized before it goes on
+  the WAN; and the proxy's per-second figures for a WAN resource. The average
+  comes from whichever covers more time, the burst rate is the larger 99th
+  percentile;
+- compression ratio: what the proxy achieved, or `--sample-compression`, which
+  reads 16 chunks of 4 MiB off the backing device on one replica and runs
+  `zstd -3` on them, leaving out all-zero (never written) chunks;
+- link: `--bandwidth`, or the proxy's measurement once it has 10 saturated
+  seconds.
+
+The buffer recommendation is twice the larger of the backlog the proxy has
+actually held and (burst rate - drain rate) x the longest burst, rounded up to
+256 MiB and capped at 10 GiB. The answer also gives how long the configured
+buffer holds writes during an outage and how long a full buffer takes to drain:
+closing the device (unmount, VM shutdown, a planned switchover) waits for the
+backlog.
 - `haify resource tls` (DRBD kernel TLS) is refused for WAN resources: the
   WAN legs already run mutual TLS in haify-proxy.
 
@@ -190,5 +261,11 @@ layer through a small `DeploymentClient` interface.
 ## Not built
 
 - Per-resource PKI or certificate rotation (the shared CA is the only mode).
+- An active link-bandwidth test: the proxy measures the link only when it is
+  the bottleneck, and otherwise the operator gives `--bandwidth`.
+- Staying Connected through a link that goes silent without a reset: the proxy
+  answers DRBD's pings itself only once it has noticed the link is down (a
+  write timeout, 30 s), and DRBD's ping times out first (2 s), so DRBD
+  disconnects and resyncs the changed blocks when the link returns.
 - Automatic cross-WAN failover.
 - More than one DR node per resource.

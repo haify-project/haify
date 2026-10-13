@@ -281,6 +281,7 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 			BaseWANPort:       dbRes.WANPort,
 			BaseDRBDPort:      dbRes.Port,
 			PrimaryEgressAddr: dbRes.WANEgressAddress,
+			Tuning:            wanTuningOf(dbRes),
 			BinaryFor: rm.wanproxyBinaryResolver(ctx,
 				append(append([]string{}, withNew...), rm.controller.ResolveHost(dbRes.DRNode))),
 		}
@@ -326,6 +327,7 @@ func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node st
 	// Growing the primary site moves its majority; recompute rather than leaving
 	// a stale number that no longer describes the site.
 	if dbRes.WANMode && dbRes.DRNode != "" {
+		newConfig = applyWANOptions(newConfig, wanTuningOf(dbRes))
 		newConfig = setLocalSiteQuorum(newConfig, len(primaries)+1+len(tiebreakers))
 	}
 

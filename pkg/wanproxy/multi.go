@@ -62,6 +62,9 @@ type MultiSpec struct {
 	// A fleet whose nodes do not all share one architecture must set this.
 	BinaryFor func(nodeAddr string) string
 
+	// Tuning applies to every leg; see ProxySpec.Tuning.
+	Tuning Tuning
+
 	SkipReachabilityCheck bool
 }
 
@@ -82,6 +85,7 @@ func (m MultiSpec) Legs() []ProxySpec {
 			PrimaryEgressAddr:     m.PrimaryEgressAddr,
 			BinaryPath:            m.BinaryPath,
 			BinaryFor:             m.BinaryFor,
+			Tuning:                m.Tuning,
 			SkipReachabilityCheck: m.SkipReachabilityCheck,
 		})
 	}

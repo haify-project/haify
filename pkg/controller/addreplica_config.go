@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/database"
+	"github.com/haify-project/haify/pkg/wanproxy"
 )
 
 // addReplicaToConfig adds a diskful node to a live resource config.
@@ -88,12 +89,9 @@ func (rm *ResourceManager) addReplicaToConfig(content, resource, node, addr stri
 		fmt.Fprintf(&leg, "        host %s address 127.0.0.1:%d;\n", name, bindPort)
 		fmt.Fprintf(&leg, "        host %s address 127.0.0.1:%d;\n",
 			rm.controller.nodes.GetDRBDNameByRef(drNode), legPort)
-		fmt.Fprintf(&leg, "        net {\n")
-		fmt.Fprintf(&leg, "            protocol A;\n")
-		fmt.Fprintf(&leg, "            on-congestion pull-ahead;\n")
-		fmt.Fprintf(&leg, "            congestion-fill 400M;\n")
-		fmt.Fprintf(&leg, "            csums-alg %s;\n", wanCsumsAlg)
-		fmt.Fprintf(&leg, "        }\n")
+		// Written with the defaults; the caller converges the whole config on
+		// the resource's tuning (applyWANOptions).
+		writeWANLegOptions(&leg, wanproxy.Tuning{})
 		fmt.Fprintf(&leg, "    }\n")
 		out, err = insertBeforeResourceClose(out, leg.String())
 		if err != nil {
