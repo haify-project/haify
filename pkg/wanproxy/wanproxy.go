@@ -228,6 +228,10 @@ type ProxySpec struct {
 	// be part pre-staged and part pushed. Takes precedence over BinaryPath.
 	BinaryFor func(nodeAddr string) string
 
+	// Tuning is the buffer size and compression level; the zero value is the
+	// defaults.
+	Tuning Tuning
+
 	// SkipReachabilityCheck disables the post-start preflight that confirms the
 	// DR WAN port is reachable from the primary. Default false: the check runs,
 	// so a blocked firewall/security group fails Provision fast instead of
@@ -419,9 +423,11 @@ func Deprovision(ctx context.Context, deploy DeploymentClient, resource, primary
 		return err
 	}
 
-	// Remove the per-resource config (leave shared certs/binary/unit template).
+	// Remove the per-resource config and its metrics snapshot (leave shared
+	// certs/binary/unit template). A snapshot left behind would be read as the
+	// figures of a new resource that reuses the name until its proxy publishes.
 	if err := run(ctx, deploy, both,
-		fmt.Sprintf("sudo rm -f %s", NodeConfigPath(resource)),
+		fmt.Sprintf("sudo rm -f %s %s", NodeConfigPath(resource), NodeMetricsPath(resource)),
 		"remove proxy config"); err != nil {
 		return err
 	}

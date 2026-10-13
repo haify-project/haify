@@ -25,6 +25,12 @@ func (fullClient) DRFailback(context.Context, string, string, uint32) (*haifypb.
 func (fullClient) SetWanEndpoint(context.Context, *haifypb.SetWanEndpointRequest) (*haifypb.SetWanEndpointResponse, error) {
 	return &haifypb.SetWanEndpointResponse{}, nil
 }
+func (fullClient) SetWanTuning(context.Context, *haifypb.SetWanTuningRequest) (*haifypb.SetWanTuningResponse, error) {
+	return &haifypb.SetWanTuningResponse{}, nil
+}
+func (fullClient) GetWanSizing(context.Context, *haifypb.GetWanSizingRequest) (*haifypb.GetWanSizingResponse, error) {
+	return &haifypb.GetWanSizingResponse{}, nil
+}
 
 func (fullClient) SetResourceProfileOptions(context.Context, string, map[string]string) (*haifypb.SetResourceProfileOptionsResponse, error) {
 	return &haifypb.SetResourceProfileOptionsResponse{}, nil

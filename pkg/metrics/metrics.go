@@ -85,6 +85,7 @@ type Metrics struct {
 	up prometheus.Gauge
 
 	health healthSeries
+	wan    wanSeries
 
 	mu sync.Mutex
 }
@@ -257,6 +258,7 @@ func New(logger *zap.Logger) (*Metrics, error) {
 	))
 
 	m.registerHealth(auto)
+	m.registerWAN(auto)
 
 	// Set up to 1
 	m.up.Set(1)
@@ -465,6 +467,9 @@ func (m *Metrics) ResetMetrics() {
 	m.storageCapacity.reset()
 	m.gateways.reset()
 	for _, s := range m.replicaSeries() {
+		s.reset()
+	}
+	for _, s := range m.wan.all() {
 		s.reset()
 	}
 }

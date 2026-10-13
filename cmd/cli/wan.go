@@ -17,6 +17,8 @@ func wanCommand() *cobra.Command {
 	}
 	cmd.AddCommand(wanRepairCommand())
 	cmd.AddCommand(wanSetEndpointCommand())
+	cmd.AddCommand(wanSizingCommand())
+	cmd.AddCommand(wanTuneCommand())
 	return cmd
 }
 

@@ -70,6 +70,9 @@ type Controller struct {
 	notify    *NotifyManager
 	// inspections runs the scheduled and on-demand cluster inspection.
 	inspections *InspectionManager
+	// writeHistory keeps each resource's write rates for WAN sizing
+	// (write_history.go); fed by the health poll.
+	writeHistory *writeHistory
 }
 
 // SetLogRing attaches the buffer the log view reads from. The ring has to exist

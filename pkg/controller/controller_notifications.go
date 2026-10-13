@@ -50,6 +50,13 @@ func (c *Controller) alertOptions() alert.Options {
 	if c.config.Alert.WriteAnomaly.Enabled {
 		obs = append(obs, newWriteAnomalyDetector(c))
 	}
+	// Every resource's write rates, kept for WAN sizing (write_history.go).
+	if c.db != nil {
+		if c.writeHistory == nil {
+			c.writeHistory = newWriteHistory(c)
+		}
+		obs = append(obs, c.writeHistory)
+	}
 	// Thin pools grow before they fill (pool_autoextend.go).
 	if c.config.Storage.Thin.AutoextendThreshold > 0 {
 		obs = append(obs, newThinAutoextender(c))

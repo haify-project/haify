@@ -11297,9 +11297,13 @@ type ResourceStatus struct {
 	// encrypted mirrors ResourceInfo.encrypted: the backing volumes are LUKS2
 	// containers. Reported here because "is this volume encrypted?" is a question
 	// an auditor asks of the running system, not of the creation request.
-	Encrypted     bool `protobuf:"varint,14,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Encrypted bool `protobuf:"varint,14,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	// The WAN proxy tuning in effect: the per-connection buffer and the
+	// compression setting ("off" or "zstd:<level>").
+	WanBufferBytes uint64 `protobuf:"varint,15,opt,name=wan_buffer_bytes,json=wanBufferBytes,proto3" json:"wan_buffer_bytes,omitempty"`
+	WanCompression string `protobuf:"bytes,16,opt,name=wan_compression,json=wanCompression,proto3" json:"wan_compression,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ResourceStatus) Reset() {
@@ -11430,6 +11434,20 @@ func (x *ResourceStatus) GetEncrypted() bool {
 	return false
 }
 
+func (x *ResourceStatus) GetWanBufferBytes() uint64 {
+	if x != nil {
+		return x.WanBufferBytes
+	}
+	return 0
+}
+
+func (x *ResourceStatus) GetWanCompression() string {
+	if x != nil {
+		return x.WanCompression
+	}
+	return ""
+}
+
 // QuorumInfo is the vote arithmetic behind "will this resource survive?".
 type QuorumInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -11541,8 +11559,25 @@ type WANMetrics struct {
 	// with the write workload and DRBD was pushed into Ahead.
 	Reconnects     uint64 `protobuf:"varint,10,opt,name=reconnects,proto3" json:"reconnects,omitempty"`
 	RingFullEvents uint64 `protobuf:"varint,11,opt,name=ring_full_events,json=ringFullEvents,proto3" json:"ring_full_events,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Sizing figures, published by haify-proxy 0.2 and later and absent from an
+	// older one. All of them describe the time since the proxy started, which is
+	// rate_window_secs of per-second samples.
+	BufferHighWaterBytes *uint64  `protobuf:"varint,12,opt,name=buffer_high_water_bytes,json=bufferHighWaterBytes,proto3,oneof" json:"buffer_high_water_bytes,omitempty"`
+	InputAvgBps          *float64 `protobuf:"fixed64,13,opt,name=input_avg_bps,json=inputAvgBps,proto3,oneof" json:"input_avg_bps,omitempty"`
+	InputP99Bps          *float64 `protobuf:"fixed64,14,opt,name=input_p99_bps,json=inputP99Bps,proto3,oneof" json:"input_p99_bps,omitempty"`
+	InputPeakBps         *float64 `protobuf:"fixed64,15,opt,name=input_peak_bps,json=inputPeakBps,proto3,oneof" json:"input_peak_bps,omitempty"`
+	// link_bps is the median WAN rate over the seconds a backlog waited for the
+	// link: its usable bandwidth. Absent until the link has been the bottleneck
+	// for long enough to say.
+	LinkBps        *float64 `protobuf:"fixed64,16,opt,name=link_bps,json=linkBps,proto3,oneof" json:"link_bps,omitempty"`
+	RateWindowSecs *uint64  `protobuf:"varint,17,opt,name=rate_window_secs,json=rateWindowSecs,proto3,oneof" json:"rate_window_secs,omitempty"`
+	// longest_burst_secs is the longest run of seconds in which the backlog
+	// grew: how long a burst outran the link.
+	LongestBurstSecs *uint64  `protobuf:"varint,18,opt,name=longest_burst_secs,json=longestBurstSecs,proto3,oneof" json:"longest_burst_secs,omitempty"`
+	CpuSeconds       *float64 `protobuf:"fixed64,19,opt,name=cpu_seconds,json=cpuSeconds,proto3,oneof" json:"cpu_seconds,omitempty"`
+	ProxyVersion     string   `protobuf:"bytes,20,opt,name=proxy_version,json=proxyVersion,proto3" json:"proxy_version,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *WANMetrics) Reset() {
@@ -11650,6 +11685,69 @@ func (x *WANMetrics) GetRingFullEvents() uint64 {
 		return x.RingFullEvents
 	}
 	return 0
+}
+
+func (x *WANMetrics) GetBufferHighWaterBytes() uint64 {
+	if x != nil && x.BufferHighWaterBytes != nil {
+		return *x.BufferHighWaterBytes
+	}
+	return 0
+}
+
+func (x *WANMetrics) GetInputAvgBps() float64 {
+	if x != nil && x.InputAvgBps != nil {
+		return *x.InputAvgBps
+	}
+	return 0
+}
+
+func (x *WANMetrics) GetInputP99Bps() float64 {
+	if x != nil && x.InputP99Bps != nil {
+		return *x.InputP99Bps
+	}
+	return 0
+}
+
+func (x *WANMetrics) GetInputPeakBps() float64 {
+	if x != nil && x.InputPeakBps != nil {
+		return *x.InputPeakBps
+	}
+	return 0
+}
+
+func (x *WANMetrics) GetLinkBps() float64 {
+	if x != nil && x.LinkBps != nil {
+		return *x.LinkBps
+	}
+	return 0
+}
+
+func (x *WANMetrics) GetRateWindowSecs() uint64 {
+	if x != nil && x.RateWindowSecs != nil {
+		return *x.RateWindowSecs
+	}
+	return 0
+}
+
+func (x *WANMetrics) GetLongestBurstSecs() uint64 {
+	if x != nil && x.LongestBurstSecs != nil {
+		return *x.LongestBurstSecs
+	}
+	return 0
+}
+
+func (x *WANMetrics) GetCpuSeconds() float64 {
+	if x != nil && x.CpuSeconds != nil {
+		return *x.CpuSeconds
+	}
+	return 0
+}
+
+func (x *WANMetrics) GetProxyVersion() string {
+	if x != nil {
+		return x.ProxyVersion
+	}
+	return ""
 }
 
 type NodeResourceState struct {
@@ -22301,6 +22399,654 @@ func (x *SetWanEndpointResponse) GetEgressAddress() string {
 	return ""
 }
 
+// SetWanTuningRequest changes a WAN resource's proxy tuning. An empty field
+// keeps its value.
+type SetWanTuningRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// buffer is the RAM each DRBD connection of a leg may queue for the WAN,
+	// such as "2GiB", or "default" (4 GiB).
+	Buffer string `protobuf:"bytes,2,opt,name=buffer,proto3" json:"buffer,omitempty"`
+	// compression is "off", "default" (zstd level 3) or "zstd:<1-19>".
+	Compression   string `protobuf:"bytes,3,opt,name=compression,proto3" json:"compression,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetWanTuningRequest) Reset() {
+	*x = SetWanTuningRequest{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[350]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetWanTuningRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetWanTuningRequest) ProtoMessage() {}
+
+func (x *SetWanTuningRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[350]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetWanTuningRequest.ProtoReflect.Descriptor instead.
+func (*SetWanTuningRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{350}
+}
+
+func (x *SetWanTuningRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SetWanTuningRequest) GetBuffer() string {
+	if x != nil {
+		return x.Buffer
+	}
+	return ""
+}
+
+func (x *SetWanTuningRequest) GetCompression() string {
+	if x != nil {
+		return x.Compression
+	}
+	return ""
+}
+
+type SetWanTuningResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	BufferBytes   uint64                 `protobuf:"varint,3,opt,name=buffer_bytes,json=bufferBytes,proto3" json:"buffer_bytes,omitempty"`
+	Compression   string                 `protobuf:"bytes,4,opt,name=compression,proto3" json:"compression,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetWanTuningResponse) Reset() {
+	*x = SetWanTuningResponse{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[351]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetWanTuningResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetWanTuningResponse) ProtoMessage() {}
+
+func (x *SetWanTuningResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[351]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetWanTuningResponse.ProtoReflect.Descriptor instead.
+func (*SetWanTuningResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{351}
+}
+
+func (x *SetWanTuningResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *SetWanTuningResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *SetWanTuningResponse) GetBufferBytes() uint64 {
+	if x != nil {
+		return x.BufferBytes
+	}
+	return 0
+}
+
+func (x *SetWanTuningResponse) GetCompression() string {
+	if x != nil {
+		return x.Compression
+	}
+	return ""
+}
+
+type GetWanSizingRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// bandwidth is the link's usable bandwidth, such as "100Mbit", "12MiB/s" or
+	// "1Gbit". Without it the proxy's own measurement is used, when it has one.
+	Bandwidth string `protobuf:"bytes,2,opt,name=bandwidth,proto3" json:"bandwidth,omitempty"`
+	// days of controller history to weigh; 0 is 7.
+	Days uint32 `protobuf:"varint,3,opt,name=days,proto3" json:"days,omitempty"`
+	// sample_compression reads 64 MiB from the volume's backing device on one
+	// replica and compresses it with zstd -3, for a ratio on the real data.
+	SampleCompression bool `protobuf:"varint,4,opt,name=sample_compression,json=sampleCompression,proto3" json:"sample_compression,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *GetWanSizingRequest) Reset() {
+	*x = GetWanSizingRequest{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[352]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWanSizingRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWanSizingRequest) ProtoMessage() {}
+
+func (x *GetWanSizingRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[352]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWanSizingRequest.ProtoReflect.Descriptor instead.
+func (*GetWanSizingRequest) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{352}
+}
+
+func (x *GetWanSizingRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetWanSizingRequest) GetBandwidth() string {
+	if x != nil {
+		return x.Bandwidth
+	}
+	return ""
+}
+
+func (x *GetWanSizingRequest) GetDays() uint32 {
+	if x != nil {
+		return x.Days
+	}
+	return 0
+}
+
+func (x *GetWanSizingRequest) GetSampleCompression() bool {
+	if x != nil {
+		return x.SampleCompression
+	}
+	return false
+}
+
+// WanSizingHistory is what the controller's health polls recorded of the
+// resource's DRBD write counter.
+type WanSizingHistory struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	WindowSecs     float64                `protobuf:"fixed64,1,opt,name=window_secs,json=windowSecs,proto3" json:"window_secs,omitempty"`
+	Days           uint32                 `protobuf:"varint,2,opt,name=days,proto3" json:"days,omitempty"`
+	Samples        uint32                 `protobuf:"varint,3,opt,name=samples,proto3" json:"samples,omitempty"`
+	ResolutionSecs float64                `protobuf:"fixed64,4,opt,name=resolution_secs,json=resolutionSecs,proto3" json:"resolution_secs,omitempty"`
+	AvgBps         float64                `protobuf:"fixed64,5,opt,name=avg_bps,json=avgBps,proto3" json:"avg_bps,omitempty"`
+	P99Bps         float64                `protobuf:"fixed64,6,opt,name=p99_bps,json=p99Bps,proto3" json:"p99_bps,omitempty"`
+	PeakBps        float64                `protobuf:"fixed64,7,opt,name=peak_bps,json=peakBps,proto3" json:"peak_bps,omitempty"`
+	FirstDay       string                 `protobuf:"bytes,8,opt,name=first_day,json=firstDay,proto3" json:"first_day,omitempty"`
+	LastDay        string                 `protobuf:"bytes,9,opt,name=last_day,json=lastDay,proto3" json:"last_day,omitempty"`
+	Node           string                 `protobuf:"bytes,10,opt,name=node,proto3" json:"node,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *WanSizingHistory) Reset() {
+	*x = WanSizingHistory{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[353]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WanSizingHistory) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WanSizingHistory) ProtoMessage() {}
+
+func (x *WanSizingHistory) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[353]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WanSizingHistory.ProtoReflect.Descriptor instead.
+func (*WanSizingHistory) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{353}
+}
+
+func (x *WanSizingHistory) GetWindowSecs() float64 {
+	if x != nil {
+		return x.WindowSecs
+	}
+	return 0
+}
+
+func (x *WanSizingHistory) GetDays() uint32 {
+	if x != nil {
+		return x.Days
+	}
+	return 0
+}
+
+func (x *WanSizingHistory) GetSamples() uint32 {
+	if x != nil {
+		return x.Samples
+	}
+	return 0
+}
+
+func (x *WanSizingHistory) GetResolutionSecs() float64 {
+	if x != nil {
+		return x.ResolutionSecs
+	}
+	return 0
+}
+
+func (x *WanSizingHistory) GetAvgBps() float64 {
+	if x != nil {
+		return x.AvgBps
+	}
+	return 0
+}
+
+func (x *WanSizingHistory) GetP99Bps() float64 {
+	if x != nil {
+		return x.P99Bps
+	}
+	return 0
+}
+
+func (x *WanSizingHistory) GetPeakBps() float64 {
+	if x != nil {
+		return x.PeakBps
+	}
+	return 0
+}
+
+func (x *WanSizingHistory) GetFirstDay() string {
+	if x != nil {
+		return x.FirstDay
+	}
+	return ""
+}
+
+func (x *WanSizingHistory) GetLastDay() string {
+	if x != nil {
+		return x.LastDay
+	}
+	return ""
+}
+
+func (x *WanSizingHistory) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+type WanSizingSample struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ratio         float64                `protobuf:"fixed64,1,opt,name=ratio,proto3" json:"ratio,omitempty"`
+	SampledBytes  uint64                 `protobuf:"varint,2,opt,name=sampled_bytes,json=sampledBytes,proto3" json:"sampled_bytes,omitempty"`
+	Chunks        uint32                 `protobuf:"varint,3,opt,name=chunks,proto3" json:"chunks,omitempty"`
+	ZeroChunks    uint32                 `protobuf:"varint,4,opt,name=zero_chunks,json=zeroChunks,proto3" json:"zero_chunks,omitempty"`
+	Node          string                 `protobuf:"bytes,5,opt,name=node,proto3" json:"node,omitempty"`
+	Error         string                 `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WanSizingSample) Reset() {
+	*x = WanSizingSample{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[354]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WanSizingSample) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WanSizingSample) ProtoMessage() {}
+
+func (x *WanSizingSample) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[354]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WanSizingSample.ProtoReflect.Descriptor instead.
+func (*WanSizingSample) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{354}
+}
+
+func (x *WanSizingSample) GetRatio() float64 {
+	if x != nil {
+		return x.Ratio
+	}
+	return 0
+}
+
+func (x *WanSizingSample) GetSampledBytes() uint64 {
+	if x != nil {
+		return x.SampledBytes
+	}
+	return 0
+}
+
+func (x *WanSizingSample) GetChunks() uint32 {
+	if x != nil {
+		return x.Chunks
+	}
+	return 0
+}
+
+func (x *WanSizingSample) GetZeroChunks() uint32 {
+	if x != nil {
+		return x.ZeroChunks
+	}
+	return 0
+}
+
+func (x *WanSizingSample) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *WanSizingSample) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+type GetWanSizingResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Success bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Wan     bool                   `protobuf:"varint,3,opt,name=wan,proto3" json:"wan,omitempty"`
+	// outcome is link_sufficient, buffer, compress, async_backup or undecided.
+	Outcome                string            `protobuf:"bytes,4,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	Summary                string            `protobuf:"bytes,5,opt,name=summary,proto3" json:"summary,omitempty"`
+	AvgBps                 float64           `protobuf:"fixed64,6,opt,name=avg_bps,json=avgBps,proto3" json:"avg_bps,omitempty"`
+	AvgSource              string            `protobuf:"bytes,7,opt,name=avg_source,json=avgSource,proto3" json:"avg_source,omitempty"`
+	PeakBps                float64           `protobuf:"fixed64,8,opt,name=peak_bps,json=peakBps,proto3" json:"peak_bps,omitempty"`
+	PeakSource             string            `protobuf:"bytes,9,opt,name=peak_source,json=peakSource,proto3" json:"peak_source,omitempty"`
+	CompressionRatio       float64           `protobuf:"fixed64,10,opt,name=compression_ratio,json=compressionRatio,proto3" json:"compression_ratio,omitempty"`
+	RatioSource            string            `protobuf:"bytes,11,opt,name=ratio_source,json=ratioSource,proto3" json:"ratio_source,omitempty"`
+	LinkBps                float64           `protobuf:"fixed64,12,opt,name=link_bps,json=linkBps,proto3" json:"link_bps,omitempty"`
+	LinkSource             string            `protobuf:"bytes,13,opt,name=link_source,json=linkSource,proto3" json:"link_source,omitempty"`
+	RecommendedBufferBytes uint64            `protobuf:"varint,14,opt,name=recommended_buffer_bytes,json=recommendedBufferBytes,proto3" json:"recommended_buffer_bytes,omitempty"`
+	BufferBasis            string            `protobuf:"bytes,15,opt,name=buffer_basis,json=bufferBasis,proto3" json:"buffer_basis,omitempty"`
+	CurrentBufferBytes     uint64            `protobuf:"varint,16,opt,name=current_buffer_bytes,json=currentBufferBytes,proto3" json:"current_buffer_bytes,omitempty"`
+	RecommendedCompression string            `protobuf:"bytes,17,opt,name=recommended_compression,json=recommendedCompression,proto3" json:"recommended_compression,omitempty"`
+	CurrentCompression     string            `protobuf:"bytes,18,opt,name=current_compression,json=currentCompression,proto3" json:"current_compression,omitempty"`
+	CpuCoresAtPeak         float64           `protobuf:"fixed64,19,opt,name=cpu_cores_at_peak,json=cpuCoresAtPeak,proto3" json:"cpu_cores_at_peak,omitempty"`
+	OutageSecs             float64           `protobuf:"fixed64,20,opt,name=outage_secs,json=outageSecs,proto3" json:"outage_secs,omitempty"`
+	Notes                  []string          `protobuf:"bytes,21,rep,name=notes,proto3" json:"notes,omitempty"`
+	History                *WanSizingHistory `protobuf:"bytes,22,opt,name=history,proto3" json:"history,omitempty"`
+	Proxy                  *WANMetrics       `protobuf:"bytes,23,opt,name=proxy,proto3" json:"proxy,omitempty"`
+	Sample                 *WanSizingSample  `protobuf:"bytes,24,opt,name=sample,proto3" json:"sample,omitempty"`
+	// drain_secs is how long a full configured buffer takes to reach the DR
+	// site; closing the device (unmount, VM shutdown, planned switchover) waits
+	// for the backlog.
+	DrainSecs     float64 `protobuf:"fixed64,25,opt,name=drain_secs,json=drainSecs,proto3" json:"drain_secs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWanSizingResponse) Reset() {
+	*x = GetWanSizingResponse{}
+	mi := &file_api_proto_v1_haify_proto_msgTypes[355]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWanSizingResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWanSizingResponse) ProtoMessage() {}
+
+func (x *GetWanSizingResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_v1_haify_proto_msgTypes[355]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWanSizingResponse.ProtoReflect.Descriptor instead.
+func (*GetWanSizingResponse) Descriptor() ([]byte, []int) {
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{355}
+}
+
+func (x *GetWanSizingResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *GetWanSizingResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetWan() bool {
+	if x != nil {
+		return x.Wan
+	}
+	return false
+}
+
+func (x *GetWanSizingResponse) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetSummary() string {
+	if x != nil {
+		return x.Summary
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetAvgBps() float64 {
+	if x != nil {
+		return x.AvgBps
+	}
+	return 0
+}
+
+func (x *GetWanSizingResponse) GetAvgSource() string {
+	if x != nil {
+		return x.AvgSource
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetPeakBps() float64 {
+	if x != nil {
+		return x.PeakBps
+	}
+	return 0
+}
+
+func (x *GetWanSizingResponse) GetPeakSource() string {
+	if x != nil {
+		return x.PeakSource
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetCompressionRatio() float64 {
+	if x != nil {
+		return x.CompressionRatio
+	}
+	return 0
+}
+
+func (x *GetWanSizingResponse) GetRatioSource() string {
+	if x != nil {
+		return x.RatioSource
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetLinkBps() float64 {
+	if x != nil {
+		return x.LinkBps
+	}
+	return 0
+}
+
+func (x *GetWanSizingResponse) GetLinkSource() string {
+	if x != nil {
+		return x.LinkSource
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetRecommendedBufferBytes() uint64 {
+	if x != nil {
+		return x.RecommendedBufferBytes
+	}
+	return 0
+}
+
+func (x *GetWanSizingResponse) GetBufferBasis() string {
+	if x != nil {
+		return x.BufferBasis
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetCurrentBufferBytes() uint64 {
+	if x != nil {
+		return x.CurrentBufferBytes
+	}
+	return 0
+}
+
+func (x *GetWanSizingResponse) GetRecommendedCompression() string {
+	if x != nil {
+		return x.RecommendedCompression
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetCurrentCompression() string {
+	if x != nil {
+		return x.CurrentCompression
+	}
+	return ""
+}
+
+func (x *GetWanSizingResponse) GetCpuCoresAtPeak() float64 {
+	if x != nil {
+		return x.CpuCoresAtPeak
+	}
+	return 0
+}
+
+func (x *GetWanSizingResponse) GetOutageSecs() float64 {
+	if x != nil {
+		return x.OutageSecs
+	}
+	return 0
+}
+
+func (x *GetWanSizingResponse) GetNotes() []string {
+	if x != nil {
+		return x.Notes
+	}
+	return nil
+}
+
+func (x *GetWanSizingResponse) GetHistory() *WanSizingHistory {
+	if x != nil {
+		return x.History
+	}
+	return nil
+}
+
+func (x *GetWanSizingResponse) GetProxy() *WANMetrics {
+	if x != nil {
+		return x.Proxy
+	}
+	return nil
+}
+
+func (x *GetWanSizingResponse) GetSample() *WanSizingSample {
+	if x != nil {
+		return x.Sample
+	}
+	return nil
+}
+
+func (x *GetWanSizingResponse) GetDrainSecs() float64 {
+	if x != nil {
+		return x.DrainSecs
+	}
+	return 0
+}
+
 // DRFailbackRequest returns a WAN resource from its DR node to the primary site
 // after a DR failover. Run it again until phase is "done": it rejoins the
 // primary site (discarding what those nodes wrote after they were cut off),
@@ -22319,7 +23065,7 @@ type DRFailbackRequest struct {
 
 func (x *DRFailbackRequest) Reset() {
 	*x = DRFailbackRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[350]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[356]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22331,7 +23077,7 @@ func (x *DRFailbackRequest) String() string {
 func (*DRFailbackRequest) ProtoMessage() {}
 
 func (x *DRFailbackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[350]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[356]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22344,7 +23090,7 @@ func (x *DRFailbackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DRFailbackRequest.ProtoReflect.Descriptor instead.
 func (*DRFailbackRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{350}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{356}
 }
 
 func (x *DRFailbackRequest) GetName() string {
@@ -22389,7 +23135,7 @@ type VerifyResourceRequest struct {
 
 func (x *VerifyResourceRequest) Reset() {
 	*x = VerifyResourceRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[351]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[357]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22401,7 +23147,7 @@ func (x *VerifyResourceRequest) String() string {
 func (*VerifyResourceRequest) ProtoMessage() {}
 
 func (x *VerifyResourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[351]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[357]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22414,7 +23160,7 @@ func (x *VerifyResourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyResourceRequest.ProtoReflect.Descriptor instead.
 func (*VerifyResourceRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{351}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{357}
 }
 
 func (x *VerifyResourceRequest) GetName() string {
@@ -22467,7 +23213,7 @@ type VerifyPeer struct {
 
 func (x *VerifyPeer) Reset() {
 	*x = VerifyPeer{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[352]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[358]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22479,7 +23225,7 @@ func (x *VerifyPeer) String() string {
 func (*VerifyPeer) ProtoMessage() {}
 
 func (x *VerifyPeer) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[352]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[358]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22492,7 +23238,7 @@ func (x *VerifyPeer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyPeer.ProtoReflect.Descriptor instead.
 func (*VerifyPeer) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{352}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{358}
 }
 
 func (x *VerifyPeer) GetNode() string {
@@ -22552,7 +23298,7 @@ type VerifyResourceResponse struct {
 
 func (x *VerifyResourceResponse) Reset() {
 	*x = VerifyResourceResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[353]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[359]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22564,7 +23310,7 @@ func (x *VerifyResourceResponse) String() string {
 func (*VerifyResourceResponse) ProtoMessage() {}
 
 func (x *VerifyResourceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[353]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[359]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22577,7 +23323,7 @@ func (x *VerifyResourceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyResourceResponse.ProtoReflect.Descriptor instead.
 func (*VerifyResourceResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{353}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{359}
 }
 
 func (x *VerifyResourceResponse) GetSuccess() bool {
@@ -22636,7 +23382,7 @@ type DRFailbackResponse struct {
 
 func (x *DRFailbackResponse) Reset() {
 	*x = DRFailbackResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[354]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[360]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22648,7 +23394,7 @@ func (x *DRFailbackResponse) String() string {
 func (*DRFailbackResponse) ProtoMessage() {}
 
 func (x *DRFailbackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[354]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[360]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22661,7 +23407,7 @@ func (x *DRFailbackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DRFailbackResponse.ProtoReflect.Descriptor instead.
 func (*DRFailbackResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{354}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{360}
 }
 
 func (x *DRFailbackResponse) GetSuccess() bool {
@@ -22702,7 +23448,7 @@ type SetupReplicationTLSRequest struct {
 
 func (x *SetupReplicationTLSRequest) Reset() {
 	*x = SetupReplicationTLSRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[355]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[361]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22714,7 +23460,7 @@ func (x *SetupReplicationTLSRequest) String() string {
 func (*SetupReplicationTLSRequest) ProtoMessage() {}
 
 func (x *SetupReplicationTLSRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[355]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[361]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22727,7 +23473,7 @@ func (x *SetupReplicationTLSRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetupReplicationTLSRequest.ProtoReflect.Descriptor instead.
 func (*SetupReplicationTLSRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{355}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{361}
 }
 
 func (x *SetupReplicationTLSRequest) GetNodes() []string {
@@ -22746,7 +23492,7 @@ type GetReplicationTLSStatusRequest struct {
 
 func (x *GetReplicationTLSStatusRequest) Reset() {
 	*x = GetReplicationTLSStatusRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[356]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[362]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22758,7 +23504,7 @@ func (x *GetReplicationTLSStatusRequest) String() string {
 func (*GetReplicationTLSStatusRequest) ProtoMessage() {}
 
 func (x *GetReplicationTLSStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[356]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[362]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22771,7 +23517,7 @@ func (x *GetReplicationTLSStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplicationTLSStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetReplicationTLSStatusRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{356}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{362}
 }
 
 func (x *GetReplicationTLSStatusRequest) GetNodes() []string {
@@ -22794,7 +23540,7 @@ type NodeTLSInfo struct {
 
 func (x *NodeTLSInfo) Reset() {
 	*x = NodeTLSInfo{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[357]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[363]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22806,7 +23552,7 @@ func (x *NodeTLSInfo) String() string {
 func (*NodeTLSInfo) ProtoMessage() {}
 
 func (x *NodeTLSInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[357]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[363]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22819,7 +23565,7 @@ func (x *NodeTLSInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeTLSInfo.ProtoReflect.Descriptor instead.
 func (*NodeTLSInfo) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{357}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{363}
 }
 
 func (x *NodeTLSInfo) GetNode() string {
@@ -22861,7 +23607,7 @@ type ReplicationTLSResponse struct {
 
 func (x *ReplicationTLSResponse) Reset() {
 	*x = ReplicationTLSResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[358]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[364]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22873,7 +23619,7 @@ func (x *ReplicationTLSResponse) String() string {
 func (*ReplicationTLSResponse) ProtoMessage() {}
 
 func (x *ReplicationTLSResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[358]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[364]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22886,7 +23632,7 @@ func (x *ReplicationTLSResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplicationTLSResponse.ProtoReflect.Descriptor instead.
 func (*ReplicationTLSResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{358}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{364}
 }
 
 func (x *ReplicationTLSResponse) GetSuccess() bool {
@@ -22920,7 +23666,7 @@ type SetResourceTLSRequest struct {
 
 func (x *SetResourceTLSRequest) Reset() {
 	*x = SetResourceTLSRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[359]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[365]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22932,7 +23678,7 @@ func (x *SetResourceTLSRequest) String() string {
 func (*SetResourceTLSRequest) ProtoMessage() {}
 
 func (x *SetResourceTLSRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[359]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[365]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22945,7 +23691,7 @@ func (x *SetResourceTLSRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetResourceTLSRequest.ProtoReflect.Descriptor instead.
 func (*SetResourceTLSRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{359}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{365}
 }
 
 func (x *SetResourceTLSRequest) GetResource() string {
@@ -22973,7 +23719,7 @@ type SetResourceTLSResponse struct {
 
 func (x *SetResourceTLSResponse) Reset() {
 	*x = SetResourceTLSResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[360]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[366]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22985,7 +23731,7 @@ func (x *SetResourceTLSResponse) String() string {
 func (*SetResourceTLSResponse) ProtoMessage() {}
 
 func (x *SetResourceTLSResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[360]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[366]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22998,7 +23744,7 @@ func (x *SetResourceTLSResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetResourceTLSResponse.ProtoReflect.Descriptor instead.
 func (*SetResourceTLSResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{360}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{366}
 }
 
 func (x *SetResourceTLSResponse) GetSuccess() bool {
@@ -23030,7 +23776,7 @@ type GetRbacWhoamiRequest struct {
 
 func (x *GetRbacWhoamiRequest) Reset() {
 	*x = GetRbacWhoamiRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[361]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[367]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23042,7 +23788,7 @@ func (x *GetRbacWhoamiRequest) String() string {
 func (*GetRbacWhoamiRequest) ProtoMessage() {}
 
 func (x *GetRbacWhoamiRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[361]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[367]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23055,7 +23801,7 @@ func (x *GetRbacWhoamiRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRbacWhoamiRequest.ProtoReflect.Descriptor instead.
 func (*GetRbacWhoamiRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{361}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{367}
 }
 
 type GetRbacWhoamiResponse struct {
@@ -23070,7 +23816,7 @@ type GetRbacWhoamiResponse struct {
 
 func (x *GetRbacWhoamiResponse) Reset() {
 	*x = GetRbacWhoamiResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[362]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[368]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23082,7 +23828,7 @@ func (x *GetRbacWhoamiResponse) String() string {
 func (*GetRbacWhoamiResponse) ProtoMessage() {}
 
 func (x *GetRbacWhoamiResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[362]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[368]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23095,7 +23841,7 @@ func (x *GetRbacWhoamiResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRbacWhoamiResponse.ProtoReflect.Descriptor instead.
 func (*GetRbacWhoamiResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{362}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{368}
 }
 
 func (x *GetRbacWhoamiResponse) GetEnabled() bool {
@@ -23134,7 +23880,7 @@ type ListRbacPoliciesRequest struct {
 
 func (x *ListRbacPoliciesRequest) Reset() {
 	*x = ListRbacPoliciesRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[363]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[369]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23146,7 +23892,7 @@ func (x *ListRbacPoliciesRequest) String() string {
 func (*ListRbacPoliciesRequest) ProtoMessage() {}
 
 func (x *ListRbacPoliciesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[363]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[369]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23159,7 +23905,7 @@ func (x *ListRbacPoliciesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRbacPoliciesRequest.ProtoReflect.Descriptor instead.
 func (*ListRbacPoliciesRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{363}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{369}
 }
 
 type RbacPolicy struct {
@@ -23173,7 +23919,7 @@ type RbacPolicy struct {
 
 func (x *RbacPolicy) Reset() {
 	*x = RbacPolicy{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[364]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[370]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23185,7 +23931,7 @@ func (x *RbacPolicy) String() string {
 func (*RbacPolicy) ProtoMessage() {}
 
 func (x *RbacPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[364]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[370]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23198,7 +23944,7 @@ func (x *RbacPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RbacPolicy.ProtoReflect.Descriptor instead.
 func (*RbacPolicy) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{364}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{370}
 }
 
 func (x *RbacPolicy) GetRole() string {
@@ -23232,7 +23978,7 @@ type RbacUser struct {
 
 func (x *RbacUser) Reset() {
 	*x = RbacUser{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[365]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[371]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23244,7 +23990,7 @@ func (x *RbacUser) String() string {
 func (*RbacUser) ProtoMessage() {}
 
 func (x *RbacUser) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[365]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[371]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23257,7 +24003,7 @@ func (x *RbacUser) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RbacUser.ProtoReflect.Descriptor instead.
 func (*RbacUser) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{365}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{371}
 }
 
 func (x *RbacUser) GetName() string {
@@ -23285,7 +24031,7 @@ type ListRbacPoliciesResponse struct {
 
 func (x *ListRbacPoliciesResponse) Reset() {
 	*x = ListRbacPoliciesResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[366]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[372]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23297,7 +24043,7 @@ func (x *ListRbacPoliciesResponse) String() string {
 func (*ListRbacPoliciesResponse) ProtoMessage() {}
 
 func (x *ListRbacPoliciesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[366]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[372]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23310,7 +24056,7 @@ func (x *ListRbacPoliciesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRbacPoliciesResponse.ProtoReflect.Descriptor instead.
 func (*ListRbacPoliciesResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{366}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{372}
 }
 
 func (x *ListRbacPoliciesResponse) GetEnabled() bool {
@@ -23346,7 +24092,7 @@ type CreateRbacUserRequest struct {
 
 func (x *CreateRbacUserRequest) Reset() {
 	*x = CreateRbacUserRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[367]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[373]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23358,7 +24104,7 @@ func (x *CreateRbacUserRequest) String() string {
 func (*CreateRbacUserRequest) ProtoMessage() {}
 
 func (x *CreateRbacUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[367]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[373]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23371,7 +24117,7 @@ func (x *CreateRbacUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRbacUserRequest.ProtoReflect.Descriptor instead.
 func (*CreateRbacUserRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{367}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{373}
 }
 
 func (x *CreateRbacUserRequest) GetName() string {
@@ -23408,7 +24154,7 @@ type CreateRbacUserResponse struct {
 
 func (x *CreateRbacUserResponse) Reset() {
 	*x = CreateRbacUserResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[368]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[374]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23420,7 +24166,7 @@ func (x *CreateRbacUserResponse) String() string {
 func (*CreateRbacUserResponse) ProtoMessage() {}
 
 func (x *CreateRbacUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[368]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[374]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23433,7 +24179,7 @@ func (x *CreateRbacUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRbacUserResponse.ProtoReflect.Descriptor instead.
 func (*CreateRbacUserResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{368}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{374}
 }
 
 func (x *CreateRbacUserResponse) GetSuccess() bool {
@@ -23473,7 +24219,7 @@ type DeleteRbacUserRequest struct {
 
 func (x *DeleteRbacUserRequest) Reset() {
 	*x = DeleteRbacUserRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[369]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[375]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23485,7 +24231,7 @@ func (x *DeleteRbacUserRequest) String() string {
 func (*DeleteRbacUserRequest) ProtoMessage() {}
 
 func (x *DeleteRbacUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[369]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[375]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23498,7 +24244,7 @@ func (x *DeleteRbacUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRbacUserRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRbacUserRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{369}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{375}
 }
 
 func (x *DeleteRbacUserRequest) GetName() string {
@@ -23519,7 +24265,7 @@ type DeleteRbacUserResponse struct {
 
 func (x *DeleteRbacUserResponse) Reset() {
 	*x = DeleteRbacUserResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[370]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[376]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23531,7 +24277,7 @@ func (x *DeleteRbacUserResponse) String() string {
 func (*DeleteRbacUserResponse) ProtoMessage() {}
 
 func (x *DeleteRbacUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[370]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[376]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23544,7 +24290,7 @@ func (x *DeleteRbacUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRbacUserResponse.ProtoReflect.Descriptor instead.
 func (*DeleteRbacUserResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{370}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{376}
 }
 
 func (x *DeleteRbacUserResponse) GetSuccess() bool {
@@ -23578,7 +24324,7 @@ type SetRbacUserRoleRequest struct {
 
 func (x *SetRbacUserRoleRequest) Reset() {
 	*x = SetRbacUserRoleRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[371]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[377]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23590,7 +24336,7 @@ func (x *SetRbacUserRoleRequest) String() string {
 func (*SetRbacUserRoleRequest) ProtoMessage() {}
 
 func (x *SetRbacUserRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[371]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[377]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23603,7 +24349,7 @@ func (x *SetRbacUserRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRbacUserRoleRequest.ProtoReflect.Descriptor instead.
 func (*SetRbacUserRoleRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{371}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{377}
 }
 
 func (x *SetRbacUserRoleRequest) GetName() string {
@@ -23631,7 +24377,7 @@ type SetRbacUserRoleResponse struct {
 
 func (x *SetRbacUserRoleResponse) Reset() {
 	*x = SetRbacUserRoleResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[372]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[378]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23643,7 +24389,7 @@ func (x *SetRbacUserRoleResponse) String() string {
 func (*SetRbacUserRoleResponse) ProtoMessage() {}
 
 func (x *SetRbacUserRoleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[372]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[378]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23656,7 +24402,7 @@ func (x *SetRbacUserRoleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRbacUserRoleResponse.ProtoReflect.Descriptor instead.
 func (*SetRbacUserRoleResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{372}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{378}
 }
 
 func (x *SetRbacUserRoleResponse) GetSuccess() bool {
@@ -23697,7 +24443,7 @@ type ApprovalInfo struct {
 
 func (x *ApprovalInfo) Reset() {
 	*x = ApprovalInfo{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[373]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[379]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23709,7 +24455,7 @@ func (x *ApprovalInfo) String() string {
 func (*ApprovalInfo) ProtoMessage() {}
 
 func (x *ApprovalInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[373]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[379]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23722,7 +24468,7 @@ func (x *ApprovalInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovalInfo.ProtoReflect.Descriptor instead.
 func (*ApprovalInfo) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{373}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{379}
 }
 
 func (x *ApprovalInfo) GetId() string {
@@ -23797,7 +24543,7 @@ type ListApprovalsRequest struct {
 
 func (x *ListApprovalsRequest) Reset() {
 	*x = ListApprovalsRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[374]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[380]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23809,7 +24555,7 @@ func (x *ListApprovalsRequest) String() string {
 func (*ListApprovalsRequest) ProtoMessage() {}
 
 func (x *ListApprovalsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[374]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[380]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23822,7 +24568,7 @@ func (x *ListApprovalsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListApprovalsRequest.ProtoReflect.Descriptor instead.
 func (*ListApprovalsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{374}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{380}
 }
 
 func (x *ListApprovalsRequest) GetIncludeClosed() bool {
@@ -23842,7 +24588,7 @@ type ListApprovalsResponse struct {
 
 func (x *ListApprovalsResponse) Reset() {
 	*x = ListApprovalsResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[375]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[381]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23854,7 +24600,7 @@ func (x *ListApprovalsResponse) String() string {
 func (*ListApprovalsResponse) ProtoMessage() {}
 
 func (x *ListApprovalsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[375]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[381]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23867,7 +24613,7 @@ func (x *ListApprovalsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListApprovalsResponse.ProtoReflect.Descriptor instead.
 func (*ListApprovalsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{375}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{381}
 }
 
 func (x *ListApprovalsResponse) GetEnabled() bool {
@@ -23893,7 +24639,7 @@ type ApproveRequestRequest struct {
 
 func (x *ApproveRequestRequest) Reset() {
 	*x = ApproveRequestRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[376]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[382]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23905,7 +24651,7 @@ func (x *ApproveRequestRequest) String() string {
 func (*ApproveRequestRequest) ProtoMessage() {}
 
 func (x *ApproveRequestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[376]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[382]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23918,7 +24664,7 @@ func (x *ApproveRequestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveRequestRequest.ProtoReflect.Descriptor instead.
 func (*ApproveRequestRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{376}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{382}
 }
 
 func (x *ApproveRequestRequest) GetId() string {
@@ -23939,7 +24685,7 @@ type ApproveRequestResponse struct {
 
 func (x *ApproveRequestResponse) Reset() {
 	*x = ApproveRequestResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[377]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[383]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23951,7 +24697,7 @@ func (x *ApproveRequestResponse) String() string {
 func (*ApproveRequestResponse) ProtoMessage() {}
 
 func (x *ApproveRequestResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[377]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[383]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23964,7 +24710,7 @@ func (x *ApproveRequestResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveRequestResponse.ProtoReflect.Descriptor instead.
 func (*ApproveRequestResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{377}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{383}
 }
 
 func (x *ApproveRequestResponse) GetSuccess() bool {
@@ -23997,7 +24743,7 @@ type RejectRequestRequest struct {
 
 func (x *RejectRequestRequest) Reset() {
 	*x = RejectRequestRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[378]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[384]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24009,7 +24755,7 @@ func (x *RejectRequestRequest) String() string {
 func (*RejectRequestRequest) ProtoMessage() {}
 
 func (x *RejectRequestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[378]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[384]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24022,7 +24768,7 @@ func (x *RejectRequestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RejectRequestRequest.ProtoReflect.Descriptor instead.
 func (*RejectRequestRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{378}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{384}
 }
 
 func (x *RejectRequestRequest) GetId() string {
@@ -24043,7 +24789,7 @@ type RejectRequestResponse struct {
 
 func (x *RejectRequestResponse) Reset() {
 	*x = RejectRequestResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[379]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[385]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24055,7 +24801,7 @@ func (x *RejectRequestResponse) String() string {
 func (*RejectRequestResponse) ProtoMessage() {}
 
 func (x *RejectRequestResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[379]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[385]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24068,7 +24814,7 @@ func (x *RejectRequestResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RejectRequestResponse.ProtoReflect.Descriptor instead.
 func (*RejectRequestResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{379}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{385}
 }
 
 func (x *RejectRequestResponse) GetSuccess() bool {
@@ -24116,7 +24862,7 @@ type InspectionCheck struct {
 
 func (x *InspectionCheck) Reset() {
 	*x = InspectionCheck{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[380]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[386]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24128,7 +24874,7 @@ func (x *InspectionCheck) String() string {
 func (*InspectionCheck) ProtoMessage() {}
 
 func (x *InspectionCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[380]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[386]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24141,7 +24887,7 @@ func (x *InspectionCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectionCheck.ProtoReflect.Descriptor instead.
 func (*InspectionCheck) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{380}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{386}
 }
 
 func (x *InspectionCheck) GetId() string {
@@ -24212,7 +24958,7 @@ type InspectionSummary struct {
 
 func (x *InspectionSummary) Reset() {
 	*x = InspectionSummary{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[381]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[387]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24224,7 +24970,7 @@ func (x *InspectionSummary) String() string {
 func (*InspectionSummary) ProtoMessage() {}
 
 func (x *InspectionSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[381]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[387]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24237,7 +24983,7 @@ func (x *InspectionSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectionSummary.ProtoReflect.Descriptor instead.
 func (*InspectionSummary) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{381}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{387}
 }
 
 func (x *InspectionSummary) GetPass() int32 {
@@ -24286,7 +25032,7 @@ type InspectionReport struct {
 
 func (x *InspectionReport) Reset() {
 	*x = InspectionReport{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[382]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[388]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24298,7 +25044,7 @@ func (x *InspectionReport) String() string {
 func (*InspectionReport) ProtoMessage() {}
 
 func (x *InspectionReport) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[382]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[388]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24311,7 +25057,7 @@ func (x *InspectionReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectionReport.ProtoReflect.Descriptor instead.
 func (*InspectionReport) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{382}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{388}
 }
 
 func (x *InspectionReport) GetId() string {
@@ -24373,7 +25119,7 @@ type RunInspectionRequest struct {
 
 func (x *RunInspectionRequest) Reset() {
 	*x = RunInspectionRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[383]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[389]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24385,7 +25131,7 @@ func (x *RunInspectionRequest) String() string {
 func (*RunInspectionRequest) ProtoMessage() {}
 
 func (x *RunInspectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[383]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[389]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24398,7 +25144,7 @@ func (x *RunInspectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunInspectionRequest.ProtoReflect.Descriptor instead.
 func (*RunInspectionRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{383}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{389}
 }
 
 func (x *RunInspectionRequest) GetAreas() []string {
@@ -24419,7 +25165,7 @@ type RunInspectionResponse struct {
 
 func (x *RunInspectionResponse) Reset() {
 	*x = RunInspectionResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[384]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[390]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24431,7 +25177,7 @@ func (x *RunInspectionResponse) String() string {
 func (*RunInspectionResponse) ProtoMessage() {}
 
 func (x *RunInspectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[384]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[390]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24444,7 +25190,7 @@ func (x *RunInspectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunInspectionResponse.ProtoReflect.Descriptor instead.
 func (*RunInspectionResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{384}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{390}
 }
 
 func (x *RunInspectionResponse) GetSuccess() bool {
@@ -24477,7 +25223,7 @@ type ListInspectionsRequest struct {
 
 func (x *ListInspectionsRequest) Reset() {
 	*x = ListInspectionsRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[385]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[391]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24489,7 +25235,7 @@ func (x *ListInspectionsRequest) String() string {
 func (*ListInspectionsRequest) ProtoMessage() {}
 
 func (x *ListInspectionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[385]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[391]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24502,7 +25248,7 @@ func (x *ListInspectionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListInspectionsRequest.ProtoReflect.Descriptor instead.
 func (*ListInspectionsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{385}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{391}
 }
 
 func (x *ListInspectionsRequest) GetLimit() int32 {
@@ -24523,7 +25269,7 @@ type ListInspectionsResponse struct {
 
 func (x *ListInspectionsResponse) Reset() {
 	*x = ListInspectionsResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[386]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[392]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24535,7 +25281,7 @@ func (x *ListInspectionsResponse) String() string {
 func (*ListInspectionsResponse) ProtoMessage() {}
 
 func (x *ListInspectionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[386]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[392]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24548,7 +25294,7 @@ func (x *ListInspectionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListInspectionsResponse.ProtoReflect.Descriptor instead.
 func (*ListInspectionsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{386}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{392}
 }
 
 func (x *ListInspectionsResponse) GetSuccess() bool {
@@ -24581,7 +25327,7 @@ type GetInspectionRequest struct {
 
 func (x *GetInspectionRequest) Reset() {
 	*x = GetInspectionRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[387]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[393]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24593,7 +25339,7 @@ func (x *GetInspectionRequest) String() string {
 func (*GetInspectionRequest) ProtoMessage() {}
 
 func (x *GetInspectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[387]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[393]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24606,7 +25352,7 @@ func (x *GetInspectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetInspectionRequest.ProtoReflect.Descriptor instead.
 func (*GetInspectionRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{387}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{393}
 }
 
 func (x *GetInspectionRequest) GetId() string {
@@ -24627,7 +25373,7 @@ type GetInspectionResponse struct {
 
 func (x *GetInspectionResponse) Reset() {
 	*x = GetInspectionResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[388]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[394]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24639,7 +25385,7 @@ func (x *GetInspectionResponse) String() string {
 func (*GetInspectionResponse) ProtoMessage() {}
 
 func (x *GetInspectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[388]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[394]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24652,7 +25398,7 @@ func (x *GetInspectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetInspectionResponse.ProtoReflect.Descriptor instead.
 func (*GetInspectionResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{388}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{394}
 }
 
 func (x *GetInspectionResponse) GetSuccess() bool {
@@ -24697,7 +25443,7 @@ type AppInfo struct {
 
 func (x *AppInfo) Reset() {
 	*x = AppInfo{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[389]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[395]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24709,7 +25455,7 @@ func (x *AppInfo) String() string {
 func (*AppInfo) ProtoMessage() {}
 
 func (x *AppInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[389]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[395]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24722,7 +25468,7 @@ func (x *AppInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppInfo.ProtoReflect.Descriptor instead.
 func (*AppInfo) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{389}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{395}
 }
 
 func (x *AppInfo) GetName() string {
@@ -24830,7 +25576,7 @@ type CreateAppRequest struct {
 
 func (x *CreateAppRequest) Reset() {
 	*x = CreateAppRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[390]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[396]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24842,7 +25588,7 @@ func (x *CreateAppRequest) String() string {
 func (*CreateAppRequest) ProtoMessage() {}
 
 func (x *CreateAppRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[390]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[396]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24855,7 +25601,7 @@ func (x *CreateAppRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAppRequest.ProtoReflect.Descriptor instead.
 func (*CreateAppRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{390}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{396}
 }
 
 func (x *CreateAppRequest) GetName() string {
@@ -24916,7 +25662,7 @@ type CreateAppResponse struct {
 
 func (x *CreateAppResponse) Reset() {
 	*x = CreateAppResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[391]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[397]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24928,7 +25674,7 @@ func (x *CreateAppResponse) String() string {
 func (*CreateAppResponse) ProtoMessage() {}
 
 func (x *CreateAppResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[391]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[397]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24941,7 +25687,7 @@ func (x *CreateAppResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAppResponse.ProtoReflect.Descriptor instead.
 func (*CreateAppResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{391}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{397}
 }
 
 func (x *CreateAppResponse) GetSuccess() bool {
@@ -24994,7 +25740,7 @@ type ListAppsRequest struct {
 
 func (x *ListAppsRequest) Reset() {
 	*x = ListAppsRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[392]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[398]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25006,7 +25752,7 @@ func (x *ListAppsRequest) String() string {
 func (*ListAppsRequest) ProtoMessage() {}
 
 func (x *ListAppsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[392]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[398]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25019,7 +25765,7 @@ func (x *ListAppsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAppsRequest.ProtoReflect.Descriptor instead.
 func (*ListAppsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{392}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{398}
 }
 
 type ListAppsResponse struct {
@@ -25033,7 +25779,7 @@ type ListAppsResponse struct {
 
 func (x *ListAppsResponse) Reset() {
 	*x = ListAppsResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[393]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[399]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25045,7 +25791,7 @@ func (x *ListAppsResponse) String() string {
 func (*ListAppsResponse) ProtoMessage() {}
 
 func (x *ListAppsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[393]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[399]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25058,7 +25804,7 @@ func (x *ListAppsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAppsResponse.ProtoReflect.Descriptor instead.
 func (*ListAppsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{393}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{399}
 }
 
 func (x *ListAppsResponse) GetSuccess() bool {
@@ -25091,7 +25837,7 @@ type GetAppStatusRequest struct {
 
 func (x *GetAppStatusRequest) Reset() {
 	*x = GetAppStatusRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[394]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[400]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25103,7 +25849,7 @@ func (x *GetAppStatusRequest) String() string {
 func (*GetAppStatusRequest) ProtoMessage() {}
 
 func (x *GetAppStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[394]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[400]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25116,7 +25862,7 @@ func (x *GetAppStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAppStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetAppStatusRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{394}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{400}
 }
 
 func (x *GetAppStatusRequest) GetName() string {
@@ -25142,7 +25888,7 @@ type GetAppStatusResponse struct {
 
 func (x *GetAppStatusResponse) Reset() {
 	*x = GetAppStatusResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[395]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[401]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25154,7 +25900,7 @@ func (x *GetAppStatusResponse) String() string {
 func (*GetAppStatusResponse) ProtoMessage() {}
 
 func (x *GetAppStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[395]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[401]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25167,7 +25913,7 @@ func (x *GetAppStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAppStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetAppStatusResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{395}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{401}
 }
 
 func (x *GetAppStatusResponse) GetSuccess() bool {
@@ -25236,7 +25982,7 @@ type DeleteAppRequest struct {
 
 func (x *DeleteAppRequest) Reset() {
 	*x = DeleteAppRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[396]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[402]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25248,7 +25994,7 @@ func (x *DeleteAppRequest) String() string {
 func (*DeleteAppRequest) ProtoMessage() {}
 
 func (x *DeleteAppRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[396]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[402]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25261,7 +26007,7 @@ func (x *DeleteAppRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteAppRequest.ProtoReflect.Descriptor instead.
 func (*DeleteAppRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{396}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{402}
 }
 
 func (x *DeleteAppRequest) GetName() string {
@@ -25288,7 +26034,7 @@ type DeleteAppResponse struct {
 
 func (x *DeleteAppResponse) Reset() {
 	*x = DeleteAppResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[397]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[403]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25300,7 +26046,7 @@ func (x *DeleteAppResponse) String() string {
 func (*DeleteAppResponse) ProtoMessage() {}
 
 func (x *DeleteAppResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[397]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[403]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25313,7 +26059,7 @@ func (x *DeleteAppResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteAppResponse.ProtoReflect.Descriptor instead.
 func (*DeleteAppResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{397}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{403}
 }
 
 func (x *DeleteAppResponse) GetSuccess() bool {
@@ -25339,7 +26085,7 @@ type FailoverAppRequest struct {
 
 func (x *FailoverAppRequest) Reset() {
 	*x = FailoverAppRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[398]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[404]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25351,7 +26097,7 @@ func (x *FailoverAppRequest) String() string {
 func (*FailoverAppRequest) ProtoMessage() {}
 
 func (x *FailoverAppRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[398]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[404]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25364,7 +26110,7 @@ func (x *FailoverAppRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FailoverAppRequest.ProtoReflect.Descriptor instead.
 func (*FailoverAppRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{398}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{404}
 }
 
 func (x *FailoverAppRequest) GetName() string {
@@ -25386,7 +26132,7 @@ type FailoverAppResponse struct {
 
 func (x *FailoverAppResponse) Reset() {
 	*x = FailoverAppResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[399]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[405]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25398,7 +26144,7 @@ func (x *FailoverAppResponse) String() string {
 func (*FailoverAppResponse) ProtoMessage() {}
 
 func (x *FailoverAppResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[399]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[405]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25411,7 +26157,7 @@ func (x *FailoverAppResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FailoverAppResponse.ProtoReflect.Descriptor instead.
 func (*FailoverAppResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{399}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{405}
 }
 
 func (x *FailoverAppResponse) GetSuccess() bool {
@@ -25452,7 +26198,7 @@ type SnapshotAppRequest struct {
 
 func (x *SnapshotAppRequest) Reset() {
 	*x = SnapshotAppRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[400]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[406]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25464,7 +26210,7 @@ func (x *SnapshotAppRequest) String() string {
 func (*SnapshotAppRequest) ProtoMessage() {}
 
 func (x *SnapshotAppRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[400]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[406]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25477,7 +26223,7 @@ func (x *SnapshotAppRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotAppRequest.ProtoReflect.Descriptor instead.
 func (*SnapshotAppRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{400}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{406}
 }
 
 func (x *SnapshotAppRequest) GetName() string {
@@ -25505,7 +26251,7 @@ type SnapshotAppResponse struct {
 
 func (x *SnapshotAppResponse) Reset() {
 	*x = SnapshotAppResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[401]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[407]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25517,7 +26263,7 @@ func (x *SnapshotAppResponse) String() string {
 func (*SnapshotAppResponse) ProtoMessage() {}
 
 func (x *SnapshotAppResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[401]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[407]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25530,7 +26276,7 @@ func (x *SnapshotAppResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SnapshotAppResponse.ProtoReflect.Descriptor instead.
 func (*SnapshotAppResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{401}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{407}
 }
 
 func (x *SnapshotAppResponse) GetSuccess() bool {
@@ -25564,7 +26310,7 @@ type TrimPoolsRequest struct {
 
 func (x *TrimPoolsRequest) Reset() {
 	*x = TrimPoolsRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[402]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[408]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25576,7 +26322,7 @@ func (x *TrimPoolsRequest) String() string {
 func (*TrimPoolsRequest) ProtoMessage() {}
 
 func (x *TrimPoolsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[402]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[408]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25589,7 +26335,7 @@ func (x *TrimPoolsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrimPoolsRequest.ProtoReflect.Descriptor instead.
 func (*TrimPoolsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{402}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{408}
 }
 
 func (x *TrimPoolsRequest) GetNode() string {
@@ -25611,7 +26357,7 @@ type TrimResultInfo struct {
 
 func (x *TrimResultInfo) Reset() {
 	*x = TrimResultInfo{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[403]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[409]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25623,7 +26369,7 @@ func (x *TrimResultInfo) String() string {
 func (*TrimResultInfo) ProtoMessage() {}
 
 func (x *TrimResultInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[403]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[409]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25636,7 +26382,7 @@ func (x *TrimResultInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrimResultInfo.ProtoReflect.Descriptor instead.
 func (*TrimResultInfo) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{403}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{409}
 }
 
 func (x *TrimResultInfo) GetNode() string {
@@ -25678,7 +26424,7 @@ type TrimPoolsResponse struct {
 
 func (x *TrimPoolsResponse) Reset() {
 	*x = TrimPoolsResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[404]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[410]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25690,7 +26436,7 @@ func (x *TrimPoolsResponse) String() string {
 func (*TrimPoolsResponse) ProtoMessage() {}
 
 func (x *TrimPoolsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[404]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[410]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25703,7 +26449,7 @@ func (x *TrimPoolsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrimPoolsResponse.ProtoReflect.Descriptor instead.
 func (*TrimPoolsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{404}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{410}
 }
 
 func (x *TrimPoolsResponse) GetSuccess() bool {
@@ -25737,7 +26483,7 @@ type ListPoolDisksRequest struct {
 
 func (x *ListPoolDisksRequest) Reset() {
 	*x = ListPoolDisksRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[405]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[411]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25749,7 +26495,7 @@ func (x *ListPoolDisksRequest) String() string {
 func (*ListPoolDisksRequest) ProtoMessage() {}
 
 func (x *ListPoolDisksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[405]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[411]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25762,7 +26508,7 @@ func (x *ListPoolDisksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPoolDisksRequest.ProtoReflect.Descriptor instead.
 func (*ListPoolDisksRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{405}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{411}
 }
 
 func (x *ListPoolDisksRequest) GetPool() string {
@@ -25798,7 +26544,7 @@ type PoolDiskInfo struct {
 
 func (x *PoolDiskInfo) Reset() {
 	*x = PoolDiskInfo{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[406]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[412]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25810,7 +26556,7 @@ func (x *PoolDiskInfo) String() string {
 func (*PoolDiskInfo) ProtoMessage() {}
 
 func (x *PoolDiskInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[406]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[412]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25823,7 +26569,7 @@ func (x *PoolDiskInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PoolDiskInfo.ProtoReflect.Descriptor instead.
 func (*PoolDiskInfo) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{406}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{412}
 }
 
 func (x *PoolDiskInfo) GetNode() string {
@@ -25900,7 +26646,7 @@ type ListPoolDisksResponse struct {
 
 func (x *ListPoolDisksResponse) Reset() {
 	*x = ListPoolDisksResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[407]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[413]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25912,7 +26658,7 @@ func (x *ListPoolDisksResponse) String() string {
 func (*ListPoolDisksResponse) ProtoMessage() {}
 
 func (x *ListPoolDisksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[407]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[413]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25925,7 +26671,7 @@ func (x *ListPoolDisksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPoolDisksResponse.ProtoReflect.Descriptor instead.
 func (*ListPoolDisksResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{407}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{413}
 }
 
 func (x *ListPoolDisksResponse) GetSuccess() bool {
@@ -25959,7 +26705,7 @@ type ListNodeDisksRequest struct {
 
 func (x *ListNodeDisksRequest) Reset() {
 	*x = ListNodeDisksRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[408]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[414]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -25971,7 +26717,7 @@ func (x *ListNodeDisksRequest) String() string {
 func (*ListNodeDisksRequest) ProtoMessage() {}
 
 func (x *ListNodeDisksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[408]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[414]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -25984,7 +26730,7 @@ func (x *ListNodeDisksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodeDisksRequest.ProtoReflect.Descriptor instead.
 func (*ListNodeDisksRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{408}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{414}
 }
 
 func (x *ListNodeDisksRequest) GetNode() string {
@@ -26020,7 +26766,7 @@ type NodeDiskInfo struct {
 
 func (x *NodeDiskInfo) Reset() {
 	*x = NodeDiskInfo{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[409]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[415]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26032,7 +26778,7 @@ func (x *NodeDiskInfo) String() string {
 func (*NodeDiskInfo) ProtoMessage() {}
 
 func (x *NodeDiskInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[409]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[415]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26045,7 +26791,7 @@ func (x *NodeDiskInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeDiskInfo.ProtoReflect.Descriptor instead.
 func (*NodeDiskInfo) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{409}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{415}
 }
 
 func (x *NodeDiskInfo) GetNode() string {
@@ -26143,7 +26889,7 @@ type ListNodeDisksResponse struct {
 
 func (x *ListNodeDisksResponse) Reset() {
 	*x = ListNodeDisksResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[410]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[416]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26155,7 +26901,7 @@ func (x *ListNodeDisksResponse) String() string {
 func (*ListNodeDisksResponse) ProtoMessage() {}
 
 func (x *ListNodeDisksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[410]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[416]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26168,7 +26914,7 @@ func (x *ListNodeDisksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNodeDisksResponse.ProtoReflect.Descriptor instead.
 func (*ListNodeDisksResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{410}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{416}
 }
 
 func (x *ListNodeDisksResponse) GetSuccess() bool {
@@ -26211,7 +26957,7 @@ type ShipResourceRequest struct {
 
 func (x *ShipResourceRequest) Reset() {
 	*x = ShipResourceRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[411]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[417]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26223,7 +26969,7 @@ func (x *ShipResourceRequest) String() string {
 func (*ShipResourceRequest) ProtoMessage() {}
 
 func (x *ShipResourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[411]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[417]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26236,7 +26982,7 @@ func (x *ShipResourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShipResourceRequest.ProtoReflect.Descriptor instead.
 func (*ShipResourceRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{411}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{417}
 }
 
 func (x *ShipResourceRequest) GetResource() string {
@@ -26293,7 +27039,7 @@ type PrepareShipReceiveRequest struct {
 
 func (x *PrepareShipReceiveRequest) Reset() {
 	*x = PrepareShipReceiveRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[412]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[418]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26305,7 +27051,7 @@ func (x *PrepareShipReceiveRequest) String() string {
 func (*PrepareShipReceiveRequest) ProtoMessage() {}
 
 func (x *PrepareShipReceiveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[412]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[418]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26318,7 +27064,7 @@ func (x *PrepareShipReceiveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareShipReceiveRequest.ProtoReflect.Descriptor instead.
 func (*PrepareShipReceiveRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{412}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{418}
 }
 
 func (x *PrepareShipReceiveRequest) GetResource() string {
@@ -26358,7 +27104,7 @@ type PrepareShipReceiveResponse struct {
 
 func (x *PrepareShipReceiveResponse) Reset() {
 	*x = PrepareShipReceiveResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[413]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[419]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26370,7 +27116,7 @@ func (x *PrepareShipReceiveResponse) String() string {
 func (*PrepareShipReceiveResponse) ProtoMessage() {}
 
 func (x *PrepareShipReceiveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[413]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[419]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26383,7 +27129,7 @@ func (x *PrepareShipReceiveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareShipReceiveResponse.ProtoReflect.Descriptor instead.
 func (*PrepareShipReceiveResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{413}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{419}
 }
 
 func (x *PrepareShipReceiveResponse) GetSuccess() bool {
@@ -26440,7 +27186,7 @@ type FinishShipReceiveRequest struct {
 
 func (x *FinishShipReceiveRequest) Reset() {
 	*x = FinishShipReceiveRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[414]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[420]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26452,7 +27198,7 @@ func (x *FinishShipReceiveRequest) String() string {
 func (*FinishShipReceiveRequest) ProtoMessage() {}
 
 func (x *FinishShipReceiveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[414]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[420]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26465,7 +27211,7 @@ func (x *FinishShipReceiveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinishShipReceiveRequest.ProtoReflect.Descriptor instead.
 func (*FinishShipReceiveRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{414}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{420}
 }
 
 func (x *FinishShipReceiveRequest) GetResource() string {
@@ -26501,7 +27247,7 @@ type FinishShipReceiveResponse struct {
 
 func (x *FinishShipReceiveResponse) Reset() {
 	*x = FinishShipReceiveResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[415]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[421]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26513,7 +27259,7 @@ func (x *FinishShipReceiveResponse) String() string {
 func (*FinishShipReceiveResponse) ProtoMessage() {}
 
 func (x *FinishShipReceiveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[415]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[421]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26526,7 +27272,7 @@ func (x *FinishShipReceiveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinishShipReceiveResponse.ProtoReflect.Descriptor instead.
 func (*FinishShipReceiveResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{415}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{421}
 }
 
 func (x *FinishShipReceiveResponse) GetSuccess() bool {
@@ -26568,7 +27314,7 @@ type RemovePoolDiskRequest struct {
 
 func (x *RemovePoolDiskRequest) Reset() {
 	*x = RemovePoolDiskRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[416]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[422]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26580,7 +27326,7 @@ func (x *RemovePoolDiskRequest) String() string {
 func (*RemovePoolDiskRequest) ProtoMessage() {}
 
 func (x *RemovePoolDiskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[416]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[422]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26593,7 +27339,7 @@ func (x *RemovePoolDiskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemovePoolDiskRequest.ProtoReflect.Descriptor instead.
 func (*RemovePoolDiskRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{416}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{422}
 }
 
 func (x *RemovePoolDiskRequest) GetPool() string {
@@ -26633,7 +27379,7 @@ type ReplacePoolDiskRequest struct {
 
 func (x *ReplacePoolDiskRequest) Reset() {
 	*x = ReplacePoolDiskRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[417]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[423]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26645,7 +27391,7 @@ func (x *ReplacePoolDiskRequest) String() string {
 func (*ReplacePoolDiskRequest) ProtoMessage() {}
 
 func (x *ReplacePoolDiskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[417]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[423]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26658,7 +27404,7 @@ func (x *ReplacePoolDiskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplacePoolDiskRequest.ProtoReflect.Descriptor instead.
 func (*ReplacePoolDiskRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{417}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{423}
 }
 
 func (x *ReplacePoolDiskRequest) GetPool() string {
@@ -26708,7 +27454,7 @@ type MoveVolumeRequest struct {
 
 func (x *MoveVolumeRequest) Reset() {
 	*x = MoveVolumeRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[418]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[424]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26720,7 +27466,7 @@ func (x *MoveVolumeRequest) String() string {
 func (*MoveVolumeRequest) ProtoMessage() {}
 
 func (x *MoveVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[418]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[424]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26733,7 +27479,7 @@ func (x *MoveVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MoveVolumeRequest.ProtoReflect.Descriptor instead.
 func (*MoveVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{418}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{424}
 }
 
 func (x *MoveVolumeRequest) GetResource() string {
@@ -26768,7 +27514,7 @@ type StorageJobResponse struct {
 
 func (x *StorageJobResponse) Reset() {
 	*x = StorageJobResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[419]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[425]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26780,7 +27526,7 @@ func (x *StorageJobResponse) String() string {
 func (*StorageJobResponse) ProtoMessage() {}
 
 func (x *StorageJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[419]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[425]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26793,7 +27539,7 @@ func (x *StorageJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageJobResponse.ProtoReflect.Descriptor instead.
 func (*StorageJobResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{419}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{425}
 }
 
 func (x *StorageJobResponse) GetSuccess() bool {
@@ -26826,7 +27572,7 @@ type ListStorageJobsRequest struct {
 
 func (x *ListStorageJobsRequest) Reset() {
 	*x = ListStorageJobsRequest{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[420]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[426]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26838,7 +27584,7 @@ func (x *ListStorageJobsRequest) String() string {
 func (*ListStorageJobsRequest) ProtoMessage() {}
 
 func (x *ListStorageJobsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[420]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[426]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26851,7 +27597,7 @@ func (x *ListStorageJobsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStorageJobsRequest.ProtoReflect.Descriptor instead.
 func (*ListStorageJobsRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{420}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{426}
 }
 
 func (x *ListStorageJobsRequest) GetIncludeFinished() bool {
@@ -26878,7 +27624,7 @@ type StorageJobInfo struct {
 
 func (x *StorageJobInfo) Reset() {
 	*x = StorageJobInfo{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[421]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[427]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26890,7 +27636,7 @@ func (x *StorageJobInfo) String() string {
 func (*StorageJobInfo) ProtoMessage() {}
 
 func (x *StorageJobInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[421]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[427]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26903,7 +27649,7 @@ func (x *StorageJobInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StorageJobInfo.ProtoReflect.Descriptor instead.
 func (*StorageJobInfo) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{421}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{427}
 }
 
 func (x *StorageJobInfo) GetId() string {
@@ -26973,7 +27719,7 @@ type ListStorageJobsResponse struct {
 
 func (x *ListStorageJobsResponse) Reset() {
 	*x = ListStorageJobsResponse{}
-	mi := &file_api_proto_v1_haify_proto_msgTypes[422]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[428]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -26985,7 +27731,7 @@ func (x *ListStorageJobsResponse) String() string {
 func (*ListStorageJobsResponse) ProtoMessage() {}
 
 func (x *ListStorageJobsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_v1_haify_proto_msgTypes[422]
+	mi := &file_api_proto_v1_haify_proto_msgTypes[428]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -26998,7 +27744,7 @@ func (x *ListStorageJobsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStorageJobsResponse.ProtoReflect.Descriptor instead.
 func (*ListStorageJobsResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{422}
+	return file_api_proto_v1_haify_proto_rawDescGZIP(), []int{428}
 }
 
 func (x *ListStorageJobsResponse) GetSuccess() bool {
@@ -27856,7 +28602,7 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x15.v1.NodeResourceStateR\x05value:\x028\x01\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x92\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe5\x05\n" +
 	"\x0eResourceStatus\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04role\x18\x02 \x01(\tR\x04role\x12\x14\n" +
@@ -27875,7 +28621,9 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\vwan_metrics\x18\f \x01(\v2\x0e.v1.WANMetricsR\n" +
 	"wanMetrics\x12&\n" +
 	"\x06quorum\x18\r \x01(\v2\x0e.v1.QuorumInfoR\x06quorum\x12\x1c\n" +
-	"\tencrypted\x18\x0e \x01(\bR\tencrypted\x1aT\n" +
+	"\tencrypted\x18\x0e \x01(\bR\tencrypted\x12(\n" +
+	"\x10wan_buffer_bytes\x18\x0f \x01(\x04R\x0ewanBufferBytes\x12'\n" +
+	"\x0fwan_compression\x18\x10 \x01(\tR\x0ewanCompression\x1aT\n" +
 	"\x0fNodeStatesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12+\n" +
 	"\x05value\x18\x02 \x01(\v2\x15.v1.NodeResourceStateR\x05value:\x028\x01\x1a;\n" +
@@ -27889,7 +28637,7 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\x06online\x18\x03 \x01(\x05R\x06online\x12\x1d\n" +
 	"\n" +
 	"has_quorum\x18\x04 \x01(\bR\thasQuorum\x12\x1c\n" +
-	"\ttolerated\x18\x05 \x01(\x05R\ttolerated\"\xcb\x03\n" +
+	"\ttolerated\x18\x05 \x01(\x05R\ttolerated\"\xed\a\n" +
 	"\n" +
 	"WANMetrics\x12*\n" +
 	"\x11buffer_used_bytes\x18\x01 \x01(\x04R\x0fbufferUsedBytes\x12(\n" +
@@ -27906,7 +28654,25 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"reconnects\x18\n" +
 	" \x01(\x04R\n" +
 	"reconnects\x12(\n" +
-	"\x10ring_full_events\x18\v \x01(\x04R\x0eringFullEvents\"\xa5\x03\n" +
+	"\x10ring_full_events\x18\v \x01(\x04R\x0eringFullEvents\x12:\n" +
+	"\x17buffer_high_water_bytes\x18\f \x01(\x04H\x00R\x14bufferHighWaterBytes\x88\x01\x01\x12'\n" +
+	"\rinput_avg_bps\x18\r \x01(\x01H\x01R\vinputAvgBps\x88\x01\x01\x12'\n" +
+	"\rinput_p99_bps\x18\x0e \x01(\x01H\x02R\vinputP99Bps\x88\x01\x01\x12)\n" +
+	"\x0einput_peak_bps\x18\x0f \x01(\x01H\x03R\finputPeakBps\x88\x01\x01\x12\x1e\n" +
+	"\blink_bps\x18\x10 \x01(\x01H\x04R\alinkBps\x88\x01\x01\x12-\n" +
+	"\x10rate_window_secs\x18\x11 \x01(\x04H\x05R\x0erateWindowSecs\x88\x01\x01\x121\n" +
+	"\x12longest_burst_secs\x18\x12 \x01(\x04H\x06R\x10longestBurstSecs\x88\x01\x01\x12$\n" +
+	"\vcpu_seconds\x18\x13 \x01(\x01H\aR\n" +
+	"cpuSeconds\x88\x01\x01\x12#\n" +
+	"\rproxy_version\x18\x14 \x01(\tR\fproxyVersionB\x1a\n" +
+	"\x18_buffer_high_water_bytesB\x10\n" +
+	"\x0e_input_avg_bpsB\x10\n" +
+	"\x0e_input_p99_bpsB\x11\n" +
+	"\x0f_input_peak_bpsB\v\n" +
+	"\t_link_bpsB\x13\n" +
+	"\x11_rate_window_secsB\x15\n" +
+	"\x13_longest_burst_secsB\x0e\n" +
+	"\f_cpu_seconds\"\xa5\x03\n" +
 	"\x11NodeResourceState\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x1d\n" +
 	"\n" +
@@ -28704,7 +29470,74 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1f\n" +
 	"\vdr_endpoint\x18\x03 \x01(\tR\n" +
 	"drEndpoint\x12%\n" +
-	"\x0eegress_address\x18\x04 \x01(\tR\regressAddress\"^\n" +
+	"\x0eegress_address\x18\x04 \x01(\tR\regressAddress\"c\n" +
+	"\x13SetWanTuningRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06buffer\x18\x02 \x01(\tR\x06buffer\x12 \n" +
+	"\vcompression\x18\x03 \x01(\tR\vcompression\"\x8f\x01\n" +
+	"\x14SetWanTuningResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12!\n" +
+	"\fbuffer_bytes\x18\x03 \x01(\x04R\vbufferBytes\x12 \n" +
+	"\vcompression\x18\x04 \x01(\tR\vcompression\"\x8a\x01\n" +
+	"\x13GetWanSizingRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1c\n" +
+	"\tbandwidth\x18\x02 \x01(\tR\tbandwidth\x12\x12\n" +
+	"\x04days\x18\x03 \x01(\rR\x04days\x12-\n" +
+	"\x12sample_compression\x18\x04 \x01(\bR\x11sampleCompression\"\xa3\x02\n" +
+	"\x10WanSizingHistory\x12\x1f\n" +
+	"\vwindow_secs\x18\x01 \x01(\x01R\n" +
+	"windowSecs\x12\x12\n" +
+	"\x04days\x18\x02 \x01(\rR\x04days\x12\x18\n" +
+	"\asamples\x18\x03 \x01(\rR\asamples\x12'\n" +
+	"\x0fresolution_secs\x18\x04 \x01(\x01R\x0eresolutionSecs\x12\x17\n" +
+	"\aavg_bps\x18\x05 \x01(\x01R\x06avgBps\x12\x17\n" +
+	"\ap99_bps\x18\x06 \x01(\x01R\x06p99Bps\x12\x19\n" +
+	"\bpeak_bps\x18\a \x01(\x01R\apeakBps\x12\x1b\n" +
+	"\tfirst_day\x18\b \x01(\tR\bfirstDay\x12\x19\n" +
+	"\blast_day\x18\t \x01(\tR\alastDay\x12\x12\n" +
+	"\x04node\x18\n" +
+	" \x01(\tR\x04node\"\xaf\x01\n" +
+	"\x0fWanSizingSample\x12\x14\n" +
+	"\x05ratio\x18\x01 \x01(\x01R\x05ratio\x12#\n" +
+	"\rsampled_bytes\x18\x02 \x01(\x04R\fsampledBytes\x12\x16\n" +
+	"\x06chunks\x18\x03 \x01(\rR\x06chunks\x12\x1f\n" +
+	"\vzero_chunks\x18\x04 \x01(\rR\n" +
+	"zeroChunks\x12\x12\n" +
+	"\x04node\x18\x05 \x01(\tR\x04node\x12\x14\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\"\x8d\a\n" +
+	"\x14GetWanSizingResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x10\n" +
+	"\x03wan\x18\x03 \x01(\bR\x03wan\x12\x18\n" +
+	"\aoutcome\x18\x04 \x01(\tR\aoutcome\x12\x18\n" +
+	"\asummary\x18\x05 \x01(\tR\asummary\x12\x17\n" +
+	"\aavg_bps\x18\x06 \x01(\x01R\x06avgBps\x12\x1d\n" +
+	"\n" +
+	"avg_source\x18\a \x01(\tR\tavgSource\x12\x19\n" +
+	"\bpeak_bps\x18\b \x01(\x01R\apeakBps\x12\x1f\n" +
+	"\vpeak_source\x18\t \x01(\tR\n" +
+	"peakSource\x12+\n" +
+	"\x11compression_ratio\x18\n" +
+	" \x01(\x01R\x10compressionRatio\x12!\n" +
+	"\fratio_source\x18\v \x01(\tR\vratioSource\x12\x19\n" +
+	"\blink_bps\x18\f \x01(\x01R\alinkBps\x12\x1f\n" +
+	"\vlink_source\x18\r \x01(\tR\n" +
+	"linkSource\x128\n" +
+	"\x18recommended_buffer_bytes\x18\x0e \x01(\x04R\x16recommendedBufferBytes\x12!\n" +
+	"\fbuffer_basis\x18\x0f \x01(\tR\vbufferBasis\x120\n" +
+	"\x14current_buffer_bytes\x18\x10 \x01(\x04R\x12currentBufferBytes\x127\n" +
+	"\x17recommended_compression\x18\x11 \x01(\tR\x16recommendedCompression\x12/\n" +
+	"\x13current_compression\x18\x12 \x01(\tR\x12currentCompression\x12)\n" +
+	"\x11cpu_cores_at_peak\x18\x13 \x01(\x01R\x0ecpuCoresAtPeak\x12\x1f\n" +
+	"\voutage_secs\x18\x14 \x01(\x01R\n" +
+	"outageSecs\x12\x14\n" +
+	"\x05notes\x18\x15 \x03(\tR\x05notes\x12.\n" +
+	"\ahistory\x18\x16 \x01(\v2\x14.v1.WanSizingHistoryR\ahistory\x12$\n" +
+	"\x05proxy\x18\x17 \x01(\v2\x0e.v1.WANMetricsR\x05proxy\x12+\n" +
+	"\x06sample\x18\x18 \x01(\v2\x13.v1.WanSizingSampleR\x06sample\x12\x1d\n" +
+	"\n" +
+	"drain_secs\x18\x19 \x01(\x01R\tdrainSecs\"^\n" +
 	"\x11DRFailbackRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04node\x18\x02 \x01(\tR\x04node\x12!\n" +
@@ -29051,7 +29884,7 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\x17ListStorageJobsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12&\n" +
-	"\x04jobs\x18\x03 \x03(\v2\x12.v1.StorageJobInfoR\x04jobs2ǧ\x01\n" +
+	"\x04jobs\x18\x03 \x03(\v2\x12.v1.StorageJobInfoR\x04jobs2\xa2\xa9\x01\n" +
 	"\x0fHaifyController\x12Q\n" +
 	"\n" +
 	"CreatePool\x12\x15.v1.CreatePoolRequest\x1a\x16.v1.CreatePoolResponse\"\x14\x82\xd3\xe4\x93\x02\x0e:\x01*\"\t/v1/pools\x12U\n" +
@@ -29236,7 +30069,9 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\x0eRepairWanProxy\x12\x19.v1.RepairWanProxyRequest\x1a\x1a.v1.RepairWanProxyResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/resources/{name}/wan/repair\x12i\n" +
 	"\n" +
 	"DRFailback\x12\x15.v1.DRFailbackRequest\x1a\x16.v1.DRFailbackResponse\",\x82\xd3\xe4\x93\x02&:\x01*\"!/v1/resources/{name}/wan/failback\x12u\n" +
-	"\x0eSetWanEndpoint\x12\x19.v1.SetWanEndpointRequest\x1a\x1a.v1.SetWanEndpointResponse\",\x82\xd3\xe4\x93\x02&:\x01*\"!/v1/resources/{name}/wan/endpoint\x12o\n" +
+	"\x0eSetWanEndpoint\x12\x19.v1.SetWanEndpointRequest\x1a\x1a.v1.SetWanEndpointResponse\",\x82\xd3\xe4\x93\x02&:\x01*\"!/v1/resources/{name}/wan/endpoint\x12m\n" +
+	"\fSetWanTuning\x12\x17.v1.SetWanTuningRequest\x1a\x18.v1.SetWanTuningResponse\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/v1/resources/{name}/wan/tuning\x12j\n" +
+	"\fGetWanSizing\x12\x17.v1.GetWanSizingRequest\x1a\x18.v1.GetWanSizingResponse\"'\x82\xd3\xe4\x93\x02!\x12\x1f/v1/resources/{name}/wan/sizing\x12o\n" +
 	"\x0eVerifyResource\x12\x19.v1.VerifyResourceRequest\x1a\x1a.v1.VerifyResourceResponse\"&\x82\xd3\xe4\x93\x02 :\x01*\"\x1b/v1/resources/{name}/verify\x12L\n" +
 	"\vWatchEvents\x12\x16.v1.WatchEventsRequest\x1a\t.v1.Event\"\x18\x82\xd3\xe4\x93\x02\x12\x12\x10/v1/events/watch0\x01\x12D\n" +
 	"\rGetRbacWhoami\x12\x18.v1.GetRbacWhoamiRequest\x1a\x19.v1.GetRbacWhoamiResponse\x12M\n" +
@@ -29267,7 +30102,7 @@ func file_api_proto_v1_haify_proto_rawDescGZIP() []byte {
 	return file_api_proto_v1_haify_proto_rawDescData
 }
 
-var file_api_proto_v1_haify_proto_msgTypes = make([]protoimpl.MessageInfo, 448)
+var file_api_proto_v1_haify_proto_msgTypes = make([]protoimpl.MessageInfo, 454)
 var file_api_proto_v1_haify_proto_goTypes = []any{
 	(*CreatePoolRequest)(nil),                 // 0: v1.CreatePoolRequest
 	(*CreatePoolResponse)(nil),                // 1: v1.CreatePoolResponse
@@ -29619,104 +30454,110 @@ var file_api_proto_v1_haify_proto_goTypes = []any{
 	(*SetResourceProfileResponse)(nil),        // 347: v1.SetResourceProfileResponse
 	(*SetWanEndpointRequest)(nil),             // 348: v1.SetWanEndpointRequest
 	(*SetWanEndpointResponse)(nil),            // 349: v1.SetWanEndpointResponse
-	(*DRFailbackRequest)(nil),                 // 350: v1.DRFailbackRequest
-	(*VerifyResourceRequest)(nil),             // 351: v1.VerifyResourceRequest
-	(*VerifyPeer)(nil),                        // 352: v1.VerifyPeer
-	(*VerifyResourceResponse)(nil),            // 353: v1.VerifyResourceResponse
-	(*DRFailbackResponse)(nil),                // 354: v1.DRFailbackResponse
-	(*SetupReplicationTLSRequest)(nil),        // 355: v1.SetupReplicationTLSRequest
-	(*GetReplicationTLSStatusRequest)(nil),    // 356: v1.GetReplicationTLSStatusRequest
-	(*NodeTLSInfo)(nil),                       // 357: v1.NodeTLSInfo
-	(*ReplicationTLSResponse)(nil),            // 358: v1.ReplicationTLSResponse
-	(*SetResourceTLSRequest)(nil),             // 359: v1.SetResourceTLSRequest
-	(*SetResourceTLSResponse)(nil),            // 360: v1.SetResourceTLSResponse
-	(*GetRbacWhoamiRequest)(nil),              // 361: v1.GetRbacWhoamiRequest
-	(*GetRbacWhoamiResponse)(nil),             // 362: v1.GetRbacWhoamiResponse
-	(*ListRbacPoliciesRequest)(nil),           // 363: v1.ListRbacPoliciesRequest
-	(*RbacPolicy)(nil),                        // 364: v1.RbacPolicy
-	(*RbacUser)(nil),                          // 365: v1.RbacUser
-	(*ListRbacPoliciesResponse)(nil),          // 366: v1.ListRbacPoliciesResponse
-	(*CreateRbacUserRequest)(nil),             // 367: v1.CreateRbacUserRequest
-	(*CreateRbacUserResponse)(nil),            // 368: v1.CreateRbacUserResponse
-	(*DeleteRbacUserRequest)(nil),             // 369: v1.DeleteRbacUserRequest
-	(*DeleteRbacUserResponse)(nil),            // 370: v1.DeleteRbacUserResponse
-	(*SetRbacUserRoleRequest)(nil),            // 371: v1.SetRbacUserRoleRequest
-	(*SetRbacUserRoleResponse)(nil),           // 372: v1.SetRbacUserRoleResponse
-	(*ApprovalInfo)(nil),                      // 373: v1.ApprovalInfo
-	(*ListApprovalsRequest)(nil),              // 374: v1.ListApprovalsRequest
-	(*ListApprovalsResponse)(nil),             // 375: v1.ListApprovalsResponse
-	(*ApproveRequestRequest)(nil),             // 376: v1.ApproveRequestRequest
-	(*ApproveRequestResponse)(nil),            // 377: v1.ApproveRequestResponse
-	(*RejectRequestRequest)(nil),              // 378: v1.RejectRequestRequest
-	(*RejectRequestResponse)(nil),             // 379: v1.RejectRequestResponse
-	(*InspectionCheck)(nil),                   // 380: v1.InspectionCheck
-	(*InspectionSummary)(nil),                 // 381: v1.InspectionSummary
-	(*InspectionReport)(nil),                  // 382: v1.InspectionReport
-	(*RunInspectionRequest)(nil),              // 383: v1.RunInspectionRequest
-	(*RunInspectionResponse)(nil),             // 384: v1.RunInspectionResponse
-	(*ListInspectionsRequest)(nil),            // 385: v1.ListInspectionsRequest
-	(*ListInspectionsResponse)(nil),           // 386: v1.ListInspectionsResponse
-	(*GetInspectionRequest)(nil),              // 387: v1.GetInspectionRequest
-	(*GetInspectionResponse)(nil),             // 388: v1.GetInspectionResponse
-	(*AppInfo)(nil),                           // 389: v1.AppInfo
-	(*CreateAppRequest)(nil),                  // 390: v1.CreateAppRequest
-	(*CreateAppResponse)(nil),                 // 391: v1.CreateAppResponse
-	(*ListAppsRequest)(nil),                   // 392: v1.ListAppsRequest
-	(*ListAppsResponse)(nil),                  // 393: v1.ListAppsResponse
-	(*GetAppStatusRequest)(nil),               // 394: v1.GetAppStatusRequest
-	(*GetAppStatusResponse)(nil),              // 395: v1.GetAppStatusResponse
-	(*DeleteAppRequest)(nil),                  // 396: v1.DeleteAppRequest
-	(*DeleteAppResponse)(nil),                 // 397: v1.DeleteAppResponse
-	(*FailoverAppRequest)(nil),                // 398: v1.FailoverAppRequest
-	(*FailoverAppResponse)(nil),               // 399: v1.FailoverAppResponse
-	(*SnapshotAppRequest)(nil),                // 400: v1.SnapshotAppRequest
-	(*SnapshotAppResponse)(nil),               // 401: v1.SnapshotAppResponse
-	(*TrimPoolsRequest)(nil),                  // 402: v1.TrimPoolsRequest
-	(*TrimResultInfo)(nil),                    // 403: v1.TrimResultInfo
-	(*TrimPoolsResponse)(nil),                 // 404: v1.TrimPoolsResponse
-	(*ListPoolDisksRequest)(nil),              // 405: v1.ListPoolDisksRequest
-	(*PoolDiskInfo)(nil),                      // 406: v1.PoolDiskInfo
-	(*ListPoolDisksResponse)(nil),             // 407: v1.ListPoolDisksResponse
-	(*ListNodeDisksRequest)(nil),              // 408: v1.ListNodeDisksRequest
-	(*NodeDiskInfo)(nil),                      // 409: v1.NodeDiskInfo
-	(*ListNodeDisksResponse)(nil),             // 410: v1.ListNodeDisksResponse
-	(*ShipResourceRequest)(nil),               // 411: v1.ShipResourceRequest
-	(*PrepareShipReceiveRequest)(nil),         // 412: v1.PrepareShipReceiveRequest
-	(*PrepareShipReceiveResponse)(nil),        // 413: v1.PrepareShipReceiveResponse
-	(*FinishShipReceiveRequest)(nil),          // 414: v1.FinishShipReceiveRequest
-	(*FinishShipReceiveResponse)(nil),         // 415: v1.FinishShipReceiveResponse
-	(*RemovePoolDiskRequest)(nil),             // 416: v1.RemovePoolDiskRequest
-	(*ReplacePoolDiskRequest)(nil),            // 417: v1.ReplacePoolDiskRequest
-	(*MoveVolumeRequest)(nil),                 // 418: v1.MoveVolumeRequest
-	(*StorageJobResponse)(nil),                // 419: v1.StorageJobResponse
-	(*ListStorageJobsRequest)(nil),            // 420: v1.ListStorageJobsRequest
-	(*StorageJobInfo)(nil),                    // 421: v1.StorageJobInfo
-	(*ListStorageJobsResponse)(nil),           // 422: v1.ListStorageJobsResponse
-	nil,                                       // 423: v1.SetNodeLabelsRequest.LabelsEntry
-	nil,                                       // 424: v1.NodeInfo.LabelsEntry
-	nil,                                       // 425: v1.CreateResourceRequest.DrbdOptionsEntry
-	nil,                                       // 426: v1.CreateResourceRequest.LabelsEntry
-	nil,                                       // 427: v1.AdoptResourceRequest.LabelsEntry
-	nil,                                       // 428: v1.ResourceProfile.DrbdOptionsEntry
-	nil,                                       // 429: v1.ResourceProfile.LabelsEntry
-	nil,                                       // 430: v1.UpdateResourceOptionsRequest.OptionsEntry
-	nil,                                       // 431: v1.SetResourceLabelsRequest.LabelsEntry
-	nil,                                       // 432: v1.SetResourceLabelsResponse.LabelsEntry
-	nil,                                       // 433: v1.OcfAgent.ParamsEntry
-	nil,                                       // 434: v1.ControllerLogEntry.FieldsEntry
-	nil,                                       // 435: v1.Event.DetailsEntry
-	nil,                                       // 436: v1.ResourceInfo.NodeStatesEntry
-	nil,                                       // 437: v1.ResourceInfo.LabelsEntry
-	nil,                                       // 438: v1.ResourceStatus.NodeStatesEntry
-	nil,                                       // 439: v1.ResourceStatus.WanProxyEntry
-	nil,                                       // 440: v1.NotifyChannelInfo.HeadersEntry
-	nil,                                       // 441: v1.SaveNotifyChannelRequest.HeadersEntry
-	nil,                                       // 442: v1.ImportBackupsResponse.SkippedEntry
-	nil,                                       // 443: v1.CreateNFSGatewayRequest.OptionsEntry
-	nil,                                       // 444: v1.CreateISCSIGatewayRequest.OptionsEntry
-	nil,                                       // 445: v1.CreateNVMeGatewayRequest.OptionsEntry
-	nil,                                       // 446: v1.GatewayInfo.OptionsEntry
-	nil,                                       // 447: v1.SetResourceProfileOptionsRequest.OptionsEntry
+	(*SetWanTuningRequest)(nil),               // 350: v1.SetWanTuningRequest
+	(*SetWanTuningResponse)(nil),              // 351: v1.SetWanTuningResponse
+	(*GetWanSizingRequest)(nil),               // 352: v1.GetWanSizingRequest
+	(*WanSizingHistory)(nil),                  // 353: v1.WanSizingHistory
+	(*WanSizingSample)(nil),                   // 354: v1.WanSizingSample
+	(*GetWanSizingResponse)(nil),              // 355: v1.GetWanSizingResponse
+	(*DRFailbackRequest)(nil),                 // 356: v1.DRFailbackRequest
+	(*VerifyResourceRequest)(nil),             // 357: v1.VerifyResourceRequest
+	(*VerifyPeer)(nil),                        // 358: v1.VerifyPeer
+	(*VerifyResourceResponse)(nil),            // 359: v1.VerifyResourceResponse
+	(*DRFailbackResponse)(nil),                // 360: v1.DRFailbackResponse
+	(*SetupReplicationTLSRequest)(nil),        // 361: v1.SetupReplicationTLSRequest
+	(*GetReplicationTLSStatusRequest)(nil),    // 362: v1.GetReplicationTLSStatusRequest
+	(*NodeTLSInfo)(nil),                       // 363: v1.NodeTLSInfo
+	(*ReplicationTLSResponse)(nil),            // 364: v1.ReplicationTLSResponse
+	(*SetResourceTLSRequest)(nil),             // 365: v1.SetResourceTLSRequest
+	(*SetResourceTLSResponse)(nil),            // 366: v1.SetResourceTLSResponse
+	(*GetRbacWhoamiRequest)(nil),              // 367: v1.GetRbacWhoamiRequest
+	(*GetRbacWhoamiResponse)(nil),             // 368: v1.GetRbacWhoamiResponse
+	(*ListRbacPoliciesRequest)(nil),           // 369: v1.ListRbacPoliciesRequest
+	(*RbacPolicy)(nil),                        // 370: v1.RbacPolicy
+	(*RbacUser)(nil),                          // 371: v1.RbacUser
+	(*ListRbacPoliciesResponse)(nil),          // 372: v1.ListRbacPoliciesResponse
+	(*CreateRbacUserRequest)(nil),             // 373: v1.CreateRbacUserRequest
+	(*CreateRbacUserResponse)(nil),            // 374: v1.CreateRbacUserResponse
+	(*DeleteRbacUserRequest)(nil),             // 375: v1.DeleteRbacUserRequest
+	(*DeleteRbacUserResponse)(nil),            // 376: v1.DeleteRbacUserResponse
+	(*SetRbacUserRoleRequest)(nil),            // 377: v1.SetRbacUserRoleRequest
+	(*SetRbacUserRoleResponse)(nil),           // 378: v1.SetRbacUserRoleResponse
+	(*ApprovalInfo)(nil),                      // 379: v1.ApprovalInfo
+	(*ListApprovalsRequest)(nil),              // 380: v1.ListApprovalsRequest
+	(*ListApprovalsResponse)(nil),             // 381: v1.ListApprovalsResponse
+	(*ApproveRequestRequest)(nil),             // 382: v1.ApproveRequestRequest
+	(*ApproveRequestResponse)(nil),            // 383: v1.ApproveRequestResponse
+	(*RejectRequestRequest)(nil),              // 384: v1.RejectRequestRequest
+	(*RejectRequestResponse)(nil),             // 385: v1.RejectRequestResponse
+	(*InspectionCheck)(nil),                   // 386: v1.InspectionCheck
+	(*InspectionSummary)(nil),                 // 387: v1.InspectionSummary
+	(*InspectionReport)(nil),                  // 388: v1.InspectionReport
+	(*RunInspectionRequest)(nil),              // 389: v1.RunInspectionRequest
+	(*RunInspectionResponse)(nil),             // 390: v1.RunInspectionResponse
+	(*ListInspectionsRequest)(nil),            // 391: v1.ListInspectionsRequest
+	(*ListInspectionsResponse)(nil),           // 392: v1.ListInspectionsResponse
+	(*GetInspectionRequest)(nil),              // 393: v1.GetInspectionRequest
+	(*GetInspectionResponse)(nil),             // 394: v1.GetInspectionResponse
+	(*AppInfo)(nil),                           // 395: v1.AppInfo
+	(*CreateAppRequest)(nil),                  // 396: v1.CreateAppRequest
+	(*CreateAppResponse)(nil),                 // 397: v1.CreateAppResponse
+	(*ListAppsRequest)(nil),                   // 398: v1.ListAppsRequest
+	(*ListAppsResponse)(nil),                  // 399: v1.ListAppsResponse
+	(*GetAppStatusRequest)(nil),               // 400: v1.GetAppStatusRequest
+	(*GetAppStatusResponse)(nil),              // 401: v1.GetAppStatusResponse
+	(*DeleteAppRequest)(nil),                  // 402: v1.DeleteAppRequest
+	(*DeleteAppResponse)(nil),                 // 403: v1.DeleteAppResponse
+	(*FailoverAppRequest)(nil),                // 404: v1.FailoverAppRequest
+	(*FailoverAppResponse)(nil),               // 405: v1.FailoverAppResponse
+	(*SnapshotAppRequest)(nil),                // 406: v1.SnapshotAppRequest
+	(*SnapshotAppResponse)(nil),               // 407: v1.SnapshotAppResponse
+	(*TrimPoolsRequest)(nil),                  // 408: v1.TrimPoolsRequest
+	(*TrimResultInfo)(nil),                    // 409: v1.TrimResultInfo
+	(*TrimPoolsResponse)(nil),                 // 410: v1.TrimPoolsResponse
+	(*ListPoolDisksRequest)(nil),              // 411: v1.ListPoolDisksRequest
+	(*PoolDiskInfo)(nil),                      // 412: v1.PoolDiskInfo
+	(*ListPoolDisksResponse)(nil),             // 413: v1.ListPoolDisksResponse
+	(*ListNodeDisksRequest)(nil),              // 414: v1.ListNodeDisksRequest
+	(*NodeDiskInfo)(nil),                      // 415: v1.NodeDiskInfo
+	(*ListNodeDisksResponse)(nil),             // 416: v1.ListNodeDisksResponse
+	(*ShipResourceRequest)(nil),               // 417: v1.ShipResourceRequest
+	(*PrepareShipReceiveRequest)(nil),         // 418: v1.PrepareShipReceiveRequest
+	(*PrepareShipReceiveResponse)(nil),        // 419: v1.PrepareShipReceiveResponse
+	(*FinishShipReceiveRequest)(nil),          // 420: v1.FinishShipReceiveRequest
+	(*FinishShipReceiveResponse)(nil),         // 421: v1.FinishShipReceiveResponse
+	(*RemovePoolDiskRequest)(nil),             // 422: v1.RemovePoolDiskRequest
+	(*ReplacePoolDiskRequest)(nil),            // 423: v1.ReplacePoolDiskRequest
+	(*MoveVolumeRequest)(nil),                 // 424: v1.MoveVolumeRequest
+	(*StorageJobResponse)(nil),                // 425: v1.StorageJobResponse
+	(*ListStorageJobsRequest)(nil),            // 426: v1.ListStorageJobsRequest
+	(*StorageJobInfo)(nil),                    // 427: v1.StorageJobInfo
+	(*ListStorageJobsResponse)(nil),           // 428: v1.ListStorageJobsResponse
+	nil,                                       // 429: v1.SetNodeLabelsRequest.LabelsEntry
+	nil,                                       // 430: v1.NodeInfo.LabelsEntry
+	nil,                                       // 431: v1.CreateResourceRequest.DrbdOptionsEntry
+	nil,                                       // 432: v1.CreateResourceRequest.LabelsEntry
+	nil,                                       // 433: v1.AdoptResourceRequest.LabelsEntry
+	nil,                                       // 434: v1.ResourceProfile.DrbdOptionsEntry
+	nil,                                       // 435: v1.ResourceProfile.LabelsEntry
+	nil,                                       // 436: v1.UpdateResourceOptionsRequest.OptionsEntry
+	nil,                                       // 437: v1.SetResourceLabelsRequest.LabelsEntry
+	nil,                                       // 438: v1.SetResourceLabelsResponse.LabelsEntry
+	nil,                                       // 439: v1.OcfAgent.ParamsEntry
+	nil,                                       // 440: v1.ControllerLogEntry.FieldsEntry
+	nil,                                       // 441: v1.Event.DetailsEntry
+	nil,                                       // 442: v1.ResourceInfo.NodeStatesEntry
+	nil,                                       // 443: v1.ResourceInfo.LabelsEntry
+	nil,                                       // 444: v1.ResourceStatus.NodeStatesEntry
+	nil,                                       // 445: v1.ResourceStatus.WanProxyEntry
+	nil,                                       // 446: v1.NotifyChannelInfo.HeadersEntry
+	nil,                                       // 447: v1.SaveNotifyChannelRequest.HeadersEntry
+	nil,                                       // 448: v1.ImportBackupsResponse.SkippedEntry
+	nil,                                       // 449: v1.CreateNFSGatewayRequest.OptionsEntry
+	nil,                                       // 450: v1.CreateISCSIGatewayRequest.OptionsEntry
+	nil,                                       // 451: v1.CreateNVMeGatewayRequest.OptionsEntry
+	nil,                                       // 452: v1.GatewayInfo.OptionsEntry
+	nil,                                       // 453: v1.SetResourceProfileOptionsRequest.OptionsEntry
 }
 var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	10,  // 0: v1.GetPoolResponse.pool:type_name -> v1.PoolInfo
@@ -29725,48 +30566,48 @@ var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	193, // 3: v1.ListZFSSnapshotsResponse.snapshots:type_name -> v1.SnapshotInfo
 	193, // 4: v1.ListLvmSnapshotsResponse.snapshots:type_name -> v1.SnapshotInfo
 	53,  // 5: v1.RegisterNodeResponse.node:type_name -> v1.NodeInfo
-	423, // 6: v1.SetNodeLabelsRequest.labels:type_name -> v1.SetNodeLabelsRequest.LabelsEntry
+	429, // 6: v1.SetNodeLabelsRequest.labels:type_name -> v1.SetNodeLabelsRequest.LabelsEntry
 	53,  // 7: v1.SetNodeLabelsResponse.node:type_name -> v1.NodeInfo
 	53,  // 8: v1.GetNodeResponse.node:type_name -> v1.NodeInfo
 	53,  // 9: v1.ListNodesResponse.nodes:type_name -> v1.NodeInfo
-	424, // 10: v1.NodeInfo.labels:type_name -> v1.NodeInfo.LabelsEntry
+	430, // 10: v1.NodeInfo.labels:type_name -> v1.NodeInfo.LabelsEntry
 	56,  // 11: v1.HealthCheckResponse.health:type_name -> v1.NodeHealthInfo
-	425, // 12: v1.CreateResourceRequest.drbd_options:type_name -> v1.CreateResourceRequest.DrbdOptionsEntry
+	431, // 12: v1.CreateResourceRequest.drbd_options:type_name -> v1.CreateResourceRequest.DrbdOptionsEntry
 	58,  // 13: v1.CreateResourceRequest.volumes:type_name -> v1.VolumeSpec
-	426, // 14: v1.CreateResourceRequest.labels:type_name -> v1.CreateResourceRequest.LabelsEntry
-	427, // 15: v1.AdoptResourceRequest.labels:type_name -> v1.AdoptResourceRequest.LabelsEntry
+	432, // 14: v1.CreateResourceRequest.labels:type_name -> v1.CreateResourceRequest.LabelsEntry
+	433, // 15: v1.AdoptResourceRequest.labels:type_name -> v1.AdoptResourceRequest.LabelsEntry
 	176, // 16: v1.GetResourceResponse.resource:type_name -> v1.ResourceInfo
 	176, // 17: v1.ListResourcesResponse.resources:type_name -> v1.ResourceInfo
-	428, // 18: v1.ResourceProfile.drbd_options:type_name -> v1.ResourceProfile.DrbdOptionsEntry
-	429, // 19: v1.ResourceProfile.labels:type_name -> v1.ResourceProfile.LabelsEntry
+	434, // 18: v1.ResourceProfile.drbd_options:type_name -> v1.ResourceProfile.DrbdOptionsEntry
+	435, // 19: v1.ResourceProfile.labels:type_name -> v1.ResourceProfile.LabelsEntry
 	68,  // 20: v1.CreateResourceProfileRequest.profile:type_name -> v1.ResourceProfile
 	68,  // 21: v1.CreateResourceProfileResponse.profile:type_name -> v1.ResourceProfile
 	68,  // 22: v1.GetResourceProfileResponse.profile:type_name -> v1.ResourceProfile
 	68,  // 23: v1.ListResourceProfilesResponse.profiles:type_name -> v1.ResourceProfile
-	430, // 24: v1.UpdateResourceOptionsRequest.options:type_name -> v1.UpdateResourceOptionsRequest.OptionsEntry
+	436, // 24: v1.UpdateResourceOptionsRequest.options:type_name -> v1.UpdateResourceOptionsRequest.OptionsEntry
 	99,  // 25: v1.PlanRebalanceResponse.moves:type_name -> v1.RebalanceMove
 	177, // 26: v1.ResourceStatusResponse.status:type_name -> v1.ResourceStatus
-	431, // 27: v1.SetResourceLabelsRequest.labels:type_name -> v1.SetResourceLabelsRequest.LabelsEntry
-	432, // 28: v1.SetResourceLabelsResponse.labels:type_name -> v1.SetResourceLabelsResponse.LabelsEntry
-	433, // 29: v1.OcfAgent.params:type_name -> v1.OcfAgent.ParamsEntry
+	437, // 27: v1.SetResourceLabelsRequest.labels:type_name -> v1.SetResourceLabelsRequest.LabelsEntry
+	438, // 28: v1.SetResourceLabelsResponse.labels:type_name -> v1.SetResourceLabelsResponse.LabelsEntry
+	439, // 29: v1.OcfAgent.params:type_name -> v1.OcfAgent.ParamsEntry
 	130, // 30: v1.HaStartItem.ocf:type_name -> v1.OcfAgent
 	130, // 31: v1.MakeHaRequest.ocf_agents:type_name -> v1.OcfAgent
 	131, // 32: v1.MakeHaRequest.start_items:type_name -> v1.HaStartItem
 	133, // 33: v1.ListResourceAgentsResponse.agents:type_name -> v1.ResourceAgentInfo
 	136, // 34: v1.GetResourceAgentMetadataResponse.parameters:type_name -> v1.ResourceAgentParameter
 	160, // 35: v1.ListAuditEventsResponse.events:type_name -> v1.AuditEvent
-	434, // 36: v1.ControllerLogEntry.fields:type_name -> v1.ControllerLogEntry.FieldsEntry
+	440, // 36: v1.ControllerLogEntry.fields:type_name -> v1.ControllerLogEntry.FieldsEntry
 	163, // 37: v1.ListControllerLogsResponse.entries:type_name -> v1.ControllerLogEntry
 	167, // 38: v1.NodeDiagnostics.collectors:type_name -> v1.NodeCollectorOutput
 	168, // 39: v1.CollectNodeDiagnosticsResponse.nodes:type_name -> v1.NodeDiagnostics
-	435, // 40: v1.Event.details:type_name -> v1.Event.DetailsEntry
+	441, // 40: v1.Event.details:type_name -> v1.Event.DetailsEntry
 	170, // 41: v1.ListEventsResponse.events:type_name -> v1.Event
 	181, // 42: v1.ResourceInfo.volumes:type_name -> v1.VolumeInfo
-	436, // 43: v1.ResourceInfo.node_states:type_name -> v1.ResourceInfo.NodeStatesEntry
-	437, // 44: v1.ResourceInfo.labels:type_name -> v1.ResourceInfo.LabelsEntry
-	438, // 45: v1.ResourceStatus.node_states:type_name -> v1.ResourceStatus.NodeStatesEntry
+	442, // 43: v1.ResourceInfo.node_states:type_name -> v1.ResourceInfo.NodeStatesEntry
+	443, // 44: v1.ResourceInfo.labels:type_name -> v1.ResourceInfo.LabelsEntry
+	444, // 45: v1.ResourceStatus.node_states:type_name -> v1.ResourceStatus.NodeStatesEntry
 	181, // 46: v1.ResourceStatus.volumes:type_name -> v1.VolumeInfo
-	439, // 47: v1.ResourceStatus.wan_proxy:type_name -> v1.ResourceStatus.WanProxyEntry
+	445, // 47: v1.ResourceStatus.wan_proxy:type_name -> v1.ResourceStatus.WanProxyEntry
 	179, // 48: v1.ResourceStatus.wan_metrics:type_name -> v1.WANMetrics
 	178, // 49: v1.ResourceStatus.quorum:type_name -> v1.QuorumInfo
 	189, // 50: v1.PopulateVolumeRequest.source_snapshot:type_name -> v1.PopulateSnapshotSource
@@ -29775,26 +30616,26 @@ var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	194, // 53: v1.CreateSnapshotScheduleRequest.keep:type_name -> v1.GFSRetention
 	195, // 54: v1.ListSnapshotSchedulesResponse.schedules:type_name -> v1.SnapshotScheduleInfo
 	206, // 55: v1.ListBackupTargetsResponse.targets:type_name -> v1.BackupTargetInfo
-	440, // 56: v1.NotifyChannelInfo.headers:type_name -> v1.NotifyChannelInfo.HeadersEntry
+	446, // 56: v1.NotifyChannelInfo.headers:type_name -> v1.NotifyChannelInfo.HeadersEntry
 	213, // 57: v1.ListNotifyChannelsResponse.channels:type_name -> v1.NotifyChannelInfo
-	441, // 58: v1.SaveNotifyChannelRequest.headers:type_name -> v1.SaveNotifyChannelRequest.HeadersEntry
+	447, // 58: v1.SaveNotifyChannelRequest.headers:type_name -> v1.SaveNotifyChannelRequest.HeadersEntry
 	213, // 59: v1.SaveNotifyChannelResponse.channel:type_name -> v1.NotifyChannelInfo
 	222, // 60: v1.BackupInfo.volumes:type_name -> v1.BackupVolumeInfo
 	223, // 61: v1.CreateBackupResponse.backup:type_name -> v1.BackupInfo
 	223, // 62: v1.ListBackupsResponse.backups:type_name -> v1.BackupInfo
 	223, // 63: v1.RestoreBackupResponse.backup:type_name -> v1.BackupInfo
-	442, // 64: v1.ImportBackupsResponse.skipped:type_name -> v1.ImportBackupsResponse.SkippedEntry
+	448, // 64: v1.ImportBackupsResponse.skipped:type_name -> v1.ImportBackupsResponse.SkippedEntry
 	194, // 65: v1.BackupScheduleInfo.keep:type_name -> v1.GFSRetention
 	194, // 66: v1.CreateBackupScheduleRequest.keep:type_name -> v1.GFSRetention
 	234, // 67: v1.CreateBackupScheduleResponse.schedule:type_name -> v1.BackupScheduleInfo
 	234, // 68: v1.ListBackupSchedulesResponse.schedules:type_name -> v1.BackupScheduleInfo
 	234, // 69: v1.RunBackupScheduleResponse.schedule:type_name -> v1.BackupScheduleInfo
-	443, // 70: v1.CreateNFSGatewayRequest.options:type_name -> v1.CreateNFSGatewayRequest.OptionsEntry
-	444, // 71: v1.CreateISCSIGatewayRequest.options:type_name -> v1.CreateISCSIGatewayRequest.OptionsEntry
-	445, // 72: v1.CreateNVMeGatewayRequest.options:type_name -> v1.CreateNVMeGatewayRequest.OptionsEntry
+	449, // 70: v1.CreateNFSGatewayRequest.options:type_name -> v1.CreateNFSGatewayRequest.OptionsEntry
+	450, // 71: v1.CreateISCSIGatewayRequest.options:type_name -> v1.CreateISCSIGatewayRequest.OptionsEntry
+	451, // 72: v1.CreateNVMeGatewayRequest.options:type_name -> v1.CreateNVMeGatewayRequest.OptionsEntry
 	259, // 73: v1.GetGatewayResponse.gateway:type_name -> v1.GatewayInfo
 	259, // 74: v1.ListGatewaysResponse.gateways:type_name -> v1.GatewayInfo
-	446, // 75: v1.GatewayInfo.options:type_name -> v1.GatewayInfo.OptionsEntry
+	452, // 75: v1.GatewayInfo.options:type_name -> v1.GatewayInfo.OptionsEntry
 	260, // 76: v1.ListNFSExportsResponse.exports:type_name -> v1.NFSExportInfo
 	269, // 77: v1.AddSMBShareRequest.share:type_name -> v1.SMBShareInfo
 	269, // 78: v1.ListSMBSharesResponse.shares:type_name -> v1.SMBShareInfo
@@ -29810,410 +30651,417 @@ var file_api_proto_v1_haify_proto_depIdxs = []int32{
 	321, // 88: v1.HaPromoterStatus.outside:type_name -> v1.HaOutsideService
 	322, // 89: v1.GetHaStatusResponse.promoters:type_name -> v1.HaPromoterStatus
 	336, // 90: v1.SetNodeAddressRequest.moves:type_name -> v1.NodeAddressMove
-	447, // 91: v1.SetResourceProfileOptionsRequest.options:type_name -> v1.SetResourceProfileOptionsRequest.OptionsEntry
+	453, // 91: v1.SetResourceProfileOptionsRequest.options:type_name -> v1.SetResourceProfileOptionsRequest.OptionsEntry
 	68,  // 92: v1.SetResourceProfileOptionsResponse.profile:type_name -> v1.ResourceProfile
 	339, // 93: v1.SetResourceProfileOptionsResponse.members:type_name -> v1.ProfileMemberResult
 	339, // 94: v1.AdjustResourceProfileResponse.members:type_name -> v1.ProfileMemberResult
-	352, // 95: v1.VerifyResourceResponse.peers:type_name -> v1.VerifyPeer
-	357, // 96: v1.ReplicationTLSResponse.nodes:type_name -> v1.NodeTLSInfo
-	364, // 97: v1.ListRbacPoliciesResponse.policies:type_name -> v1.RbacPolicy
-	365, // 98: v1.ListRbacPoliciesResponse.users:type_name -> v1.RbacUser
-	373, // 99: v1.ListApprovalsResponse.approvals:type_name -> v1.ApprovalInfo
-	373, // 100: v1.ApproveRequestResponse.approval:type_name -> v1.ApprovalInfo
-	373, // 101: v1.RejectRequestResponse.approval:type_name -> v1.ApprovalInfo
-	381, // 102: v1.InspectionReport.summary:type_name -> v1.InspectionSummary
-	380, // 103: v1.InspectionReport.checks:type_name -> v1.InspectionCheck
-	382, // 104: v1.RunInspectionResponse.report:type_name -> v1.InspectionReport
-	382, // 105: v1.ListInspectionsResponse.reports:type_name -> v1.InspectionReport
-	382, // 106: v1.GetInspectionResponse.report:type_name -> v1.InspectionReport
-	389, // 107: v1.CreateAppResponse.app:type_name -> v1.AppInfo
-	389, // 108: v1.ListAppsResponse.apps:type_name -> v1.AppInfo
-	389, // 109: v1.GetAppStatusResponse.app:type_name -> v1.AppInfo
-	403, // 110: v1.TrimPoolsResponse.results:type_name -> v1.TrimResultInfo
-	406, // 111: v1.ListPoolDisksResponse.disks:type_name -> v1.PoolDiskInfo
-	409, // 112: v1.ListNodeDisksResponse.disks:type_name -> v1.NodeDiskInfo
-	421, // 113: v1.ListStorageJobsResponse.jobs:type_name -> v1.StorageJobInfo
-	180, // 114: v1.ResourceInfo.NodeStatesEntry.value:type_name -> v1.NodeResourceState
-	180, // 115: v1.ResourceStatus.NodeStatesEntry.value:type_name -> v1.NodeResourceState
-	0,   // 116: v1.HaifyController.CreatePool:input_type -> v1.CreatePoolRequest
-	2,   // 117: v1.HaifyController.DeletePool:input_type -> v1.DeletePoolRequest
-	4,   // 118: v1.HaifyController.GetPool:input_type -> v1.GetPoolRequest
-	6,   // 119: v1.HaifyController.ListPools:input_type -> v1.ListPoolsRequest
-	402, // 120: v1.HaifyController.TrimPools:input_type -> v1.TrimPoolsRequest
-	405, // 121: v1.HaifyController.ListPoolDisks:input_type -> v1.ListPoolDisksRequest
-	408, // 122: v1.HaifyController.ListNodeDisks:input_type -> v1.ListNodeDisksRequest
-	411, // 123: v1.HaifyController.ShipResource:input_type -> v1.ShipResourceRequest
-	412, // 124: v1.HaifyController.PrepareShipReceive:input_type -> v1.PrepareShipReceiveRequest
-	414, // 125: v1.HaifyController.FinishShipReceive:input_type -> v1.FinishShipReceiveRequest
-	416, // 126: v1.HaifyController.RemovePoolDisk:input_type -> v1.RemovePoolDiskRequest
-	417, // 127: v1.HaifyController.ReplacePoolDisk:input_type -> v1.ReplacePoolDiskRequest
-	418, // 128: v1.HaifyController.MoveVolume:input_type -> v1.MoveVolumeRequest
-	420, // 129: v1.HaifyController.ListStorageJobs:input_type -> v1.ListStorageJobsRequest
-	8,   // 130: v1.HaifyController.AddDiskToPool:input_type -> v1.AddDiskToPoolRequest
-	43,  // 131: v1.HaifyController.RegisterNode:input_type -> v1.RegisterNodeRequest
-	47,  // 132: v1.HaifyController.UnregisterNode:input_type -> v1.UnregisterNodeRequest
-	45,  // 133: v1.HaifyController.SetNodeLabels:input_type -> v1.SetNodeLabelsRequest
-	335, // 134: v1.HaifyController.SetNodeAddress:input_type -> v1.SetNodeAddressRequest
-	337, // 135: v1.HaifyController.SetNodeReplicationPaths:input_type -> v1.SetNodeReplicationPathsRequest
-	49,  // 136: v1.HaifyController.GetNode:input_type -> v1.GetNodeRequest
-	51,  // 137: v1.HaifyController.ListNodes:input_type -> v1.ListNodesRequest
-	54,  // 138: v1.HaifyController.HealthCheck:input_type -> v1.HealthCheckRequest
-	57,  // 139: v1.HaifyController.CreateResource:input_type -> v1.CreateResourceRequest
-	60,  // 140: v1.HaifyController.AdoptResource:input_type -> v1.AdoptResourceRequest
-	62,  // 141: v1.HaifyController.DeleteResource:input_type -> v1.DeleteResourceRequest
-	64,  // 142: v1.HaifyController.GetResource:input_type -> v1.GetResourceRequest
-	66,  // 143: v1.HaifyController.ListResources:input_type -> v1.ListResourcesRequest
-	69,  // 144: v1.HaifyController.CreateResourceProfile:input_type -> v1.CreateResourceProfileRequest
-	71,  // 145: v1.HaifyController.GetResourceProfile:input_type -> v1.GetResourceProfileRequest
-	73,  // 146: v1.HaifyController.ListResourceProfiles:input_type -> v1.ListResourceProfilesRequest
-	75,  // 147: v1.HaifyController.DeleteResourceProfile:input_type -> v1.DeleteResourceProfileRequest
-	340, // 148: v1.HaifyController.SetResourceProfileOptions:input_type -> v1.SetResourceProfileOptionsRequest
-	342, // 149: v1.HaifyController.AdjustResourceProfile:input_type -> v1.AdjustResourceProfileRequest
-	344, // 150: v1.HaifyController.GetResourceProfileMaxSize:input_type -> v1.GetResourceProfileMaxSizeRequest
-	346, // 151: v1.HaifyController.SetResourceProfile:input_type -> v1.SetResourceProfileRequest
-	77,  // 152: v1.HaifyController.AddVolume:input_type -> v1.AddVolumeRequest
-	83,  // 153: v1.HaifyController.RemoveVolume:input_type -> v1.RemoveVolumeRequest
-	85,  // 154: v1.HaifyController.CreateResourceSnapshot:input_type -> v1.CreateResourceSnapshotRequest
-	87,  // 155: v1.HaifyController.ListResourceSnapshots:input_type -> v1.ListResourceSnapshotsRequest
-	89,  // 156: v1.HaifyController.RollbackResourceSnapshot:input_type -> v1.RollbackResourceSnapshotRequest
-	91,  // 157: v1.HaifyController.DeleteResourceSnapshot:input_type -> v1.DeleteResourceSnapshotRequest
-	106, // 158: v1.HaifyController.RenameResource:input_type -> v1.RenameResourceRequest
-	108, // 159: v1.HaifyController.ResizeVolume:input_type -> v1.ResizeVolumeRequest
-	79,  // 160: v1.HaifyController.UpdateResourceOptions:input_type -> v1.UpdateResourceOptionsRequest
-	81,  // 161: v1.HaifyController.RepairResource:input_type -> v1.RepairResourceRequest
-	110, // 162: v1.HaifyController.ResourceStatus:input_type -> v1.ResourceStatusRequest
-	112, // 163: v1.HaifyController.SetPrimary:input_type -> v1.SetPrimaryRequest
-	114, // 164: v1.HaifyController.SetSecondary:input_type -> v1.SetSecondaryRequest
-	118, // 165: v1.HaifyController.SetDualPrimary:input_type -> v1.SetDualPrimaryRequest
-	120, // 166: v1.HaifyController.AttachDisklessClient:input_type -> v1.AttachDisklessClientRequest
-	122, // 167: v1.HaifyController.DetachDisklessClient:input_type -> v1.DetachDisklessClientRequest
-	116, // 168: v1.HaifyController.SetResourceLabels:input_type -> v1.SetResourceLabelsRequest
-	124, // 169: v1.HaifyController.CreateFilesystem:input_type -> v1.CreateFilesystemRequest
-	126, // 170: v1.HaifyController.MountResource:input_type -> v1.MountResourceRequest
-	128, // 171: v1.HaifyController.UnmountResource:input_type -> v1.UnmountResourceRequest
-	132, // 172: v1.HaifyController.MakeHa:input_type -> v1.MakeHaRequest
-	144, // 173: v1.HaifyController.EvictHa:input_type -> v1.EvictHaRequest
-	93,  // 174: v1.HaifyController.SetHaPreferredNodes:input_type -> v1.SetHaPreferredNodesRequest
-	145, // 175: v1.HaifyController.SetTiebreaker:input_type -> v1.SetTiebreakerRequest
-	355, // 176: v1.HaifyController.SetupReplicationTLS:input_type -> v1.SetupReplicationTLSRequest
-	356, // 177: v1.HaifyController.GetReplicationTLSStatus:input_type -> v1.GetReplicationTLSStatusRequest
-	359, // 178: v1.HaifyController.SetResourceTLS:input_type -> v1.SetResourceTLSRequest
-	147, // 179: v1.HaifyController.AddDR:input_type -> v1.AddDRRequest
-	149, // 180: v1.HaifyController.AddReplica:input_type -> v1.AddReplicaRequest
-	150, // 181: v1.HaifyController.RemoveReplica:input_type -> v1.RemoveReplicaRequest
-	312, // 182: v1.HaifyController.DeleteHa:input_type -> v1.DeleteHaRequest
-	314, // 183: v1.HaifyController.GetHa:input_type -> v1.GetHaRequest
-	316, // 184: v1.HaifyController.ListHa:input_type -> v1.ListHaRequest
-	323, // 185: v1.HaifyController.GetHaStatus:input_type -> v1.GetHaStatusRequest
-	134, // 186: v1.HaifyController.ListResourceAgents:input_type -> v1.ListResourceAgentsRequest
-	137, // 187: v1.HaifyController.GetResourceAgentMetadata:input_type -> v1.GetResourceAgentMetadataRequest
-	139, // 188: v1.HaifyController.GetHaToml:input_type -> v1.GetHaTomlRequest
-	141, // 189: v1.HaifyController.SyncHaToml:input_type -> v1.SyncHaTomlRequest
-	154, // 190: v1.HaifyController.EnableSelfHa:input_type -> v1.EnableSelfHaRequest
-	156, // 191: v1.HaifyController.DisableSelfHa:input_type -> v1.DisableSelfHaRequest
-	158, // 192: v1.HaifyController.GetSelfHaStatus:input_type -> v1.GetSelfHaStatusRequest
-	182, // 193: v1.HaifyController.CreateSnapshot:input_type -> v1.CreateSnapshotRequest
-	184, // 194: v1.HaifyController.DeleteSnapshot:input_type -> v1.DeleteSnapshotRequest
-	186, // 195: v1.HaifyController.RestoreSnapshot:input_type -> v1.RestoreSnapshotRequest
-	191, // 196: v1.HaifyController.ListSnapshots:input_type -> v1.ListSnapshotsRequest
-	188, // 197: v1.HaifyController.PopulateVolume:input_type -> v1.PopulateVolumeRequest
-	200, // 198: v1.HaifyController.CreateSnapshotSchedule:input_type -> v1.CreateSnapshotScheduleRequest
-	202, // 199: v1.HaifyController.ListSnapshotSchedules:input_type -> v1.ListSnapshotSchedulesRequest
-	204, // 200: v1.HaifyController.DeleteSnapshotSchedule:input_type -> v1.DeleteSnapshotScheduleRequest
-	196, // 201: v1.HaifyController.FreezeSnapshotSchedule:input_type -> v1.FreezeSnapshotScheduleRequest
-	198, // 202: v1.HaifyController.UnfreezeSnapshotSchedule:input_type -> v1.UnfreezeSnapshotScheduleRequest
-	207, // 203: v1.HaifyController.AddBackupTarget:input_type -> v1.AddBackupTargetRequest
-	209, // 204: v1.HaifyController.ListBackupTargets:input_type -> v1.ListBackupTargetsRequest
-	211, // 205: v1.HaifyController.DeleteBackupTarget:input_type -> v1.DeleteBackupTargetRequest
-	224, // 206: v1.HaifyController.CreateBackup:input_type -> v1.CreateBackupRequest
-	226, // 207: v1.HaifyController.ListBackups:input_type -> v1.ListBackupsRequest
-	228, // 208: v1.HaifyController.RestoreBackup:input_type -> v1.RestoreBackupRequest
-	230, // 209: v1.HaifyController.DeleteBackup:input_type -> v1.DeleteBackupRequest
-	232, // 210: v1.HaifyController.ImportBackups:input_type -> v1.ImportBackupsRequest
-	235, // 211: v1.HaifyController.CreateBackupSchedule:input_type -> v1.CreateBackupScheduleRequest
-	237, // 212: v1.HaifyController.ListBackupSchedules:input_type -> v1.ListBackupSchedulesRequest
-	239, // 213: v1.HaifyController.DeleteBackupSchedule:input_type -> v1.DeleteBackupScheduleRequest
-	241, // 214: v1.HaifyController.RunBackupSchedule:input_type -> v1.RunBackupScheduleRequest
-	243, // 215: v1.HaifyController.CreateNFSGateway:input_type -> v1.CreateNFSGatewayRequest
-	245, // 216: v1.HaifyController.CreateISCSIGateway:input_type -> v1.CreateISCSIGatewayRequest
-	247, // 217: v1.HaifyController.CreateNVMeGateway:input_type -> v1.CreateNVMeGatewayRequest
-	249, // 218: v1.HaifyController.DeleteGateway:input_type -> v1.DeleteGatewayRequest
-	251, // 219: v1.HaifyController.GetGateway:input_type -> v1.GetGatewayRequest
-	253, // 220: v1.HaifyController.ListGateways:input_type -> v1.ListGatewaysRequest
-	255, // 221: v1.HaifyController.StartGateway:input_type -> v1.StartGatewayRequest
-	257, // 222: v1.HaifyController.StopGateway:input_type -> v1.StopGatewayRequest
-	261, // 223: v1.HaifyController.AddNFSExport:input_type -> v1.AddNFSExportRequest
-	263, // 224: v1.HaifyController.RemoveNFSExport:input_type -> v1.RemoveNFSExportRequest
-	265, // 225: v1.HaifyController.ListNFSExports:input_type -> v1.ListNFSExportsRequest
-	267, // 226: v1.HaifyController.CreateSMBGateway:input_type -> v1.CreateSMBGatewayRequest
-	270, // 227: v1.HaifyController.AddSMBShare:input_type -> v1.AddSMBShareRequest
-	272, // 228: v1.HaifyController.RemoveSMBShare:input_type -> v1.RemoveSMBShareRequest
-	274, // 229: v1.HaifyController.ListSMBShares:input_type -> v1.ListSMBSharesRequest
-	276, // 230: v1.HaifyController.SetSMBUser:input_type -> v1.SetSMBUserRequest
-	278, // 231: v1.HaifyController.RemoveSMBUser:input_type -> v1.RemoveSMBUserRequest
-	280, // 232: v1.HaifyController.ListSMBUsers:input_type -> v1.ListSMBUsersRequest
-	283, // 233: v1.HaifyController.AddISCSILUN:input_type -> v1.AddISCSILUNRequest
-	285, // 234: v1.HaifyController.RemoveISCSILUN:input_type -> v1.RemoveISCSILUNRequest
-	287, // 235: v1.HaifyController.ListISCSILUNs:input_type -> v1.ListISCSILUNsRequest
-	289, // 236: v1.HaifyController.AddISCSIInitiator:input_type -> v1.AddISCSIInitiatorRequest
-	291, // 237: v1.HaifyController.RemoveISCSIInitiator:input_type -> v1.RemoveISCSIInitiatorRequest
-	293, // 238: v1.HaifyController.ListISCSIInitiators:input_type -> v1.ListISCSIInitiatorsRequest
-	295, // 239: v1.HaifyController.SetISCSIChap:input_type -> v1.SetISCSIChapRequest
-	297, // 240: v1.HaifyController.GetISCSIChap:input_type -> v1.GetISCSIChapRequest
-	300, // 241: v1.HaifyController.AddNVMeNamespace:input_type -> v1.AddNVMeNamespaceRequest
-	302, // 242: v1.HaifyController.RemoveNVMeNamespace:input_type -> v1.RemoveNVMeNamespaceRequest
-	304, // 243: v1.HaifyController.ListNVMeNamespaces:input_type -> v1.ListNVMeNamespacesRequest
-	306, // 244: v1.HaifyController.AddNVMeHost:input_type -> v1.AddNVMeHostRequest
-	308, // 245: v1.HaifyController.RemoveNVMeHost:input_type -> v1.RemoveNVMeHostRequest
-	310, // 246: v1.HaifyController.ListNVMeHosts:input_type -> v1.ListNVMeHostsRequest
-	11,  // 247: v1.HaifyController.CreateZFSPool:input_type -> v1.CreateZFSPoolRequest
-	13,  // 248: v1.HaifyController.DeleteZFSPool:input_type -> v1.DeleteZFSPoolRequest
-	15,  // 249: v1.HaifyController.ListZFSpools:input_type -> v1.ListZFSPoolsRequest
-	17,  // 250: v1.HaifyController.CreateZFSDataset:input_type -> v1.CreateZFSDatasetRequest
-	19,  // 251: v1.HaifyController.CreateZFSVolume:input_type -> v1.CreateZFSVolumeRequest
-	21,  // 252: v1.HaifyController.ResizeZFSVolume:input_type -> v1.ResizeZFSVolumeRequest
-	23,  // 253: v1.HaifyController.DeleteZFSDataset:input_type -> v1.DeleteZFSDatasetRequest
-	25,  // 254: v1.HaifyController.CreateZFSSnapshot:input_type -> v1.CreateZFSSnapshotRequest
-	27,  // 255: v1.HaifyController.DeleteZFSSnapshot:input_type -> v1.DeleteZFSSnapshotRequest
-	29,  // 256: v1.HaifyController.ListZFSSnapshots:input_type -> v1.ListZFSSnapshotsRequest
-	31,  // 257: v1.HaifyController.RestoreZFSSnapshot:input_type -> v1.RestoreZFSSnapshotRequest
-	33,  // 258: v1.HaifyController.CloneZFSSnapshot:input_type -> v1.CloneZFSSnapshotRequest
-	35,  // 259: v1.HaifyController.CreateLvmSnapshot:input_type -> v1.CreateLvmSnapshotRequest
-	37,  // 260: v1.HaifyController.DeleteLvmSnapshot:input_type -> v1.DeleteLvmSnapshotRequest
-	39,  // 261: v1.HaifyController.ListLvmSnapshots:input_type -> v1.ListLvmSnapshotsRequest
-	41,  // 262: v1.HaifyController.RestoreLvmSnapshot:input_type -> v1.RestoreLvmSnapshotRequest
-	95,  // 263: v1.HaifyController.SetNFSExportQuota:input_type -> v1.SetNFSExportQuotaRequest
-	97,  // 264: v1.HaifyController.MoveReplica:input_type -> v1.MoveReplicaRequest
-	100, // 265: v1.HaifyController.PlanRebalance:input_type -> v1.PlanRebalanceRequest
-	102, // 266: v1.HaifyController.MarkNodeLost:input_type -> v1.MarkNodeLostRequest
-	104, // 267: v1.HaifyController.RestoreNode:input_type -> v1.RestoreNodeRequest
-	325, // 268: v1.HaifyController.DrainNode:input_type -> v1.DrainNodeRequest
-	333, // 269: v1.HaifyController.UndrainNode:input_type -> v1.UndrainNodeRequest
-	326, // 270: v1.HaifyController.ConvertPoolToThin:input_type -> v1.ConvertPoolToThinRequest
-	328, // 271: v1.HaifyController.AddPoolCache:input_type -> v1.AddPoolCacheRequest
-	330, // 272: v1.HaifyController.RemovePoolCache:input_type -> v1.RemovePoolCacheRequest
-	161, // 273: v1.HaifyController.ListAuditEvents:input_type -> v1.ListAuditEventsRequest
-	164, // 274: v1.HaifyController.ListControllerLogs:input_type -> v1.ListControllerLogsRequest
-	166, // 275: v1.HaifyController.CollectNodeDiagnostics:input_type -> v1.CollectNodeDiagnosticsRequest
-	171, // 276: v1.HaifyController.ListEvents:input_type -> v1.ListEventsRequest
-	214, // 277: v1.HaifyController.ListNotifyChannels:input_type -> v1.ListNotifyChannelsRequest
-	216, // 278: v1.HaifyController.SaveNotifyChannel:input_type -> v1.SaveNotifyChannelRequest
-	218, // 279: v1.HaifyController.DeleteNotifyChannel:input_type -> v1.DeleteNotifyChannelRequest
-	220, // 280: v1.HaifyController.TestNotifyChannel:input_type -> v1.TestNotifyChannelRequest
-	383, // 281: v1.HaifyController.RunInspection:input_type -> v1.RunInspectionRequest
-	385, // 282: v1.HaifyController.ListInspections:input_type -> v1.ListInspectionsRequest
-	387, // 283: v1.HaifyController.GetInspection:input_type -> v1.GetInspectionRequest
-	173, // 284: v1.HaifyController.RepairWanProxy:input_type -> v1.RepairWanProxyRequest
-	350, // 285: v1.HaifyController.DRFailback:input_type -> v1.DRFailbackRequest
-	348, // 286: v1.HaifyController.SetWanEndpoint:input_type -> v1.SetWanEndpointRequest
-	351, // 287: v1.HaifyController.VerifyResource:input_type -> v1.VerifyResourceRequest
-	175, // 288: v1.HaifyController.WatchEvents:input_type -> v1.WatchEventsRequest
-	361, // 289: v1.HaifyController.GetRbacWhoami:input_type -> v1.GetRbacWhoamiRequest
-	363, // 290: v1.HaifyController.ListRbacPolicies:input_type -> v1.ListRbacPoliciesRequest
-	367, // 291: v1.HaifyController.CreateRbacUser:input_type -> v1.CreateRbacUserRequest
-	369, // 292: v1.HaifyController.DeleteRbacUser:input_type -> v1.DeleteRbacUserRequest
-	371, // 293: v1.HaifyController.SetRbacUserRole:input_type -> v1.SetRbacUserRoleRequest
-	374, // 294: v1.HaifyController.ListApprovals:input_type -> v1.ListApprovalsRequest
-	376, // 295: v1.HaifyController.ApproveRequest:input_type -> v1.ApproveRequestRequest
-	378, // 296: v1.HaifyController.RejectRequest:input_type -> v1.RejectRequestRequest
-	390, // 297: v1.HaifyController.CreateApp:input_type -> v1.CreateAppRequest
-	392, // 298: v1.HaifyController.ListApps:input_type -> v1.ListAppsRequest
-	394, // 299: v1.HaifyController.GetAppStatus:input_type -> v1.GetAppStatusRequest
-	396, // 300: v1.HaifyController.DeleteApp:input_type -> v1.DeleteAppRequest
-	398, // 301: v1.HaifyController.FailoverApp:input_type -> v1.FailoverAppRequest
-	400, // 302: v1.HaifyController.SnapshotApp:input_type -> v1.SnapshotAppRequest
-	1,   // 303: v1.HaifyController.CreatePool:output_type -> v1.CreatePoolResponse
-	3,   // 304: v1.HaifyController.DeletePool:output_type -> v1.DeletePoolResponse
-	5,   // 305: v1.HaifyController.GetPool:output_type -> v1.GetPoolResponse
-	7,   // 306: v1.HaifyController.ListPools:output_type -> v1.ListPoolsResponse
-	404, // 307: v1.HaifyController.TrimPools:output_type -> v1.TrimPoolsResponse
-	407, // 308: v1.HaifyController.ListPoolDisks:output_type -> v1.ListPoolDisksResponse
-	410, // 309: v1.HaifyController.ListNodeDisks:output_type -> v1.ListNodeDisksResponse
-	419, // 310: v1.HaifyController.ShipResource:output_type -> v1.StorageJobResponse
-	413, // 311: v1.HaifyController.PrepareShipReceive:output_type -> v1.PrepareShipReceiveResponse
-	415, // 312: v1.HaifyController.FinishShipReceive:output_type -> v1.FinishShipReceiveResponse
-	419, // 313: v1.HaifyController.RemovePoolDisk:output_type -> v1.StorageJobResponse
-	419, // 314: v1.HaifyController.ReplacePoolDisk:output_type -> v1.StorageJobResponse
-	419, // 315: v1.HaifyController.MoveVolume:output_type -> v1.StorageJobResponse
-	422, // 316: v1.HaifyController.ListStorageJobs:output_type -> v1.ListStorageJobsResponse
-	9,   // 317: v1.HaifyController.AddDiskToPool:output_type -> v1.AddDiskToPoolResponse
-	44,  // 318: v1.HaifyController.RegisterNode:output_type -> v1.RegisterNodeResponse
-	48,  // 319: v1.HaifyController.UnregisterNode:output_type -> v1.UnregisterNodeResponse
-	46,  // 320: v1.HaifyController.SetNodeLabels:output_type -> v1.SetNodeLabelsResponse
-	338, // 321: v1.HaifyController.SetNodeAddress:output_type -> v1.SetNodeAddressResponse
-	338, // 322: v1.HaifyController.SetNodeReplicationPaths:output_type -> v1.SetNodeAddressResponse
-	50,  // 323: v1.HaifyController.GetNode:output_type -> v1.GetNodeResponse
-	52,  // 324: v1.HaifyController.ListNodes:output_type -> v1.ListNodesResponse
-	55,  // 325: v1.HaifyController.HealthCheck:output_type -> v1.HealthCheckResponse
-	59,  // 326: v1.HaifyController.CreateResource:output_type -> v1.CreateResourceResponse
-	61,  // 327: v1.HaifyController.AdoptResource:output_type -> v1.AdoptResourceResponse
-	63,  // 328: v1.HaifyController.DeleteResource:output_type -> v1.DeleteResourceResponse
-	65,  // 329: v1.HaifyController.GetResource:output_type -> v1.GetResourceResponse
-	67,  // 330: v1.HaifyController.ListResources:output_type -> v1.ListResourcesResponse
-	70,  // 331: v1.HaifyController.CreateResourceProfile:output_type -> v1.CreateResourceProfileResponse
-	72,  // 332: v1.HaifyController.GetResourceProfile:output_type -> v1.GetResourceProfileResponse
-	74,  // 333: v1.HaifyController.ListResourceProfiles:output_type -> v1.ListResourceProfilesResponse
-	76,  // 334: v1.HaifyController.DeleteResourceProfile:output_type -> v1.DeleteResourceProfileResponse
-	341, // 335: v1.HaifyController.SetResourceProfileOptions:output_type -> v1.SetResourceProfileOptionsResponse
-	343, // 336: v1.HaifyController.AdjustResourceProfile:output_type -> v1.AdjustResourceProfileResponse
-	345, // 337: v1.HaifyController.GetResourceProfileMaxSize:output_type -> v1.GetResourceProfileMaxSizeResponse
-	347, // 338: v1.HaifyController.SetResourceProfile:output_type -> v1.SetResourceProfileResponse
-	78,  // 339: v1.HaifyController.AddVolume:output_type -> v1.AddVolumeResponse
-	84,  // 340: v1.HaifyController.RemoveVolume:output_type -> v1.RemoveVolumeResponse
-	86,  // 341: v1.HaifyController.CreateResourceSnapshot:output_type -> v1.CreateResourceSnapshotResponse
-	88,  // 342: v1.HaifyController.ListResourceSnapshots:output_type -> v1.ListResourceSnapshotsResponse
-	90,  // 343: v1.HaifyController.RollbackResourceSnapshot:output_type -> v1.RollbackResourceSnapshotResponse
-	92,  // 344: v1.HaifyController.DeleteResourceSnapshot:output_type -> v1.DeleteResourceSnapshotResponse
-	107, // 345: v1.HaifyController.RenameResource:output_type -> v1.RenameResourceResponse
-	109, // 346: v1.HaifyController.ResizeVolume:output_type -> v1.ResizeVolumeResponse
-	80,  // 347: v1.HaifyController.UpdateResourceOptions:output_type -> v1.UpdateResourceOptionsResponse
-	82,  // 348: v1.HaifyController.RepairResource:output_type -> v1.RepairResourceResponse
-	111, // 349: v1.HaifyController.ResourceStatus:output_type -> v1.ResourceStatusResponse
-	113, // 350: v1.HaifyController.SetPrimary:output_type -> v1.SetPrimaryResponse
-	115, // 351: v1.HaifyController.SetSecondary:output_type -> v1.SetSecondaryResponse
-	119, // 352: v1.HaifyController.SetDualPrimary:output_type -> v1.SetDualPrimaryResponse
-	121, // 353: v1.HaifyController.AttachDisklessClient:output_type -> v1.AttachDisklessClientResponse
-	123, // 354: v1.HaifyController.DetachDisklessClient:output_type -> v1.DetachDisklessClientResponse
-	117, // 355: v1.HaifyController.SetResourceLabels:output_type -> v1.SetResourceLabelsResponse
-	125, // 356: v1.HaifyController.CreateFilesystem:output_type -> v1.CreateFilesystemResponse
-	127, // 357: v1.HaifyController.MountResource:output_type -> v1.MountResourceResponse
-	129, // 358: v1.HaifyController.UnmountResource:output_type -> v1.UnmountResourceResponse
-	143, // 359: v1.HaifyController.MakeHa:output_type -> v1.MakeHaResponse
-	153, // 360: v1.HaifyController.EvictHa:output_type -> v1.EvictHaResponse
-	94,  // 361: v1.HaifyController.SetHaPreferredNodes:output_type -> v1.SetHaPreferredNodesResponse
-	146, // 362: v1.HaifyController.SetTiebreaker:output_type -> v1.SetTiebreakerResponse
-	358, // 363: v1.HaifyController.SetupReplicationTLS:output_type -> v1.ReplicationTLSResponse
-	358, // 364: v1.HaifyController.GetReplicationTLSStatus:output_type -> v1.ReplicationTLSResponse
-	360, // 365: v1.HaifyController.SetResourceTLS:output_type -> v1.SetResourceTLSResponse
-	148, // 366: v1.HaifyController.AddDR:output_type -> v1.AddDRResponse
-	152, // 367: v1.HaifyController.AddReplica:output_type -> v1.AddReplicaResponse
-	151, // 368: v1.HaifyController.RemoveReplica:output_type -> v1.RemoveReplicaResponse
-	313, // 369: v1.HaifyController.DeleteHa:output_type -> v1.DeleteHaResponse
-	315, // 370: v1.HaifyController.GetHa:output_type -> v1.GetHaResponse
-	317, // 371: v1.HaifyController.ListHa:output_type -> v1.ListHaResponse
-	324, // 372: v1.HaifyController.GetHaStatus:output_type -> v1.GetHaStatusResponse
-	135, // 373: v1.HaifyController.ListResourceAgents:output_type -> v1.ListResourceAgentsResponse
-	138, // 374: v1.HaifyController.GetResourceAgentMetadata:output_type -> v1.GetResourceAgentMetadataResponse
-	140, // 375: v1.HaifyController.GetHaToml:output_type -> v1.GetHaTomlResponse
-	142, // 376: v1.HaifyController.SyncHaToml:output_type -> v1.SyncHaTomlResponse
-	155, // 377: v1.HaifyController.EnableSelfHa:output_type -> v1.EnableSelfHaResponse
-	157, // 378: v1.HaifyController.DisableSelfHa:output_type -> v1.DisableSelfHaResponse
-	159, // 379: v1.HaifyController.GetSelfHaStatus:output_type -> v1.GetSelfHaStatusResponse
-	183, // 380: v1.HaifyController.CreateSnapshot:output_type -> v1.CreateSnapshotResponse
-	185, // 381: v1.HaifyController.DeleteSnapshot:output_type -> v1.DeleteSnapshotResponse
-	187, // 382: v1.HaifyController.RestoreSnapshot:output_type -> v1.RestoreSnapshotResponse
-	192, // 383: v1.HaifyController.ListSnapshots:output_type -> v1.ListSnapshotsResponse
-	190, // 384: v1.HaifyController.PopulateVolume:output_type -> v1.PopulateVolumeResponse
-	201, // 385: v1.HaifyController.CreateSnapshotSchedule:output_type -> v1.CreateSnapshotScheduleResponse
-	203, // 386: v1.HaifyController.ListSnapshotSchedules:output_type -> v1.ListSnapshotSchedulesResponse
-	205, // 387: v1.HaifyController.DeleteSnapshotSchedule:output_type -> v1.DeleteSnapshotScheduleResponse
-	197, // 388: v1.HaifyController.FreezeSnapshotSchedule:output_type -> v1.FreezeSnapshotScheduleResponse
-	199, // 389: v1.HaifyController.UnfreezeSnapshotSchedule:output_type -> v1.UnfreezeSnapshotScheduleResponse
-	208, // 390: v1.HaifyController.AddBackupTarget:output_type -> v1.AddBackupTargetResponse
-	210, // 391: v1.HaifyController.ListBackupTargets:output_type -> v1.ListBackupTargetsResponse
-	212, // 392: v1.HaifyController.DeleteBackupTarget:output_type -> v1.DeleteBackupTargetResponse
-	225, // 393: v1.HaifyController.CreateBackup:output_type -> v1.CreateBackupResponse
-	227, // 394: v1.HaifyController.ListBackups:output_type -> v1.ListBackupsResponse
-	229, // 395: v1.HaifyController.RestoreBackup:output_type -> v1.RestoreBackupResponse
-	231, // 396: v1.HaifyController.DeleteBackup:output_type -> v1.DeleteBackupResponse
-	233, // 397: v1.HaifyController.ImportBackups:output_type -> v1.ImportBackupsResponse
-	236, // 398: v1.HaifyController.CreateBackupSchedule:output_type -> v1.CreateBackupScheduleResponse
-	238, // 399: v1.HaifyController.ListBackupSchedules:output_type -> v1.ListBackupSchedulesResponse
-	240, // 400: v1.HaifyController.DeleteBackupSchedule:output_type -> v1.DeleteBackupScheduleResponse
-	242, // 401: v1.HaifyController.RunBackupSchedule:output_type -> v1.RunBackupScheduleResponse
-	244, // 402: v1.HaifyController.CreateNFSGateway:output_type -> v1.CreateNFSGatewayResponse
-	246, // 403: v1.HaifyController.CreateISCSIGateway:output_type -> v1.CreateISCSIGatewayResponse
-	248, // 404: v1.HaifyController.CreateNVMeGateway:output_type -> v1.CreateNVMeGatewayResponse
-	250, // 405: v1.HaifyController.DeleteGateway:output_type -> v1.DeleteGatewayResponse
-	252, // 406: v1.HaifyController.GetGateway:output_type -> v1.GetGatewayResponse
-	254, // 407: v1.HaifyController.ListGateways:output_type -> v1.ListGatewaysResponse
-	256, // 408: v1.HaifyController.StartGateway:output_type -> v1.StartGatewayResponse
-	258, // 409: v1.HaifyController.StopGateway:output_type -> v1.StopGatewayResponse
-	262, // 410: v1.HaifyController.AddNFSExport:output_type -> v1.AddNFSExportResponse
-	264, // 411: v1.HaifyController.RemoveNFSExport:output_type -> v1.RemoveNFSExportResponse
-	266, // 412: v1.HaifyController.ListNFSExports:output_type -> v1.ListNFSExportsResponse
-	268, // 413: v1.HaifyController.CreateSMBGateway:output_type -> v1.CreateSMBGatewayResponse
-	271, // 414: v1.HaifyController.AddSMBShare:output_type -> v1.AddSMBShareResponse
-	273, // 415: v1.HaifyController.RemoveSMBShare:output_type -> v1.RemoveSMBShareResponse
-	275, // 416: v1.HaifyController.ListSMBShares:output_type -> v1.ListSMBSharesResponse
-	277, // 417: v1.HaifyController.SetSMBUser:output_type -> v1.SetSMBUserResponse
-	279, // 418: v1.HaifyController.RemoveSMBUser:output_type -> v1.RemoveSMBUserResponse
-	281, // 419: v1.HaifyController.ListSMBUsers:output_type -> v1.ListSMBUsersResponse
-	284, // 420: v1.HaifyController.AddISCSILUN:output_type -> v1.AddISCSILUNResponse
-	286, // 421: v1.HaifyController.RemoveISCSILUN:output_type -> v1.RemoveISCSILUNResponse
-	288, // 422: v1.HaifyController.ListISCSILUNs:output_type -> v1.ListISCSILUNsResponse
-	290, // 423: v1.HaifyController.AddISCSIInitiator:output_type -> v1.AddISCSIInitiatorResponse
-	292, // 424: v1.HaifyController.RemoveISCSIInitiator:output_type -> v1.RemoveISCSIInitiatorResponse
-	294, // 425: v1.HaifyController.ListISCSIInitiators:output_type -> v1.ListISCSIInitiatorsResponse
-	296, // 426: v1.HaifyController.SetISCSIChap:output_type -> v1.SetISCSIChapResponse
-	298, // 427: v1.HaifyController.GetISCSIChap:output_type -> v1.GetISCSIChapResponse
-	301, // 428: v1.HaifyController.AddNVMeNamespace:output_type -> v1.AddNVMeNamespaceResponse
-	303, // 429: v1.HaifyController.RemoveNVMeNamespace:output_type -> v1.RemoveNVMeNamespaceResponse
-	305, // 430: v1.HaifyController.ListNVMeNamespaces:output_type -> v1.ListNVMeNamespacesResponse
-	307, // 431: v1.HaifyController.AddNVMeHost:output_type -> v1.AddNVMeHostResponse
-	309, // 432: v1.HaifyController.RemoveNVMeHost:output_type -> v1.RemoveNVMeHostResponse
-	311, // 433: v1.HaifyController.ListNVMeHosts:output_type -> v1.ListNVMeHostsResponse
-	12,  // 434: v1.HaifyController.CreateZFSPool:output_type -> v1.CreateZFSPoolResponse
-	14,  // 435: v1.HaifyController.DeleteZFSPool:output_type -> v1.DeleteZFSPoolResponse
-	16,  // 436: v1.HaifyController.ListZFSpools:output_type -> v1.ListZFSPoolsResponse
-	18,  // 437: v1.HaifyController.CreateZFSDataset:output_type -> v1.CreateZFSDatasetResponse
-	20,  // 438: v1.HaifyController.CreateZFSVolume:output_type -> v1.CreateZFSVolumeResponse
-	22,  // 439: v1.HaifyController.ResizeZFSVolume:output_type -> v1.ResizeZFSVolumeResponse
-	24,  // 440: v1.HaifyController.DeleteZFSDataset:output_type -> v1.DeleteZFSDatasetResponse
-	26,  // 441: v1.HaifyController.CreateZFSSnapshot:output_type -> v1.CreateZFSSnapshotResponse
-	28,  // 442: v1.HaifyController.DeleteZFSSnapshot:output_type -> v1.DeleteZFSSnapshotResponse
-	30,  // 443: v1.HaifyController.ListZFSSnapshots:output_type -> v1.ListZFSSnapshotsResponse
-	32,  // 444: v1.HaifyController.RestoreZFSSnapshot:output_type -> v1.RestoreZFSSnapshotResponse
-	34,  // 445: v1.HaifyController.CloneZFSSnapshot:output_type -> v1.CloneZFSSnapshotResponse
-	36,  // 446: v1.HaifyController.CreateLvmSnapshot:output_type -> v1.CreateLvmSnapshotResponse
-	38,  // 447: v1.HaifyController.DeleteLvmSnapshot:output_type -> v1.DeleteLvmSnapshotResponse
-	40,  // 448: v1.HaifyController.ListLvmSnapshots:output_type -> v1.ListLvmSnapshotsResponse
-	42,  // 449: v1.HaifyController.RestoreLvmSnapshot:output_type -> v1.RestoreLvmSnapshotResponse
-	96,  // 450: v1.HaifyController.SetNFSExportQuota:output_type -> v1.SetNFSExportQuotaResponse
-	98,  // 451: v1.HaifyController.MoveReplica:output_type -> v1.MoveReplicaResponse
-	101, // 452: v1.HaifyController.PlanRebalance:output_type -> v1.PlanRebalanceResponse
-	103, // 453: v1.HaifyController.MarkNodeLost:output_type -> v1.MarkNodeLostResponse
-	105, // 454: v1.HaifyController.RestoreNode:output_type -> v1.RestoreNodeResponse
-	332, // 455: v1.HaifyController.DrainNode:output_type -> v1.DrainNodeResponse
-	334, // 456: v1.HaifyController.UndrainNode:output_type -> v1.UndrainNodeResponse
-	327, // 457: v1.HaifyController.ConvertPoolToThin:output_type -> v1.ConvertPoolToThinResponse
-	329, // 458: v1.HaifyController.AddPoolCache:output_type -> v1.AddPoolCacheResponse
-	331, // 459: v1.HaifyController.RemovePoolCache:output_type -> v1.RemovePoolCacheResponse
-	162, // 460: v1.HaifyController.ListAuditEvents:output_type -> v1.ListAuditEventsResponse
-	165, // 461: v1.HaifyController.ListControllerLogs:output_type -> v1.ListControllerLogsResponse
-	169, // 462: v1.HaifyController.CollectNodeDiagnostics:output_type -> v1.CollectNodeDiagnosticsResponse
-	172, // 463: v1.HaifyController.ListEvents:output_type -> v1.ListEventsResponse
-	215, // 464: v1.HaifyController.ListNotifyChannels:output_type -> v1.ListNotifyChannelsResponse
-	217, // 465: v1.HaifyController.SaveNotifyChannel:output_type -> v1.SaveNotifyChannelResponse
-	219, // 466: v1.HaifyController.DeleteNotifyChannel:output_type -> v1.DeleteNotifyChannelResponse
-	221, // 467: v1.HaifyController.TestNotifyChannel:output_type -> v1.TestNotifyChannelResponse
-	384, // 468: v1.HaifyController.RunInspection:output_type -> v1.RunInspectionResponse
-	386, // 469: v1.HaifyController.ListInspections:output_type -> v1.ListInspectionsResponse
-	388, // 470: v1.HaifyController.GetInspection:output_type -> v1.GetInspectionResponse
-	174, // 471: v1.HaifyController.RepairWanProxy:output_type -> v1.RepairWanProxyResponse
-	354, // 472: v1.HaifyController.DRFailback:output_type -> v1.DRFailbackResponse
-	349, // 473: v1.HaifyController.SetWanEndpoint:output_type -> v1.SetWanEndpointResponse
-	353, // 474: v1.HaifyController.VerifyResource:output_type -> v1.VerifyResourceResponse
-	170, // 475: v1.HaifyController.WatchEvents:output_type -> v1.Event
-	362, // 476: v1.HaifyController.GetRbacWhoami:output_type -> v1.GetRbacWhoamiResponse
-	366, // 477: v1.HaifyController.ListRbacPolicies:output_type -> v1.ListRbacPoliciesResponse
-	368, // 478: v1.HaifyController.CreateRbacUser:output_type -> v1.CreateRbacUserResponse
-	370, // 479: v1.HaifyController.DeleteRbacUser:output_type -> v1.DeleteRbacUserResponse
-	372, // 480: v1.HaifyController.SetRbacUserRole:output_type -> v1.SetRbacUserRoleResponse
-	375, // 481: v1.HaifyController.ListApprovals:output_type -> v1.ListApprovalsResponse
-	377, // 482: v1.HaifyController.ApproveRequest:output_type -> v1.ApproveRequestResponse
-	379, // 483: v1.HaifyController.RejectRequest:output_type -> v1.RejectRequestResponse
-	391, // 484: v1.HaifyController.CreateApp:output_type -> v1.CreateAppResponse
-	393, // 485: v1.HaifyController.ListApps:output_type -> v1.ListAppsResponse
-	395, // 486: v1.HaifyController.GetAppStatus:output_type -> v1.GetAppStatusResponse
-	397, // 487: v1.HaifyController.DeleteApp:output_type -> v1.DeleteAppResponse
-	399, // 488: v1.HaifyController.FailoverApp:output_type -> v1.FailoverAppResponse
-	401, // 489: v1.HaifyController.SnapshotApp:output_type -> v1.SnapshotAppResponse
-	303, // [303:490] is the sub-list for method output_type
-	116, // [116:303] is the sub-list for method input_type
-	116, // [116:116] is the sub-list for extension type_name
-	116, // [116:116] is the sub-list for extension extendee
-	0,   // [0:116] is the sub-list for field type_name
+	353, // 95: v1.GetWanSizingResponse.history:type_name -> v1.WanSizingHistory
+	179, // 96: v1.GetWanSizingResponse.proxy:type_name -> v1.WANMetrics
+	354, // 97: v1.GetWanSizingResponse.sample:type_name -> v1.WanSizingSample
+	358, // 98: v1.VerifyResourceResponse.peers:type_name -> v1.VerifyPeer
+	363, // 99: v1.ReplicationTLSResponse.nodes:type_name -> v1.NodeTLSInfo
+	370, // 100: v1.ListRbacPoliciesResponse.policies:type_name -> v1.RbacPolicy
+	371, // 101: v1.ListRbacPoliciesResponse.users:type_name -> v1.RbacUser
+	379, // 102: v1.ListApprovalsResponse.approvals:type_name -> v1.ApprovalInfo
+	379, // 103: v1.ApproveRequestResponse.approval:type_name -> v1.ApprovalInfo
+	379, // 104: v1.RejectRequestResponse.approval:type_name -> v1.ApprovalInfo
+	387, // 105: v1.InspectionReport.summary:type_name -> v1.InspectionSummary
+	386, // 106: v1.InspectionReport.checks:type_name -> v1.InspectionCheck
+	388, // 107: v1.RunInspectionResponse.report:type_name -> v1.InspectionReport
+	388, // 108: v1.ListInspectionsResponse.reports:type_name -> v1.InspectionReport
+	388, // 109: v1.GetInspectionResponse.report:type_name -> v1.InspectionReport
+	395, // 110: v1.CreateAppResponse.app:type_name -> v1.AppInfo
+	395, // 111: v1.ListAppsResponse.apps:type_name -> v1.AppInfo
+	395, // 112: v1.GetAppStatusResponse.app:type_name -> v1.AppInfo
+	409, // 113: v1.TrimPoolsResponse.results:type_name -> v1.TrimResultInfo
+	412, // 114: v1.ListPoolDisksResponse.disks:type_name -> v1.PoolDiskInfo
+	415, // 115: v1.ListNodeDisksResponse.disks:type_name -> v1.NodeDiskInfo
+	427, // 116: v1.ListStorageJobsResponse.jobs:type_name -> v1.StorageJobInfo
+	180, // 117: v1.ResourceInfo.NodeStatesEntry.value:type_name -> v1.NodeResourceState
+	180, // 118: v1.ResourceStatus.NodeStatesEntry.value:type_name -> v1.NodeResourceState
+	0,   // 119: v1.HaifyController.CreatePool:input_type -> v1.CreatePoolRequest
+	2,   // 120: v1.HaifyController.DeletePool:input_type -> v1.DeletePoolRequest
+	4,   // 121: v1.HaifyController.GetPool:input_type -> v1.GetPoolRequest
+	6,   // 122: v1.HaifyController.ListPools:input_type -> v1.ListPoolsRequest
+	408, // 123: v1.HaifyController.TrimPools:input_type -> v1.TrimPoolsRequest
+	411, // 124: v1.HaifyController.ListPoolDisks:input_type -> v1.ListPoolDisksRequest
+	414, // 125: v1.HaifyController.ListNodeDisks:input_type -> v1.ListNodeDisksRequest
+	417, // 126: v1.HaifyController.ShipResource:input_type -> v1.ShipResourceRequest
+	418, // 127: v1.HaifyController.PrepareShipReceive:input_type -> v1.PrepareShipReceiveRequest
+	420, // 128: v1.HaifyController.FinishShipReceive:input_type -> v1.FinishShipReceiveRequest
+	422, // 129: v1.HaifyController.RemovePoolDisk:input_type -> v1.RemovePoolDiskRequest
+	423, // 130: v1.HaifyController.ReplacePoolDisk:input_type -> v1.ReplacePoolDiskRequest
+	424, // 131: v1.HaifyController.MoveVolume:input_type -> v1.MoveVolumeRequest
+	426, // 132: v1.HaifyController.ListStorageJobs:input_type -> v1.ListStorageJobsRequest
+	8,   // 133: v1.HaifyController.AddDiskToPool:input_type -> v1.AddDiskToPoolRequest
+	43,  // 134: v1.HaifyController.RegisterNode:input_type -> v1.RegisterNodeRequest
+	47,  // 135: v1.HaifyController.UnregisterNode:input_type -> v1.UnregisterNodeRequest
+	45,  // 136: v1.HaifyController.SetNodeLabels:input_type -> v1.SetNodeLabelsRequest
+	335, // 137: v1.HaifyController.SetNodeAddress:input_type -> v1.SetNodeAddressRequest
+	337, // 138: v1.HaifyController.SetNodeReplicationPaths:input_type -> v1.SetNodeReplicationPathsRequest
+	49,  // 139: v1.HaifyController.GetNode:input_type -> v1.GetNodeRequest
+	51,  // 140: v1.HaifyController.ListNodes:input_type -> v1.ListNodesRequest
+	54,  // 141: v1.HaifyController.HealthCheck:input_type -> v1.HealthCheckRequest
+	57,  // 142: v1.HaifyController.CreateResource:input_type -> v1.CreateResourceRequest
+	60,  // 143: v1.HaifyController.AdoptResource:input_type -> v1.AdoptResourceRequest
+	62,  // 144: v1.HaifyController.DeleteResource:input_type -> v1.DeleteResourceRequest
+	64,  // 145: v1.HaifyController.GetResource:input_type -> v1.GetResourceRequest
+	66,  // 146: v1.HaifyController.ListResources:input_type -> v1.ListResourcesRequest
+	69,  // 147: v1.HaifyController.CreateResourceProfile:input_type -> v1.CreateResourceProfileRequest
+	71,  // 148: v1.HaifyController.GetResourceProfile:input_type -> v1.GetResourceProfileRequest
+	73,  // 149: v1.HaifyController.ListResourceProfiles:input_type -> v1.ListResourceProfilesRequest
+	75,  // 150: v1.HaifyController.DeleteResourceProfile:input_type -> v1.DeleteResourceProfileRequest
+	340, // 151: v1.HaifyController.SetResourceProfileOptions:input_type -> v1.SetResourceProfileOptionsRequest
+	342, // 152: v1.HaifyController.AdjustResourceProfile:input_type -> v1.AdjustResourceProfileRequest
+	344, // 153: v1.HaifyController.GetResourceProfileMaxSize:input_type -> v1.GetResourceProfileMaxSizeRequest
+	346, // 154: v1.HaifyController.SetResourceProfile:input_type -> v1.SetResourceProfileRequest
+	77,  // 155: v1.HaifyController.AddVolume:input_type -> v1.AddVolumeRequest
+	83,  // 156: v1.HaifyController.RemoveVolume:input_type -> v1.RemoveVolumeRequest
+	85,  // 157: v1.HaifyController.CreateResourceSnapshot:input_type -> v1.CreateResourceSnapshotRequest
+	87,  // 158: v1.HaifyController.ListResourceSnapshots:input_type -> v1.ListResourceSnapshotsRequest
+	89,  // 159: v1.HaifyController.RollbackResourceSnapshot:input_type -> v1.RollbackResourceSnapshotRequest
+	91,  // 160: v1.HaifyController.DeleteResourceSnapshot:input_type -> v1.DeleteResourceSnapshotRequest
+	106, // 161: v1.HaifyController.RenameResource:input_type -> v1.RenameResourceRequest
+	108, // 162: v1.HaifyController.ResizeVolume:input_type -> v1.ResizeVolumeRequest
+	79,  // 163: v1.HaifyController.UpdateResourceOptions:input_type -> v1.UpdateResourceOptionsRequest
+	81,  // 164: v1.HaifyController.RepairResource:input_type -> v1.RepairResourceRequest
+	110, // 165: v1.HaifyController.ResourceStatus:input_type -> v1.ResourceStatusRequest
+	112, // 166: v1.HaifyController.SetPrimary:input_type -> v1.SetPrimaryRequest
+	114, // 167: v1.HaifyController.SetSecondary:input_type -> v1.SetSecondaryRequest
+	118, // 168: v1.HaifyController.SetDualPrimary:input_type -> v1.SetDualPrimaryRequest
+	120, // 169: v1.HaifyController.AttachDisklessClient:input_type -> v1.AttachDisklessClientRequest
+	122, // 170: v1.HaifyController.DetachDisklessClient:input_type -> v1.DetachDisklessClientRequest
+	116, // 171: v1.HaifyController.SetResourceLabels:input_type -> v1.SetResourceLabelsRequest
+	124, // 172: v1.HaifyController.CreateFilesystem:input_type -> v1.CreateFilesystemRequest
+	126, // 173: v1.HaifyController.MountResource:input_type -> v1.MountResourceRequest
+	128, // 174: v1.HaifyController.UnmountResource:input_type -> v1.UnmountResourceRequest
+	132, // 175: v1.HaifyController.MakeHa:input_type -> v1.MakeHaRequest
+	144, // 176: v1.HaifyController.EvictHa:input_type -> v1.EvictHaRequest
+	93,  // 177: v1.HaifyController.SetHaPreferredNodes:input_type -> v1.SetHaPreferredNodesRequest
+	145, // 178: v1.HaifyController.SetTiebreaker:input_type -> v1.SetTiebreakerRequest
+	361, // 179: v1.HaifyController.SetupReplicationTLS:input_type -> v1.SetupReplicationTLSRequest
+	362, // 180: v1.HaifyController.GetReplicationTLSStatus:input_type -> v1.GetReplicationTLSStatusRequest
+	365, // 181: v1.HaifyController.SetResourceTLS:input_type -> v1.SetResourceTLSRequest
+	147, // 182: v1.HaifyController.AddDR:input_type -> v1.AddDRRequest
+	149, // 183: v1.HaifyController.AddReplica:input_type -> v1.AddReplicaRequest
+	150, // 184: v1.HaifyController.RemoveReplica:input_type -> v1.RemoveReplicaRequest
+	312, // 185: v1.HaifyController.DeleteHa:input_type -> v1.DeleteHaRequest
+	314, // 186: v1.HaifyController.GetHa:input_type -> v1.GetHaRequest
+	316, // 187: v1.HaifyController.ListHa:input_type -> v1.ListHaRequest
+	323, // 188: v1.HaifyController.GetHaStatus:input_type -> v1.GetHaStatusRequest
+	134, // 189: v1.HaifyController.ListResourceAgents:input_type -> v1.ListResourceAgentsRequest
+	137, // 190: v1.HaifyController.GetResourceAgentMetadata:input_type -> v1.GetResourceAgentMetadataRequest
+	139, // 191: v1.HaifyController.GetHaToml:input_type -> v1.GetHaTomlRequest
+	141, // 192: v1.HaifyController.SyncHaToml:input_type -> v1.SyncHaTomlRequest
+	154, // 193: v1.HaifyController.EnableSelfHa:input_type -> v1.EnableSelfHaRequest
+	156, // 194: v1.HaifyController.DisableSelfHa:input_type -> v1.DisableSelfHaRequest
+	158, // 195: v1.HaifyController.GetSelfHaStatus:input_type -> v1.GetSelfHaStatusRequest
+	182, // 196: v1.HaifyController.CreateSnapshot:input_type -> v1.CreateSnapshotRequest
+	184, // 197: v1.HaifyController.DeleteSnapshot:input_type -> v1.DeleteSnapshotRequest
+	186, // 198: v1.HaifyController.RestoreSnapshot:input_type -> v1.RestoreSnapshotRequest
+	191, // 199: v1.HaifyController.ListSnapshots:input_type -> v1.ListSnapshotsRequest
+	188, // 200: v1.HaifyController.PopulateVolume:input_type -> v1.PopulateVolumeRequest
+	200, // 201: v1.HaifyController.CreateSnapshotSchedule:input_type -> v1.CreateSnapshotScheduleRequest
+	202, // 202: v1.HaifyController.ListSnapshotSchedules:input_type -> v1.ListSnapshotSchedulesRequest
+	204, // 203: v1.HaifyController.DeleteSnapshotSchedule:input_type -> v1.DeleteSnapshotScheduleRequest
+	196, // 204: v1.HaifyController.FreezeSnapshotSchedule:input_type -> v1.FreezeSnapshotScheduleRequest
+	198, // 205: v1.HaifyController.UnfreezeSnapshotSchedule:input_type -> v1.UnfreezeSnapshotScheduleRequest
+	207, // 206: v1.HaifyController.AddBackupTarget:input_type -> v1.AddBackupTargetRequest
+	209, // 207: v1.HaifyController.ListBackupTargets:input_type -> v1.ListBackupTargetsRequest
+	211, // 208: v1.HaifyController.DeleteBackupTarget:input_type -> v1.DeleteBackupTargetRequest
+	224, // 209: v1.HaifyController.CreateBackup:input_type -> v1.CreateBackupRequest
+	226, // 210: v1.HaifyController.ListBackups:input_type -> v1.ListBackupsRequest
+	228, // 211: v1.HaifyController.RestoreBackup:input_type -> v1.RestoreBackupRequest
+	230, // 212: v1.HaifyController.DeleteBackup:input_type -> v1.DeleteBackupRequest
+	232, // 213: v1.HaifyController.ImportBackups:input_type -> v1.ImportBackupsRequest
+	235, // 214: v1.HaifyController.CreateBackupSchedule:input_type -> v1.CreateBackupScheduleRequest
+	237, // 215: v1.HaifyController.ListBackupSchedules:input_type -> v1.ListBackupSchedulesRequest
+	239, // 216: v1.HaifyController.DeleteBackupSchedule:input_type -> v1.DeleteBackupScheduleRequest
+	241, // 217: v1.HaifyController.RunBackupSchedule:input_type -> v1.RunBackupScheduleRequest
+	243, // 218: v1.HaifyController.CreateNFSGateway:input_type -> v1.CreateNFSGatewayRequest
+	245, // 219: v1.HaifyController.CreateISCSIGateway:input_type -> v1.CreateISCSIGatewayRequest
+	247, // 220: v1.HaifyController.CreateNVMeGateway:input_type -> v1.CreateNVMeGatewayRequest
+	249, // 221: v1.HaifyController.DeleteGateway:input_type -> v1.DeleteGatewayRequest
+	251, // 222: v1.HaifyController.GetGateway:input_type -> v1.GetGatewayRequest
+	253, // 223: v1.HaifyController.ListGateways:input_type -> v1.ListGatewaysRequest
+	255, // 224: v1.HaifyController.StartGateway:input_type -> v1.StartGatewayRequest
+	257, // 225: v1.HaifyController.StopGateway:input_type -> v1.StopGatewayRequest
+	261, // 226: v1.HaifyController.AddNFSExport:input_type -> v1.AddNFSExportRequest
+	263, // 227: v1.HaifyController.RemoveNFSExport:input_type -> v1.RemoveNFSExportRequest
+	265, // 228: v1.HaifyController.ListNFSExports:input_type -> v1.ListNFSExportsRequest
+	267, // 229: v1.HaifyController.CreateSMBGateway:input_type -> v1.CreateSMBGatewayRequest
+	270, // 230: v1.HaifyController.AddSMBShare:input_type -> v1.AddSMBShareRequest
+	272, // 231: v1.HaifyController.RemoveSMBShare:input_type -> v1.RemoveSMBShareRequest
+	274, // 232: v1.HaifyController.ListSMBShares:input_type -> v1.ListSMBSharesRequest
+	276, // 233: v1.HaifyController.SetSMBUser:input_type -> v1.SetSMBUserRequest
+	278, // 234: v1.HaifyController.RemoveSMBUser:input_type -> v1.RemoveSMBUserRequest
+	280, // 235: v1.HaifyController.ListSMBUsers:input_type -> v1.ListSMBUsersRequest
+	283, // 236: v1.HaifyController.AddISCSILUN:input_type -> v1.AddISCSILUNRequest
+	285, // 237: v1.HaifyController.RemoveISCSILUN:input_type -> v1.RemoveISCSILUNRequest
+	287, // 238: v1.HaifyController.ListISCSILUNs:input_type -> v1.ListISCSILUNsRequest
+	289, // 239: v1.HaifyController.AddISCSIInitiator:input_type -> v1.AddISCSIInitiatorRequest
+	291, // 240: v1.HaifyController.RemoveISCSIInitiator:input_type -> v1.RemoveISCSIInitiatorRequest
+	293, // 241: v1.HaifyController.ListISCSIInitiators:input_type -> v1.ListISCSIInitiatorsRequest
+	295, // 242: v1.HaifyController.SetISCSIChap:input_type -> v1.SetISCSIChapRequest
+	297, // 243: v1.HaifyController.GetISCSIChap:input_type -> v1.GetISCSIChapRequest
+	300, // 244: v1.HaifyController.AddNVMeNamespace:input_type -> v1.AddNVMeNamespaceRequest
+	302, // 245: v1.HaifyController.RemoveNVMeNamespace:input_type -> v1.RemoveNVMeNamespaceRequest
+	304, // 246: v1.HaifyController.ListNVMeNamespaces:input_type -> v1.ListNVMeNamespacesRequest
+	306, // 247: v1.HaifyController.AddNVMeHost:input_type -> v1.AddNVMeHostRequest
+	308, // 248: v1.HaifyController.RemoveNVMeHost:input_type -> v1.RemoveNVMeHostRequest
+	310, // 249: v1.HaifyController.ListNVMeHosts:input_type -> v1.ListNVMeHostsRequest
+	11,  // 250: v1.HaifyController.CreateZFSPool:input_type -> v1.CreateZFSPoolRequest
+	13,  // 251: v1.HaifyController.DeleteZFSPool:input_type -> v1.DeleteZFSPoolRequest
+	15,  // 252: v1.HaifyController.ListZFSpools:input_type -> v1.ListZFSPoolsRequest
+	17,  // 253: v1.HaifyController.CreateZFSDataset:input_type -> v1.CreateZFSDatasetRequest
+	19,  // 254: v1.HaifyController.CreateZFSVolume:input_type -> v1.CreateZFSVolumeRequest
+	21,  // 255: v1.HaifyController.ResizeZFSVolume:input_type -> v1.ResizeZFSVolumeRequest
+	23,  // 256: v1.HaifyController.DeleteZFSDataset:input_type -> v1.DeleteZFSDatasetRequest
+	25,  // 257: v1.HaifyController.CreateZFSSnapshot:input_type -> v1.CreateZFSSnapshotRequest
+	27,  // 258: v1.HaifyController.DeleteZFSSnapshot:input_type -> v1.DeleteZFSSnapshotRequest
+	29,  // 259: v1.HaifyController.ListZFSSnapshots:input_type -> v1.ListZFSSnapshotsRequest
+	31,  // 260: v1.HaifyController.RestoreZFSSnapshot:input_type -> v1.RestoreZFSSnapshotRequest
+	33,  // 261: v1.HaifyController.CloneZFSSnapshot:input_type -> v1.CloneZFSSnapshotRequest
+	35,  // 262: v1.HaifyController.CreateLvmSnapshot:input_type -> v1.CreateLvmSnapshotRequest
+	37,  // 263: v1.HaifyController.DeleteLvmSnapshot:input_type -> v1.DeleteLvmSnapshotRequest
+	39,  // 264: v1.HaifyController.ListLvmSnapshots:input_type -> v1.ListLvmSnapshotsRequest
+	41,  // 265: v1.HaifyController.RestoreLvmSnapshot:input_type -> v1.RestoreLvmSnapshotRequest
+	95,  // 266: v1.HaifyController.SetNFSExportQuota:input_type -> v1.SetNFSExportQuotaRequest
+	97,  // 267: v1.HaifyController.MoveReplica:input_type -> v1.MoveReplicaRequest
+	100, // 268: v1.HaifyController.PlanRebalance:input_type -> v1.PlanRebalanceRequest
+	102, // 269: v1.HaifyController.MarkNodeLost:input_type -> v1.MarkNodeLostRequest
+	104, // 270: v1.HaifyController.RestoreNode:input_type -> v1.RestoreNodeRequest
+	325, // 271: v1.HaifyController.DrainNode:input_type -> v1.DrainNodeRequest
+	333, // 272: v1.HaifyController.UndrainNode:input_type -> v1.UndrainNodeRequest
+	326, // 273: v1.HaifyController.ConvertPoolToThin:input_type -> v1.ConvertPoolToThinRequest
+	328, // 274: v1.HaifyController.AddPoolCache:input_type -> v1.AddPoolCacheRequest
+	330, // 275: v1.HaifyController.RemovePoolCache:input_type -> v1.RemovePoolCacheRequest
+	161, // 276: v1.HaifyController.ListAuditEvents:input_type -> v1.ListAuditEventsRequest
+	164, // 277: v1.HaifyController.ListControllerLogs:input_type -> v1.ListControllerLogsRequest
+	166, // 278: v1.HaifyController.CollectNodeDiagnostics:input_type -> v1.CollectNodeDiagnosticsRequest
+	171, // 279: v1.HaifyController.ListEvents:input_type -> v1.ListEventsRequest
+	214, // 280: v1.HaifyController.ListNotifyChannels:input_type -> v1.ListNotifyChannelsRequest
+	216, // 281: v1.HaifyController.SaveNotifyChannel:input_type -> v1.SaveNotifyChannelRequest
+	218, // 282: v1.HaifyController.DeleteNotifyChannel:input_type -> v1.DeleteNotifyChannelRequest
+	220, // 283: v1.HaifyController.TestNotifyChannel:input_type -> v1.TestNotifyChannelRequest
+	389, // 284: v1.HaifyController.RunInspection:input_type -> v1.RunInspectionRequest
+	391, // 285: v1.HaifyController.ListInspections:input_type -> v1.ListInspectionsRequest
+	393, // 286: v1.HaifyController.GetInspection:input_type -> v1.GetInspectionRequest
+	173, // 287: v1.HaifyController.RepairWanProxy:input_type -> v1.RepairWanProxyRequest
+	356, // 288: v1.HaifyController.DRFailback:input_type -> v1.DRFailbackRequest
+	348, // 289: v1.HaifyController.SetWanEndpoint:input_type -> v1.SetWanEndpointRequest
+	350, // 290: v1.HaifyController.SetWanTuning:input_type -> v1.SetWanTuningRequest
+	352, // 291: v1.HaifyController.GetWanSizing:input_type -> v1.GetWanSizingRequest
+	357, // 292: v1.HaifyController.VerifyResource:input_type -> v1.VerifyResourceRequest
+	175, // 293: v1.HaifyController.WatchEvents:input_type -> v1.WatchEventsRequest
+	367, // 294: v1.HaifyController.GetRbacWhoami:input_type -> v1.GetRbacWhoamiRequest
+	369, // 295: v1.HaifyController.ListRbacPolicies:input_type -> v1.ListRbacPoliciesRequest
+	373, // 296: v1.HaifyController.CreateRbacUser:input_type -> v1.CreateRbacUserRequest
+	375, // 297: v1.HaifyController.DeleteRbacUser:input_type -> v1.DeleteRbacUserRequest
+	377, // 298: v1.HaifyController.SetRbacUserRole:input_type -> v1.SetRbacUserRoleRequest
+	380, // 299: v1.HaifyController.ListApprovals:input_type -> v1.ListApprovalsRequest
+	382, // 300: v1.HaifyController.ApproveRequest:input_type -> v1.ApproveRequestRequest
+	384, // 301: v1.HaifyController.RejectRequest:input_type -> v1.RejectRequestRequest
+	396, // 302: v1.HaifyController.CreateApp:input_type -> v1.CreateAppRequest
+	398, // 303: v1.HaifyController.ListApps:input_type -> v1.ListAppsRequest
+	400, // 304: v1.HaifyController.GetAppStatus:input_type -> v1.GetAppStatusRequest
+	402, // 305: v1.HaifyController.DeleteApp:input_type -> v1.DeleteAppRequest
+	404, // 306: v1.HaifyController.FailoverApp:input_type -> v1.FailoverAppRequest
+	406, // 307: v1.HaifyController.SnapshotApp:input_type -> v1.SnapshotAppRequest
+	1,   // 308: v1.HaifyController.CreatePool:output_type -> v1.CreatePoolResponse
+	3,   // 309: v1.HaifyController.DeletePool:output_type -> v1.DeletePoolResponse
+	5,   // 310: v1.HaifyController.GetPool:output_type -> v1.GetPoolResponse
+	7,   // 311: v1.HaifyController.ListPools:output_type -> v1.ListPoolsResponse
+	410, // 312: v1.HaifyController.TrimPools:output_type -> v1.TrimPoolsResponse
+	413, // 313: v1.HaifyController.ListPoolDisks:output_type -> v1.ListPoolDisksResponse
+	416, // 314: v1.HaifyController.ListNodeDisks:output_type -> v1.ListNodeDisksResponse
+	425, // 315: v1.HaifyController.ShipResource:output_type -> v1.StorageJobResponse
+	419, // 316: v1.HaifyController.PrepareShipReceive:output_type -> v1.PrepareShipReceiveResponse
+	421, // 317: v1.HaifyController.FinishShipReceive:output_type -> v1.FinishShipReceiveResponse
+	425, // 318: v1.HaifyController.RemovePoolDisk:output_type -> v1.StorageJobResponse
+	425, // 319: v1.HaifyController.ReplacePoolDisk:output_type -> v1.StorageJobResponse
+	425, // 320: v1.HaifyController.MoveVolume:output_type -> v1.StorageJobResponse
+	428, // 321: v1.HaifyController.ListStorageJobs:output_type -> v1.ListStorageJobsResponse
+	9,   // 322: v1.HaifyController.AddDiskToPool:output_type -> v1.AddDiskToPoolResponse
+	44,  // 323: v1.HaifyController.RegisterNode:output_type -> v1.RegisterNodeResponse
+	48,  // 324: v1.HaifyController.UnregisterNode:output_type -> v1.UnregisterNodeResponse
+	46,  // 325: v1.HaifyController.SetNodeLabels:output_type -> v1.SetNodeLabelsResponse
+	338, // 326: v1.HaifyController.SetNodeAddress:output_type -> v1.SetNodeAddressResponse
+	338, // 327: v1.HaifyController.SetNodeReplicationPaths:output_type -> v1.SetNodeAddressResponse
+	50,  // 328: v1.HaifyController.GetNode:output_type -> v1.GetNodeResponse
+	52,  // 329: v1.HaifyController.ListNodes:output_type -> v1.ListNodesResponse
+	55,  // 330: v1.HaifyController.HealthCheck:output_type -> v1.HealthCheckResponse
+	59,  // 331: v1.HaifyController.CreateResource:output_type -> v1.CreateResourceResponse
+	61,  // 332: v1.HaifyController.AdoptResource:output_type -> v1.AdoptResourceResponse
+	63,  // 333: v1.HaifyController.DeleteResource:output_type -> v1.DeleteResourceResponse
+	65,  // 334: v1.HaifyController.GetResource:output_type -> v1.GetResourceResponse
+	67,  // 335: v1.HaifyController.ListResources:output_type -> v1.ListResourcesResponse
+	70,  // 336: v1.HaifyController.CreateResourceProfile:output_type -> v1.CreateResourceProfileResponse
+	72,  // 337: v1.HaifyController.GetResourceProfile:output_type -> v1.GetResourceProfileResponse
+	74,  // 338: v1.HaifyController.ListResourceProfiles:output_type -> v1.ListResourceProfilesResponse
+	76,  // 339: v1.HaifyController.DeleteResourceProfile:output_type -> v1.DeleteResourceProfileResponse
+	341, // 340: v1.HaifyController.SetResourceProfileOptions:output_type -> v1.SetResourceProfileOptionsResponse
+	343, // 341: v1.HaifyController.AdjustResourceProfile:output_type -> v1.AdjustResourceProfileResponse
+	345, // 342: v1.HaifyController.GetResourceProfileMaxSize:output_type -> v1.GetResourceProfileMaxSizeResponse
+	347, // 343: v1.HaifyController.SetResourceProfile:output_type -> v1.SetResourceProfileResponse
+	78,  // 344: v1.HaifyController.AddVolume:output_type -> v1.AddVolumeResponse
+	84,  // 345: v1.HaifyController.RemoveVolume:output_type -> v1.RemoveVolumeResponse
+	86,  // 346: v1.HaifyController.CreateResourceSnapshot:output_type -> v1.CreateResourceSnapshotResponse
+	88,  // 347: v1.HaifyController.ListResourceSnapshots:output_type -> v1.ListResourceSnapshotsResponse
+	90,  // 348: v1.HaifyController.RollbackResourceSnapshot:output_type -> v1.RollbackResourceSnapshotResponse
+	92,  // 349: v1.HaifyController.DeleteResourceSnapshot:output_type -> v1.DeleteResourceSnapshotResponse
+	107, // 350: v1.HaifyController.RenameResource:output_type -> v1.RenameResourceResponse
+	109, // 351: v1.HaifyController.ResizeVolume:output_type -> v1.ResizeVolumeResponse
+	80,  // 352: v1.HaifyController.UpdateResourceOptions:output_type -> v1.UpdateResourceOptionsResponse
+	82,  // 353: v1.HaifyController.RepairResource:output_type -> v1.RepairResourceResponse
+	111, // 354: v1.HaifyController.ResourceStatus:output_type -> v1.ResourceStatusResponse
+	113, // 355: v1.HaifyController.SetPrimary:output_type -> v1.SetPrimaryResponse
+	115, // 356: v1.HaifyController.SetSecondary:output_type -> v1.SetSecondaryResponse
+	119, // 357: v1.HaifyController.SetDualPrimary:output_type -> v1.SetDualPrimaryResponse
+	121, // 358: v1.HaifyController.AttachDisklessClient:output_type -> v1.AttachDisklessClientResponse
+	123, // 359: v1.HaifyController.DetachDisklessClient:output_type -> v1.DetachDisklessClientResponse
+	117, // 360: v1.HaifyController.SetResourceLabels:output_type -> v1.SetResourceLabelsResponse
+	125, // 361: v1.HaifyController.CreateFilesystem:output_type -> v1.CreateFilesystemResponse
+	127, // 362: v1.HaifyController.MountResource:output_type -> v1.MountResourceResponse
+	129, // 363: v1.HaifyController.UnmountResource:output_type -> v1.UnmountResourceResponse
+	143, // 364: v1.HaifyController.MakeHa:output_type -> v1.MakeHaResponse
+	153, // 365: v1.HaifyController.EvictHa:output_type -> v1.EvictHaResponse
+	94,  // 366: v1.HaifyController.SetHaPreferredNodes:output_type -> v1.SetHaPreferredNodesResponse
+	146, // 367: v1.HaifyController.SetTiebreaker:output_type -> v1.SetTiebreakerResponse
+	364, // 368: v1.HaifyController.SetupReplicationTLS:output_type -> v1.ReplicationTLSResponse
+	364, // 369: v1.HaifyController.GetReplicationTLSStatus:output_type -> v1.ReplicationTLSResponse
+	366, // 370: v1.HaifyController.SetResourceTLS:output_type -> v1.SetResourceTLSResponse
+	148, // 371: v1.HaifyController.AddDR:output_type -> v1.AddDRResponse
+	152, // 372: v1.HaifyController.AddReplica:output_type -> v1.AddReplicaResponse
+	151, // 373: v1.HaifyController.RemoveReplica:output_type -> v1.RemoveReplicaResponse
+	313, // 374: v1.HaifyController.DeleteHa:output_type -> v1.DeleteHaResponse
+	315, // 375: v1.HaifyController.GetHa:output_type -> v1.GetHaResponse
+	317, // 376: v1.HaifyController.ListHa:output_type -> v1.ListHaResponse
+	324, // 377: v1.HaifyController.GetHaStatus:output_type -> v1.GetHaStatusResponse
+	135, // 378: v1.HaifyController.ListResourceAgents:output_type -> v1.ListResourceAgentsResponse
+	138, // 379: v1.HaifyController.GetResourceAgentMetadata:output_type -> v1.GetResourceAgentMetadataResponse
+	140, // 380: v1.HaifyController.GetHaToml:output_type -> v1.GetHaTomlResponse
+	142, // 381: v1.HaifyController.SyncHaToml:output_type -> v1.SyncHaTomlResponse
+	155, // 382: v1.HaifyController.EnableSelfHa:output_type -> v1.EnableSelfHaResponse
+	157, // 383: v1.HaifyController.DisableSelfHa:output_type -> v1.DisableSelfHaResponse
+	159, // 384: v1.HaifyController.GetSelfHaStatus:output_type -> v1.GetSelfHaStatusResponse
+	183, // 385: v1.HaifyController.CreateSnapshot:output_type -> v1.CreateSnapshotResponse
+	185, // 386: v1.HaifyController.DeleteSnapshot:output_type -> v1.DeleteSnapshotResponse
+	187, // 387: v1.HaifyController.RestoreSnapshot:output_type -> v1.RestoreSnapshotResponse
+	192, // 388: v1.HaifyController.ListSnapshots:output_type -> v1.ListSnapshotsResponse
+	190, // 389: v1.HaifyController.PopulateVolume:output_type -> v1.PopulateVolumeResponse
+	201, // 390: v1.HaifyController.CreateSnapshotSchedule:output_type -> v1.CreateSnapshotScheduleResponse
+	203, // 391: v1.HaifyController.ListSnapshotSchedules:output_type -> v1.ListSnapshotSchedulesResponse
+	205, // 392: v1.HaifyController.DeleteSnapshotSchedule:output_type -> v1.DeleteSnapshotScheduleResponse
+	197, // 393: v1.HaifyController.FreezeSnapshotSchedule:output_type -> v1.FreezeSnapshotScheduleResponse
+	199, // 394: v1.HaifyController.UnfreezeSnapshotSchedule:output_type -> v1.UnfreezeSnapshotScheduleResponse
+	208, // 395: v1.HaifyController.AddBackupTarget:output_type -> v1.AddBackupTargetResponse
+	210, // 396: v1.HaifyController.ListBackupTargets:output_type -> v1.ListBackupTargetsResponse
+	212, // 397: v1.HaifyController.DeleteBackupTarget:output_type -> v1.DeleteBackupTargetResponse
+	225, // 398: v1.HaifyController.CreateBackup:output_type -> v1.CreateBackupResponse
+	227, // 399: v1.HaifyController.ListBackups:output_type -> v1.ListBackupsResponse
+	229, // 400: v1.HaifyController.RestoreBackup:output_type -> v1.RestoreBackupResponse
+	231, // 401: v1.HaifyController.DeleteBackup:output_type -> v1.DeleteBackupResponse
+	233, // 402: v1.HaifyController.ImportBackups:output_type -> v1.ImportBackupsResponse
+	236, // 403: v1.HaifyController.CreateBackupSchedule:output_type -> v1.CreateBackupScheduleResponse
+	238, // 404: v1.HaifyController.ListBackupSchedules:output_type -> v1.ListBackupSchedulesResponse
+	240, // 405: v1.HaifyController.DeleteBackupSchedule:output_type -> v1.DeleteBackupScheduleResponse
+	242, // 406: v1.HaifyController.RunBackupSchedule:output_type -> v1.RunBackupScheduleResponse
+	244, // 407: v1.HaifyController.CreateNFSGateway:output_type -> v1.CreateNFSGatewayResponse
+	246, // 408: v1.HaifyController.CreateISCSIGateway:output_type -> v1.CreateISCSIGatewayResponse
+	248, // 409: v1.HaifyController.CreateNVMeGateway:output_type -> v1.CreateNVMeGatewayResponse
+	250, // 410: v1.HaifyController.DeleteGateway:output_type -> v1.DeleteGatewayResponse
+	252, // 411: v1.HaifyController.GetGateway:output_type -> v1.GetGatewayResponse
+	254, // 412: v1.HaifyController.ListGateways:output_type -> v1.ListGatewaysResponse
+	256, // 413: v1.HaifyController.StartGateway:output_type -> v1.StartGatewayResponse
+	258, // 414: v1.HaifyController.StopGateway:output_type -> v1.StopGatewayResponse
+	262, // 415: v1.HaifyController.AddNFSExport:output_type -> v1.AddNFSExportResponse
+	264, // 416: v1.HaifyController.RemoveNFSExport:output_type -> v1.RemoveNFSExportResponse
+	266, // 417: v1.HaifyController.ListNFSExports:output_type -> v1.ListNFSExportsResponse
+	268, // 418: v1.HaifyController.CreateSMBGateway:output_type -> v1.CreateSMBGatewayResponse
+	271, // 419: v1.HaifyController.AddSMBShare:output_type -> v1.AddSMBShareResponse
+	273, // 420: v1.HaifyController.RemoveSMBShare:output_type -> v1.RemoveSMBShareResponse
+	275, // 421: v1.HaifyController.ListSMBShares:output_type -> v1.ListSMBSharesResponse
+	277, // 422: v1.HaifyController.SetSMBUser:output_type -> v1.SetSMBUserResponse
+	279, // 423: v1.HaifyController.RemoveSMBUser:output_type -> v1.RemoveSMBUserResponse
+	281, // 424: v1.HaifyController.ListSMBUsers:output_type -> v1.ListSMBUsersResponse
+	284, // 425: v1.HaifyController.AddISCSILUN:output_type -> v1.AddISCSILUNResponse
+	286, // 426: v1.HaifyController.RemoveISCSILUN:output_type -> v1.RemoveISCSILUNResponse
+	288, // 427: v1.HaifyController.ListISCSILUNs:output_type -> v1.ListISCSILUNsResponse
+	290, // 428: v1.HaifyController.AddISCSIInitiator:output_type -> v1.AddISCSIInitiatorResponse
+	292, // 429: v1.HaifyController.RemoveISCSIInitiator:output_type -> v1.RemoveISCSIInitiatorResponse
+	294, // 430: v1.HaifyController.ListISCSIInitiators:output_type -> v1.ListISCSIInitiatorsResponse
+	296, // 431: v1.HaifyController.SetISCSIChap:output_type -> v1.SetISCSIChapResponse
+	298, // 432: v1.HaifyController.GetISCSIChap:output_type -> v1.GetISCSIChapResponse
+	301, // 433: v1.HaifyController.AddNVMeNamespace:output_type -> v1.AddNVMeNamespaceResponse
+	303, // 434: v1.HaifyController.RemoveNVMeNamespace:output_type -> v1.RemoveNVMeNamespaceResponse
+	305, // 435: v1.HaifyController.ListNVMeNamespaces:output_type -> v1.ListNVMeNamespacesResponse
+	307, // 436: v1.HaifyController.AddNVMeHost:output_type -> v1.AddNVMeHostResponse
+	309, // 437: v1.HaifyController.RemoveNVMeHost:output_type -> v1.RemoveNVMeHostResponse
+	311, // 438: v1.HaifyController.ListNVMeHosts:output_type -> v1.ListNVMeHostsResponse
+	12,  // 439: v1.HaifyController.CreateZFSPool:output_type -> v1.CreateZFSPoolResponse
+	14,  // 440: v1.HaifyController.DeleteZFSPool:output_type -> v1.DeleteZFSPoolResponse
+	16,  // 441: v1.HaifyController.ListZFSpools:output_type -> v1.ListZFSPoolsResponse
+	18,  // 442: v1.HaifyController.CreateZFSDataset:output_type -> v1.CreateZFSDatasetResponse
+	20,  // 443: v1.HaifyController.CreateZFSVolume:output_type -> v1.CreateZFSVolumeResponse
+	22,  // 444: v1.HaifyController.ResizeZFSVolume:output_type -> v1.ResizeZFSVolumeResponse
+	24,  // 445: v1.HaifyController.DeleteZFSDataset:output_type -> v1.DeleteZFSDatasetResponse
+	26,  // 446: v1.HaifyController.CreateZFSSnapshot:output_type -> v1.CreateZFSSnapshotResponse
+	28,  // 447: v1.HaifyController.DeleteZFSSnapshot:output_type -> v1.DeleteZFSSnapshotResponse
+	30,  // 448: v1.HaifyController.ListZFSSnapshots:output_type -> v1.ListZFSSnapshotsResponse
+	32,  // 449: v1.HaifyController.RestoreZFSSnapshot:output_type -> v1.RestoreZFSSnapshotResponse
+	34,  // 450: v1.HaifyController.CloneZFSSnapshot:output_type -> v1.CloneZFSSnapshotResponse
+	36,  // 451: v1.HaifyController.CreateLvmSnapshot:output_type -> v1.CreateLvmSnapshotResponse
+	38,  // 452: v1.HaifyController.DeleteLvmSnapshot:output_type -> v1.DeleteLvmSnapshotResponse
+	40,  // 453: v1.HaifyController.ListLvmSnapshots:output_type -> v1.ListLvmSnapshotsResponse
+	42,  // 454: v1.HaifyController.RestoreLvmSnapshot:output_type -> v1.RestoreLvmSnapshotResponse
+	96,  // 455: v1.HaifyController.SetNFSExportQuota:output_type -> v1.SetNFSExportQuotaResponse
+	98,  // 456: v1.HaifyController.MoveReplica:output_type -> v1.MoveReplicaResponse
+	101, // 457: v1.HaifyController.PlanRebalance:output_type -> v1.PlanRebalanceResponse
+	103, // 458: v1.HaifyController.MarkNodeLost:output_type -> v1.MarkNodeLostResponse
+	105, // 459: v1.HaifyController.RestoreNode:output_type -> v1.RestoreNodeResponse
+	332, // 460: v1.HaifyController.DrainNode:output_type -> v1.DrainNodeResponse
+	334, // 461: v1.HaifyController.UndrainNode:output_type -> v1.UndrainNodeResponse
+	327, // 462: v1.HaifyController.ConvertPoolToThin:output_type -> v1.ConvertPoolToThinResponse
+	329, // 463: v1.HaifyController.AddPoolCache:output_type -> v1.AddPoolCacheResponse
+	331, // 464: v1.HaifyController.RemovePoolCache:output_type -> v1.RemovePoolCacheResponse
+	162, // 465: v1.HaifyController.ListAuditEvents:output_type -> v1.ListAuditEventsResponse
+	165, // 466: v1.HaifyController.ListControllerLogs:output_type -> v1.ListControllerLogsResponse
+	169, // 467: v1.HaifyController.CollectNodeDiagnostics:output_type -> v1.CollectNodeDiagnosticsResponse
+	172, // 468: v1.HaifyController.ListEvents:output_type -> v1.ListEventsResponse
+	215, // 469: v1.HaifyController.ListNotifyChannels:output_type -> v1.ListNotifyChannelsResponse
+	217, // 470: v1.HaifyController.SaveNotifyChannel:output_type -> v1.SaveNotifyChannelResponse
+	219, // 471: v1.HaifyController.DeleteNotifyChannel:output_type -> v1.DeleteNotifyChannelResponse
+	221, // 472: v1.HaifyController.TestNotifyChannel:output_type -> v1.TestNotifyChannelResponse
+	390, // 473: v1.HaifyController.RunInspection:output_type -> v1.RunInspectionResponse
+	392, // 474: v1.HaifyController.ListInspections:output_type -> v1.ListInspectionsResponse
+	394, // 475: v1.HaifyController.GetInspection:output_type -> v1.GetInspectionResponse
+	174, // 476: v1.HaifyController.RepairWanProxy:output_type -> v1.RepairWanProxyResponse
+	360, // 477: v1.HaifyController.DRFailback:output_type -> v1.DRFailbackResponse
+	349, // 478: v1.HaifyController.SetWanEndpoint:output_type -> v1.SetWanEndpointResponse
+	351, // 479: v1.HaifyController.SetWanTuning:output_type -> v1.SetWanTuningResponse
+	355, // 480: v1.HaifyController.GetWanSizing:output_type -> v1.GetWanSizingResponse
+	359, // 481: v1.HaifyController.VerifyResource:output_type -> v1.VerifyResourceResponse
+	170, // 482: v1.HaifyController.WatchEvents:output_type -> v1.Event
+	368, // 483: v1.HaifyController.GetRbacWhoami:output_type -> v1.GetRbacWhoamiResponse
+	372, // 484: v1.HaifyController.ListRbacPolicies:output_type -> v1.ListRbacPoliciesResponse
+	374, // 485: v1.HaifyController.CreateRbacUser:output_type -> v1.CreateRbacUserResponse
+	376, // 486: v1.HaifyController.DeleteRbacUser:output_type -> v1.DeleteRbacUserResponse
+	378, // 487: v1.HaifyController.SetRbacUserRole:output_type -> v1.SetRbacUserRoleResponse
+	381, // 488: v1.HaifyController.ListApprovals:output_type -> v1.ListApprovalsResponse
+	383, // 489: v1.HaifyController.ApproveRequest:output_type -> v1.ApproveRequestResponse
+	385, // 490: v1.HaifyController.RejectRequest:output_type -> v1.RejectRequestResponse
+	397, // 491: v1.HaifyController.CreateApp:output_type -> v1.CreateAppResponse
+	399, // 492: v1.HaifyController.ListApps:output_type -> v1.ListAppsResponse
+	401, // 493: v1.HaifyController.GetAppStatus:output_type -> v1.GetAppStatusResponse
+	403, // 494: v1.HaifyController.DeleteApp:output_type -> v1.DeleteAppResponse
+	405, // 495: v1.HaifyController.FailoverApp:output_type -> v1.FailoverAppResponse
+	407, // 496: v1.HaifyController.SnapshotApp:output_type -> v1.SnapshotAppResponse
+	308, // [308:497] is the sub-list for method output_type
+	119, // [119:308] is the sub-list for method input_type
+	119, // [119:119] is the sub-list for extension type_name
+	119, // [119:119] is the sub-list for extension extendee
+	0,   // [0:119] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_v1_haify_proto_init() }
@@ -30225,6 +31073,7 @@ func file_api_proto_v1_haify_proto_init() {
 		(*HaStartItem_SystemdUnit)(nil),
 		(*HaStartItem_Ocf)(nil),
 	}
+	file_api_proto_v1_haify_proto_msgTypes[179].OneofWrappers = []any{}
 	file_api_proto_v1_haify_proto_msgTypes[180].OneofWrappers = []any{}
 	file_api_proto_v1_haify_proto_msgTypes[200].OneofWrappers = []any{}
 	type x struct{}
@@ -30233,7 +31082,7 @@ func file_api_proto_v1_haify_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_v1_haify_proto_rawDesc), len(file_api_proto_v1_haify_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   448,
+			NumMessages:   454,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

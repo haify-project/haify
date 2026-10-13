@@ -36,6 +36,9 @@ type wanConfig struct {
 	// offset", which is only safe when nothing else on the host has taken those
 	// ports — see wanDRBDBindOffset.
 	BindPorts []int
+
+	// Tuning is the proxy buffer, which DRBD's congestion-fill follows.
+	Tuning wanproxy.Tuning
 }
 
 // bindPort returns the loopback port primary i binds for its WAN leg.
@@ -218,6 +221,10 @@ type WANStatusInfo struct {
 	// the headline figure here is the un-replicated backlog, i.e. how much a DR
 	// failover would lose, and a confident "0" would be dangerous.
 	Metrics *wanproxy.Metrics
+	// MetricsHost is the primary-site node the metrics were read from.
+	MetricsHost string
+	// Tuning is the proxy buffer and compression the record holds.
+	Tuning wanproxy.Tuning
 }
 
 // WANStatus returns the WAN replication view for a resource, or (nil, nil) for a
@@ -239,6 +246,7 @@ func (rm *ResourceManager) WANStatus(ctx context.Context, name string) (*WANStat
 		DREndpoint: dbRes.DREndpoint,
 		WANPort:    dbRes.WANPort,
 		ProxyState: map[string]string{},
+		Tuning:     wanTuningOf(dbRes),
 	}
 	_, drAddr := rm.wanEndpointAddrs(dbRes)
 
@@ -298,6 +306,7 @@ func (rm *ResourceManager) WANStatus(ctx context.Context, name string) (*WANStat
 		if host := liveWANPrimary(st); host != "" {
 			start := time.Now()
 			info.Metrics = wanproxy.ReadNodeMetrics(ctx, rm.wanproxyDeployClient(), host, wanLegFor(st, host))
+			info.MetricsHost = host
 			log.Debug("WANStatus: read proxy metrics", zap.String("resource", name), zap.String("host", host),
 				zap.Bool("found", info.Metrics != nil), zap.Duration("took", time.Since(start)))
 		} else {
@@ -445,7 +454,16 @@ func (rm *ResourceManager) wanMultiSpecFor(dbRes *database.Resource) wanproxy.Mu
 		PrimaryEgressAddr: dbRes.WANEgressAddress,
 		BaseWANPort:       int(dbRes.WANPort),
 		BaseDRBDPort:      int(dbRes.Port),
+		Tuning:            wanTuningOf(dbRes),
 	}
+}
+
+// wanTuningOf is the proxy tuning a resource's record holds. Every path that
+// re-provisions legs from the record has to carry it, or adding a replica or
+// repairing a tunnel would quietly put the buffer and compression back to the
+// defaults.
+func wanTuningOf(dbRes *database.Resource) wanproxy.Tuning {
+	return wanproxy.Tuning{BufferBytes: dbRes.WANBufferBytes, ZstdLevel: dbRes.WANZstdLevel}
 }
 
 // wanStatusMessage renders a short human description of an unhealthy WAN proxy

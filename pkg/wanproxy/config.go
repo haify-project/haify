@@ -69,8 +69,7 @@ func RenderDialerConfig(spec ProxySpec) string {
 	writeKV(&b, "peer", fmt.Sprintf("%s:%d", spec.DRPublicEndpoint, spec.WANPort))
 	// Unused by the dialer, but required by the schema.
 	writeKV(&b, "wan_listen", fmt.Sprintf("0.0.0.0:%d", spec.WANPort))
-	writeInt(&b, "bulk_cap_bytes", DefaultBulkCapBytes)
-	writeInt(&b, "zstd_level", DefaultZstdLevel)
+	writeTuning(&b, spec)
 	writeInt(&b, "zstd_min_size", DefaultZstdMinSize)
 	writeKV(&b, "on_congestion", CongestionPullAhead)
 	writeInt(&b, "overflow_grace_secs", DefaultOverflowGraceSecs)
@@ -109,8 +108,7 @@ func RenderAcceptorConfig(spec ProxySpec) string {
 	writeKV(&b, "peer", fmt.Sprintf("0.0.0.0:%d", spec.WANPort))
 	// Bind here and accept the peer proxy's mTLS connection.
 	writeKV(&b, "wan_listen", fmt.Sprintf("0.0.0.0:%d", spec.WANPort))
-	writeInt(&b, "bulk_cap_bytes", DefaultBulkCapBytes)
-	writeInt(&b, "zstd_level", DefaultZstdLevel)
+	writeTuning(&b, spec)
 	writeInt(&b, "zstd_min_size", DefaultZstdMinSize)
 	writeKV(&b, "on_congestion", CongestionPullAhead)
 	writeInt(&b, "overflow_grace_secs", DefaultOverflowGraceSecs)
@@ -124,6 +122,16 @@ func RenderAcceptorConfig(spec ProxySpec) string {
 	writeBool(&b, "synthesize_ping_acks", true)
 	writeTLS(&b)
 	return b.String()
+}
+
+// writeTuning emits the buffer size and compression level: the defaults unless
+// the operator tuned the resource (haify wan tune).
+func writeTuning(b *strings.Builder, spec ProxySpec) {
+	buffer, level := spec.Tuning.Effective()
+	zap.L().Debug("writeTuning: buffer and compression", zap.String("resource", spec.Resource),
+		zap.Int64("bulk_cap_bytes", buffer), zap.Int("zstd_level", level))
+	writeInt(b, "bulk_cap_bytes", buffer)
+	writeInt(b, "zstd_level", int64(level))
 }
 
 // writeTLS emits the [tls] table pointing at the deployed shared cert files and

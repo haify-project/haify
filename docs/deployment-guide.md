@@ -629,6 +629,13 @@ unaffected.
 - The DR node's WAN port must be reachable over TCP from the primary site.
 - The controller keeps the proxy CA under `[wan] pki_dir`
   (default `/var/lib/haify/wanproxy-pki`).
+- Use haify-proxy 0.2 or later: earlier builds publish no write rates, so
+  `haify wan sizing` has only the controller's history to go on. Since 0.2 the
+  crate and binary are called `haify-proxy`, and run by hand it reads
+  `/etc/haify-proxy/config.toml` or `HAIFY_PROXY_CONFIG`; the old
+  `/etc/sds-proxy/config.toml` and `SDS_PROXY_CONFIG` are still read, with a
+  warning. Proxies the controller runs are given their config path and are not
+  affected.
 
 ```bash
 haify resource create --name data --port 7000 --nodes site1 --pool vg0 --size 10G \
@@ -644,7 +651,12 @@ haify resource dr-failover data --yes
 ```
 
 `haify wan set-endpoint` and `haify wan repair` change or rebuild the
-tunnels.
+tunnels. `haify wan sizing <name> --bandwidth <link>` says whether the link
+carries the resource's writes and how big the buffer should be, and
+`haify wan tune <name> --buffer <size> --compression <off|zstd:N>` sets them
+(user guide, section 13). On a resource created before this release, run
+`haify wan tune <name> --buffer default` once: it raises DRBD's congestion-fill
+to match the proxy buffer, which otherwise goes mostly unused.
 
 ---
 

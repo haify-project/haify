@@ -215,6 +215,7 @@ func (rm *ResourceManager) AddDR(ctx context.Context, resource, drNode, drEndpoi
 		BaseWANPort:       int(wanPort),
 		BaseDRBDPort:      dbRes.Port,
 		PrimaryEgressAddr: egressAddr,
+		Tuning:            wanTuningOf(dbRes),
 		// Resolved per node: the two ends of a WAN leg are frequently different
 		// architectures.
 		BinaryFor: rm.wanproxyBinaryResolver(ctx, append(append([]string{}, primaryAddrs...), drAddr)),

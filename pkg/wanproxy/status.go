@@ -37,6 +37,43 @@ type Metrics struct {
 	WANConnected   bool   `json:"wan_connected"`
 	Reconnects     uint64 `json:"reconnects"`
 	RingFullEvents uint64 `json:"ring_full_events"`
+
+	// The fields below are what sizing a link and the buffer needs, published
+	// by haify-proxy 0.2 and later. They are pointers because an older proxy
+	// does not publish them, and an absent figure must read as unknown, never
+	// as a measured zero.
+
+	// Version is the proxy's version; empty for a proxy older than 0.2.
+	Version    string   `json:"version,omitempty"`
+	UptimeSecs *uint64  `json:"uptime_secs,omitempty"`
+	CPUSeconds *float64 `json:"cpu_seconds,omitempty"`
+	// BufferHighWaterBytes is the largest backlog since the proxy started.
+	BufferHighWaterBytes *uint64 `json:"buffer_high_water_bytes,omitempty"`
+	// DRBDInBytes counts what the local DRBD handed over, on enqueue, so unlike
+	// DRBDToWANBytes it is not capped by the link.
+	DRBDInBytes *uint64 `json:"drbd_in_bytes,omitempty"`
+	// RateSamplesSecs is how many one-second samples the rates below rest on;
+	// they all cover the time since the proxy started.
+	RateSamplesSecs *uint64  `json:"rate_samples_secs,omitempty"`
+	InputAvgBps     *float64 `json:"input_avg_bps,omitempty"`
+	InputP99Bps     *float64 `json:"input_p99_bps,omitempty"`
+	InputPeakBps    *float64 `json:"input_peak_bps,omitempty"`
+	// LinkP50Bps is the median wire rate over the LinkSamplesSecs seconds in
+	// which a backlog waited for the link: its usable bandwidth, measured
+	// without sending anything extra. No samples means the link has never been
+	// the bottleneck, and then it says nothing about the link.
+	LinkSamplesSecs *uint64  `json:"link_samples_secs,omitempty"`
+	LinkP50Bps      *float64 `json:"link_p50_bps,omitempty"`
+	// LongestBurstSecs is the longest run of seconds in which the backlog grew
+	// with the link up: how long a burst outran the link, not counting the
+	// drain after it.
+	LongestBurstSecs *uint64 `json:"longest_burst_secs,omitempty"`
+}
+
+// HasRates reports whether the proxy published the per-second rate figures
+// (haify-proxy 0.2 and later).
+func (m *Metrics) HasRates() bool {
+	return m != nil && m.RateSamplesSecs != nil && m.InputP99Bps != nil && m.InputPeakBps != nil
 }
 
 // ProxyStatus is the health of one WAN resource's proxy pair, suitable for

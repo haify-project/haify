@@ -51,6 +51,29 @@ func printWANMetrics(m *haifypb.WANMetrics) {
 	if n := m.GetRingFullEvents(); n > 0 {
 		fmt.Printf("    Buffer full:     %d times (the WAN could not keep up; DRBD went Ahead)\n", n)
 	}
+	printWANRates(m)
+}
+
+// printWANRates shows the per-second figures a proxy of 0.2 or later publishes,
+// with the window they cover; an older proxy prints nothing here.
+func printWANRates(m *haifypb.WANMetrics) {
+	if m.RateWindowSecs == nil || m.InputP99Bps == nil {
+		zap.L().Debug("printWANRates: proxy publishes no rates", zap.String("version", m.GetProxyVersion()))
+		return
+	}
+	mib := func(v float64) float64 { return v / (1 << 20) }
+	fmt.Printf("    Write rate:      avg %.1f MiB/s, p99 %.1f MiB/s, peak %.1f MiB/s (per second, over %s)\n",
+		mib(m.GetInputAvgBps()), mib(m.GetInputP99Bps()), mib(m.GetInputPeakBps()), (time.Duration(m.GetRateWindowSecs()) * time.Second).String())
+	if m.BufferHighWaterBytes != nil {
+		fmt.Printf("    Largest backlog: %s", humanBytes(m.GetBufferHighWaterBytes()))
+		if s := m.GetLongestBurstSecs(); s > 0 {
+			fmt.Printf(" (longest burst over the link: %ds)", s)
+		}
+		fmt.Printf("\n")
+	}
+	if m.LinkBps != nil {
+		fmt.Printf("    Link measured:   %.1f MiB/s while saturated\n", mib(m.GetLinkBps()))
+	}
 }
 
 // humanBytes renders a byte count for operator eyes rather than exact accounting.
@@ -153,6 +176,9 @@ func resourceStatus() *cobra.Command {
 				fmt.Printf("    DR link:     %s (primary → %s)\n", reach, status.GetDrEndpoint())
 				for node, st := range status.GetWanProxy() {
 					fmt.Printf("    haify-proxy@%s: %s\n", node, st)
+				}
+				if b := status.GetWanBufferBytes(); b > 0 {
+					fmt.Printf("    Proxy tuning: %s buffer per connection, compression %s\n", humanBytes(b), status.GetWanCompression())
 				}
 				printWANMetrics(status.GetWanMetrics())
 				fmt.Printf("    NOTE: the DR peer can lag (async). Failover is a manual DR action:\n")

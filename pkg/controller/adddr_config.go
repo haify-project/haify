@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/haify-project/haify/pkg/database"
+	"github.com/haify-project/haify/pkg/wanproxy"
 )
 
 // addDRToConfig rewrites a LAN resource config into the two-site shape.
@@ -127,12 +128,8 @@ func (rm *ResourceManager) addDRToConfig(content, resource, drNode string, prima
 		fmt.Fprintf(&tail, "        host %s address 127.0.0.1:%d;\n",
 			rm.controller.nodes.GetDRBDNameByRef(p), bind)
 		fmt.Fprintf(&tail, "        host %s address 127.0.0.1:%d;\n", drName, legPort)
-		fmt.Fprintf(&tail, "        net {\n")
-		fmt.Fprintf(&tail, "            protocol A;\n")
-		fmt.Fprintf(&tail, "            on-congestion pull-ahead;\n")
-		fmt.Fprintf(&tail, "            congestion-fill 400M;\n")
-		fmt.Fprintf(&tail, "            csums-alg %s;\n", wanCsumsAlg)
-		fmt.Fprintf(&tail, "        }\n")
+		// Default tuning: a resource only becomes WAN here, so it has none.
+		writeWANLegOptions(&tail, wanproxy.Tuning{})
 		fmt.Fprintf(&tail, "    }\n")
 	}
 

@@ -1868,6 +1868,91 @@ DR site whose firewall is not open yet, `--skip-check` saves it anyway; run
 `wan repair` once it answers. Renumbering the DR node with `node set-address`
 moves an endpoint that was that node's address by itself.
 
+### Will the link keep up?
+
+`wan sizing` answers that from what has been measured, for a WAN resource or for
+a LAN resource you are thinking of putting on the WAN:
+
+```bash
+haify wan sizing db                          # uses the proxy's own link measurement
+haify wan sizing db --bandwidth 100Mbit      # or say what the link is
+haify wan sizing db --sample-compression     # read 64 MiB off the volume for a ratio
+haify wan sizing db --days 14 --json
+```
+
+The answer is one of four:
+
+| Outcome | Meaning |
+| --- | --- |
+| `link_sufficient` | The link carries even the bursts. The buffer only rides out outages; compression is optional. |
+| `buffer` | Bursts outrun the link, the average does not. The buffer absorbs them and drains in between. |
+| `compress` | Only compression brings the average under the link. The buffer absorbs the bursts. |
+| `async_backup` | Even compressed, the link cannot keep up: the DR copy would fall further behind for good. Ship snapshots on a schedule (`haify backup schedule`) instead, or get a faster link. |
+
+What it weighs, and says where each figure came from:
+
+- **Write rates.** The controller records every resource's write rate on each
+  health poll, from DRBD's own counter, and keeps 14 days of it. A WAN
+  resource's proxy also samples its input every second. The average comes from
+  whichever covers more time; the burst rate is the 99th percentile. A poll
+  interval averages away shorter bursts, so history alone understates them,
+  and less than a day of history misses the daily cycle: the answer says so.
+- **Compression ratio.** What the proxy achieves on the live stream, or, with
+  `--sample-compression`, `zstd -3` on 16 chunks of 4 MiB read from the
+  volume's backing device on one replica (all-zero, never-written chunks are
+  left out). Already-compressed or encrypted data shows up here as 1:1.
+- **Link bandwidth.** `--bandwidth` (`100Mbit`, `1Gbit`, `12MiB/s`), best taken
+  from a test such as iperf3 between the sites. Without it, the proxy's own
+  measurement: the wire rate during seconds when a backlog waited for the link,
+  which exists only once the link has been the bottleneck.
+
+It also recommends a buffer size (twice the backlog the proxy has held, or
+twice what the longest burst would leave queued), and shows how long the
+configured buffer holds writes while the link is down, how long a full buffer
+takes to reach the DR site, and the proxy's CPU at the burst rate.
+
+### Buffer and compression
+
+```bash
+haify wan tune db --buffer 2GiB              # RAM per connection, 16 MiB to 10 GiB; default 4 GiB
+haify wan tune db --compression off          # off, default (zstd level 3) or zstd:<1-19>
+```
+
+The buffer is RAM on the primary-site node, used only as far as there is a
+backlog. DRBD goes Ahead (keeps writing locally, marks what the DR has not got)
+when 90% of it is in flight, and catches up with a resync of only those blocks;
+`wan tune` sets that threshold with the buffer. The tunnels restart on the new
+settings; writes in flight are resynced, not lost.
+
+Two things grow with the buffer. A DR failover loses what is in it. And
+unmounting the volume, shutting down a VM on it or a planned switchover waits
+until the backlog has reached the DR site: a full 4 GiB buffer on a 40 Mbit/s
+link takes about 14 minutes. `wan sizing` shows that figure for your link.
+
+Compression costs CPU on both ends. On data that does not compress the proxy
+stops trying after a run of frames that did not shrink and tries again every
+33 frames, so it costs little; on compressible data it is worth it whenever
+the link, not the CPU, is the limit.
+
+`haify resource status` shows the tuning in effect, and for a proxy of version
+0.2 or later the write rate (average, 99th percentile, busiest second), the
+largest backlog so far, the longest burst and the measured link rate. The same
+figures are exported to Prometheus as `haify_wan_*`.
+
+A resource created by an earlier version has DRBD options that leave most of
+the buffer unused. Running `wan tune` on it with any setting, even the one it
+has (`haify wan tune db --buffer default`), brings them up to date in place.
+
+### Outages
+
+When the link fails, the primary keeps writing. DRBD notices within seconds
+that its peer stopped answering and disconnects; when the link returns, the
+tunnel reconnects by itself and DRBD resyncs only the blocks written in the
+meantime, comparing checksums so blocks the DR already holds are not sent
+again. A 60 s outage under 5 MiB/s of writes on a 40 Mbit/s link was back in
+sync 110 s after the link returned. Application writes do not wait for any of
+it.
+
 DR is manual on purpose: an automatic cross-site promotion during a network
 partition would produce two live copies:
 
@@ -2130,6 +2215,10 @@ and `haify_controller_gateways{type,state}`:
 | `haify_drbd_resync_completed_ratio` | resource, node | 1 when in sync |
 | `haify_drbd_out_of_sync_bytes` | resource, node | data DRBD has marked as differing |
 | `haify_drbd_connection_tls` | resource, node | 1 when that connection is encrypted |
+| `haify_wan_backlog_bytes` | resource | written on the primary site, not yet sent to the DR: what a DR failover now would lose |
+| `haify_wan_connected`, `haify_wan_buffer_capacity_bytes`, `haify_wan_buffer_high_water_bytes` | resource | proxy WAN connection, buffer, largest backlog |
+| `haify_wan_input_p99_bytes_per_second`, `haify_wan_input_peak_bytes_per_second`, `haify_wan_link_bytes_per_second` | resource | write rate into the proxy and the measured link rate |
+| `haify_wan_input_bytes`, `haify_wan_wire_bytes`, `haify_wan_compression_ratio`, `haify_wan_cpu_seconds`, `haify_wan_reconnects`, `haify_wan_buffer_full_events` | resource | counters since the proxy started; take `rate()` or `increase()` |
 | `haify_controller_node_reachable` | node | 0 when the controller cannot reach it |
 | `haify_controller_pool_thin_used_percent` | pool, node, kind | thin pool data/metadata use |
 | `haify_controller_storage_capacity_bytes` | pool, node, state | total/used/free |

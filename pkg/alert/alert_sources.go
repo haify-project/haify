@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"github.com/haify-project/haify/pkg/wanproxy"
 )
 
 // NodeStateInfo is one replica's DRBD state as the monitor needs it.
@@ -79,6 +81,9 @@ type ResourceStatusInfo struct {
 	WANEnabled bool
 	WANHealthy bool
 	WANMessage string
+	// WANProxy is the counters the primary site's haify-proxy published, or
+	// nil when none could be read. Carried for Observer (Prometheus export).
+	WANProxy *wanproxy.Metrics
 	// IdleWithoutPrimary marks a resource whose Primary another system
 	// decides (Proxmox VE, Kubernetes, OpenStack): it is promoted while a guest
 	// or pod uses it and demoted when that goes, which is not a fault, and it
