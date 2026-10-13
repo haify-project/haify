@@ -122,6 +122,25 @@ node for the Pod.
 The filesystem is `ext4` unless the StorageClass sets
 `csi.storage.k8s.io/fstype` (the image ships `e2fsprogs` and `xfsprogs`).
 
+## OpenShift and MicroShift
+
+The Helm chart works on OpenShift and MicroShift as it is. Where the cluster
+has the SecurityContextConstraints API, the chart lets the two plugins'
+service accounts use the built-in `privileged` SCC: the node plugin runs
+privileged on the host network and the controller plugin on the host network,
+which the default `restricted-v2` SCC refuses. `--set openshift.enabled=true`
+renders the same objects for an offline `helm template`.
+
+Applications need nothing special. A Pod admitted under `restricted-v2`, with
+the random user ID OpenShift assigns, owns what it writes on the volume:
+kubelet applies the Pod's `fsGroup` to the filesystem.
+
+The nodes are Haify nodes like any other: the DRBD 9 kernel module and
+`drbd-utils` installed, and root SSH from the controller. That holds on
+MicroShift running on RHEL, CentOS Stream or Ubuntu. OpenShift Container
+Platform nodes run RHCOS, which takes no packages and no root SSH, so they
+cannot be Haify nodes yet.
+
 ## What the driver supports
 
 - Expansion: with `allowVolumeExpansion: true` and the `csi-resizer` sidecar,

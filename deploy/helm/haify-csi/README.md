@@ -54,6 +54,7 @@ entry loses its name and every other field.
 | `operationTimeout` | `120s` | How long provisioning, resizing or a snapshot may take |
 | `controllerPlugin.replicas` | `1` | How many copies of the controller plugin run. Only one works at a time; with `2` or more, the others wait, and when the working one stops (its node goes down, it is evicted or restarted), another takes over within about half a minute. Each replica runs on a node of its own. With `1`, provisioning, resizing and snapshots wait until Kubernetes starts the pod again elsewhere |
 | `controllerPlugin.*`, `nodePlugin.*` | | `nodeSelector`, `tolerations`, `resources` |
+| `openshift.enabled` | `false` | Lets the plugins' service accounts use the `privileged` SCC. Detected by itself on OpenShift and MicroShift; set it only for an offline `helm template` |
 | `sidecars.*` | the registry.k8s.io sig-storage images | Images of the provisioner, resizer, snapshotter, liveness probe and node driver registrar |
 
 ## Changing a StorageClass

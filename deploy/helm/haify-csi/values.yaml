@@ -63,3 +63,8 @@ nodePlugin:
   tolerations:
     - operator: Exists
   resources: {}
+
+# OpenShift / MicroShift: let the plugins' service accounts use the privileged
+# SCC. Detected from the cluster's APIs; set true to render it offline.
+openshift:
+  enabled: false

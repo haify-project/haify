@@ -1,0 +1,37 @@
+{{- /*
+OpenShift (and MicroShift) admit a pod only under a SecurityContextConstraints
+its service account may use. The node plugin runs privileged on the host
+network and both plugins use host networking, which the default
+restricted-v2 SCC refuses, so the two service accounts get the built-in
+privileged SCC. Rendered only where the SCC API exists, or with
+openshift.enabled=true for an offline render (helm template).
+*/ -}}
+{{- if or .Values.openshift.enabled (.Capabilities.APIVersions.Has "security.openshift.io/v1/SecurityContextConstraints") }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: haify-csi-privileged-scc
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [security.openshift.io]
+    resources: [securitycontextconstraints]
+    resourceNames: [privileged]
+    verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: haify-csi-privileged-scc
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: haify-csi-controller
+    namespace: {{ .Release.Namespace }}
+  - kind: ServiceAccount
+    name: haify-csi-node
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: haify-csi-privileged-scc
+{{- end }}
