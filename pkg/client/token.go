@@ -26,11 +26,15 @@ const SystemTokenPath = "/etc/haify/token"
 // The traces name the source the token came from, never the token itself.
 func ResolveToken(explicit string) string {
 	log := zap.L()
-	if explicit != "" {
+	// Whitespace is trimmed from every source, not only files: a Kubernetes
+	// Secret made with --from-file of a file ending in a newline hands
+	// HAIFY_TOKEN the newline, and a header value carrying one makes the
+	// controller reset the stream with PROTOCOL_ERROR on every call.
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
 		log.Debug("ResolveToken: using explicit token", zap.String("source", "flag"))
 		return explicit
 	}
-	if env := os.Getenv("HAIFY_TOKEN"); env != "" {
+	if env := strings.TrimSpace(os.Getenv("HAIFY_TOKEN")); env != "" {
 		log.Debug("ResolveToken: using token from environment", zap.String("source", "HAIFY_TOKEN"))
 		return env
 	}

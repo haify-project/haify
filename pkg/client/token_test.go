@@ -31,3 +31,9 @@ func TestResolveTokenPriority(t *testing.T) {
 func TestReadTokenFileNonExistent(t *testing.T) {
 	assert.Empty(t, readTokenFile("/non/existent/path/for/token"))
 }
+
+func TestResolveTokenTrimsEnvAndFlag(t *testing.T) {
+	t.Setenv("HAIFY_TOKEN", "abc123\n")
+	assert.Equal(t, "abc123", ResolveToken(""), "a Secret made from a file keeps the file's newline")
+	assert.Equal(t, "flagtok", ResolveToken("  flagtok\n"))
+}
