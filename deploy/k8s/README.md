@@ -122,6 +122,31 @@ node for the Pod.
 The filesystem is `ext4` unless the StorageClass sets
 `csi.storage.k8s.io/fstype` (the image ships `e2fsprogs` and `xfsprogs`).
 
+## Live migration of virtual machines (KubeVirt, OpenShift Virtualization)
+
+KubeVirt live-migrates a VM only when its disks are `ReadWriteMany`. Give the
+VM's disk PVC `accessModes: [ReadWriteMany]` and `volumeMode: Block`:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: vm-disk}
+spec:
+  accessModes: [ReadWriteMany]
+  volumeMode: Block
+  resources: {requests: {storage: 20Gi}}
+```
+
+The VM then reports `LiveMigratable=True`. During a migration the target
+node stages the volume while the source still runs the guest: the node plugin
+allows two DRBD Primaries for that window (the resource's
+`allow-two-primaries`), the guest's memory moves, the source unstages, and
+two Primaries are disallowed again as soon as one is left. The hypervisor
+writes from one side at a time; Haify only lets both sides open the device.
+A node without a replica takes part as a diskless client when the
+StorageClass sets `allowRemoteVolumeAccess: "true"`. Resources replicated
+over WAN (protocol A) are refused two Primaries.
+
 ## OpenShift and MicroShift
 
 The Helm chart works on OpenShift and MicroShift as it is. Where the cluster
@@ -153,9 +178,11 @@ cannot be Haify nodes yet.
 - Usage metrics: `NodeGetVolumeStats` feeds `kubelet_volume_stats_*` for
   filesystem volumes. Kubelet does not collect usage for raw block volumes.
 - Raw block: `volumeMode: Block` hands the Pod the DRBD device itself.
-- Access modes: `ReadWriteOnce` and `ReadWriteOncePod`. `ReadWriteMany`
-  and the other multi-node modes are refused at provisioning, because a DRBD
-  resource has one Primary.
+- Access modes: `ReadWriteOnce` and `ReadWriteOncePod`, and `ReadWriteMany`
+  with `volumeMode: Block` for live migration of virtual machines (see
+  below). `ReadWriteMany` filesystems and the other multi-node modes are
+  refused at provisioning: a DRBD resource has one Primary, and a filesystem
+  cannot be written from two nodes.
 - Replica health on the PVC: the controller plugin checks each volume's
   replicas every `--health-interval` (default `1m`). When a replica
   disconnects, loses its disk, falls out of date or resyncs, it posts a
