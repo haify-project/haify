@@ -37,14 +37,17 @@ func TestApplyQoSWritesIOMax(t *testing.T) {
 	require.NoError(t, os.MkdirAll(pod, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "kubepods.slice", "cgroup.procs"), nil, 0o644))
 
-	s := &nodeServer{log: zap.NewNop()}
+	tr := newQoSTracker(zap.NewNop())
 	target := "/var/lib/kubelet/pods/" + uid + "/volumes/kubernetes.io~csi/pvc-1/mount"
-	s.applyQoS(map[string]string{"writeIOPS": "100", "readBytesPerSecond": "1048576"}, "/dev/null", target)
+	tr.track(qosRecord{VolumeID: "pvc_1", Target: target})
+	tr.apply("/dev/null", target, map[string]string{"writeIOPS": "100", "readBytesPerSecond": "1048576"})
 	got, err := os.ReadFile(filepath.Join(pod, "io.max"))
 	require.NoError(t, err)
 	// /dev/null is 1:3 on Linux but not elsewhere (3:2 on macOS).
 	var st unix.Stat_t
 	require.NoError(t, unix.Stat("/dev/null", &st))
 	dev := fmt.Sprintf("%d:%d", unix.Major(uint64(st.Rdev)), unix.Minor(uint64(st.Rdev)))
-	assert.Equal(t, dev+" rbps=1048576 wiops=100", string(got))
+	// Every key is written, the unlimited ones as "max", so a lifted limit
+	// really goes away when the line is rewritten.
+	assert.Equal(t, dev+" rbps=1048576 wbps=max riops=max wiops=100", string(got))
 }

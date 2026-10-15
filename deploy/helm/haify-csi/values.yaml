@@ -18,7 +18,9 @@ image:
 
 sidecars:
   provisioner: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0
-  resizer: registry.k8s.io/sig-storage/csi-resizer:v1.13.2
+  # v2 changes volumes through VolumeAttributesClasses on Kubernetes 1.34+;
+  # on older clusters it only resizes.
+  resizer: registry.k8s.io/sig-storage/csi-resizer:v2.0.0
   snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.2.0
   livenessProbe: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
   nodeDriverRegistrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.12.0
@@ -43,6 +45,20 @@ storageClasses:
     allowVolumeExpansion: true
     parameters: {}
 
+# VolumeAttributesClasses (Kubernetes 1.34+). Naming one in a PVC's
+# volumeAttributesClassName changes that volume in place. Parameters:
+# replicas, resourceProfile, readIOPS, writeIOPS, readBytesPerSecond,
+# writeBytesPerSecond ("max" lifts a limit). See the chart README.
+volumeAttributesClasses: []
+#  - name: haify-three-copies
+#    parameters:
+#      replicas: "3"
+#  - name: haify-throttled
+#    parameters:
+#      readIOPS: "2000"
+#      writeIOPS: "1000"
+#      writeBytesPerSecond: "100Mi"
+
 # A VolumeSnapshotClass, created only when the cluster has the snapshot CRDs
 # (kubernetes-csi/external-snapshotter); k3s and most distributions do not ship
 # them.
@@ -59,6 +75,10 @@ controllerPlugin:
   resources: {}
 
 nodePlugin:
+  # How often the node plugin re-reads the I/O limits of the volumes it has
+  # published, so a VolumeAttributesClass change reaches running Pods; "0s"
+  # applies limits only when a volume is published.
+  qosInterval: 30s
   nodeSelector: {}
   tolerations:
     - operator: Exists

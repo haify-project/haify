@@ -37,6 +37,7 @@ func TestControllerCapabilitiesAndValidation(t *testing.T) {
 		csi.ControllerServiceCapability_RPC_GET_VOLUME,
 		csi.ControllerServiceCapability_RPC_GET_CAPACITY,
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
+		csi.ControllerServiceCapability_RPC_MODIFY_VOLUME,
 	}, types)
 
 	// ValidateVolumeCapabilities

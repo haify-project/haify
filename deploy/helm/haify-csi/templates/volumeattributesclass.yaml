@@ -1,0 +1,15 @@
+{{- range .Values.volumeAttributesClasses }}
+---
+# Naming this class in a PVC's volumeAttributesClassName changes the volume
+# in place (Kubernetes 1.34+, csi-resizer v2+).
+apiVersion: storage.k8s.io/v1
+kind: VolumeAttributesClass
+metadata:
+  name: {{ required "every volumeAttributesClasses entry needs a name" .name }}
+  labels: {{- include "haify-csi.labels" $ | nindent 4 }}
+driverName: {{ include "haify-csi.driver" $ }}
+parameters:
+  {{- range $k, $v := .parameters }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- end }}
