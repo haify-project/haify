@@ -128,6 +128,11 @@ func (sm *SnapshotManager) resolveSnapshotSource(ctx context.Context, address, n
 		if !res.AllSuccess() {
 			return "", nil, fmt.Errorf("snapshot %s of %s (%s) is not on %s", src.Name, src.Resource, backing, node)
 		}
+		// A snapshot of an encrypted volume is ciphertext; it is read through
+		// a crypt mapping of its own (populate_luks.go).
+		if sm.sourceIsEncrypted(ctx, src.Resource, vol) {
+			return sm.openEncryptedSnapshot(ctx, address, node, target, volumeID, vol, "/dev/"+backing)
+		}
 		// A thin snapshot has no device node until it is activated;
 		// PopulateVolume activates it before reading.
 		return "/dev/" + backing, func() {}, nil
@@ -172,6 +177,10 @@ func (sm *SnapshotManager) PopulateVolumeFromSnapshot(ctx context.Context, resou
 	if address == "" {
 		log.Debug("PopulateVolumeFromSnapshot: node not found", zap.String("node", node))
 		return 0, fmt.Errorf("node not found: %s", node)
+	}
+	if err := sm.assertCopyStaysEncrypted(ctx, resource, src); err != nil {
+		log.Debug("PopulateVolumeFromSnapshot: refused", zap.String("resource", resource), zap.Error(err))
+		return 0, err
 	}
 	device, release, err := sm.resolveSnapshotSource(ctx, address, node, resource, volumeID, src)
 	if err != nil {
