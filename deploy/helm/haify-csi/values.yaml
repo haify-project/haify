@@ -52,6 +52,17 @@ snapshotClass:
   default: false
   deletionPolicy: Delete
 
+# Moves Pods off a node that has died without waiting the five minutes
+# Kubernetes takes: when the node drops out of a volume's DRBD resource and the
+# other replicas keep quorum, it is tainted haify.csi/lost-quorum:NoSchedule
+# and the Pods there using the volume are force-deleted, so their StatefulSet or
+# Deployment recreates them on a node with a replica.
+haFailover:
+  enabled: true
+  interval: 5s          # how often volumes in use are checked
+  grace: 10s            # how long a node Kubernetes still calls Ready must look lost first
+  maxLostFraction: 0.5  # do nothing while more than this share of nodes look lost
+
 controllerPlugin:
   replicas: 1
   nodeSelector: {}

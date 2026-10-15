@@ -54,6 +54,10 @@ entry loses its name and every other field.
 | `operationTimeout` | `120s` | How long provisioning, resizing or a snapshot may take |
 | `controllerPlugin.replicas` | `1` | How many copies of the controller plugin run. Only one works at a time; with `2` or more, the others wait, and when the working one stops (its node goes down, it is evicted or restarted), another takes over within about half a minute. Each replica runs on a node of its own. With `1`, provisioning, resizing and snapshots wait until Kubernetes starts the pod again elsewhere |
 | `controllerPlugin.*`, `nodePlugin.*` | | `nodeSelector`, `tolerations`, `resources` |
+| `haFailover.enabled` | `true` | When a node dies and the other replicas of its volumes keep quorum, taint it `haify.csi/lost-quorum:NoSchedule` and force-delete its Pods that use those volumes, so their StatefulSet or Deployment recreates them on a node with a replica. A Pod with the annotation or label `haify.csi/ha-failover: "false"` is left alone. See `deploy/k8s/README.md`, "When a node dies" |
+| `haFailover.interval` | `5s` | How often the volumes in use are checked |
+| `haFailover.grace` | `10s` | How long a node Kubernetes still reports `Ready` must look lost before its Pods are moved. A node reported `NotReady` or `Unknown` is acted on at once |
+| `haFailover.maxLostFraction` | `0.5` | Nothing is moved while more than this share of the nodes look lost, which is more likely a network partition |
 | `openshift.enabled` | `false` | Lets the plugins' service accounts use the `privileged` SCC. Detected by itself on OpenShift and MicroShift; set it only for an offline `helm template` |
 | `sidecars.*` | the registry.k8s.io sig-storage images | Images of the provisioner, resizer, snapshotter, liveness probe and node driver registrar |
 

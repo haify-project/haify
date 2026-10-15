@@ -188,6 +188,9 @@ cannot be Haify nodes yet.
   disconnects, loses its disk, falls out of date or resyncs, it posts a
   `Warning VolumeDegraded` event on the PVC, and `Normal VolumeRecovered` when
   the replica is healthy again. The first sync of a new volume is not reported.
+- Node failover: when a node dies, the controller plugin moves the pods using
+  its volumes to a node with a replica in about half a minute, rather than
+  after Kubernetes' 5 minutes (see "When a node dies").
 
 ## Volume snapshots
 
@@ -283,22 +286,85 @@ When a node loses power, the replacement pod starts on a surviving replica
 node with its data intact. Nothing needs cleaning up on the Haify side, and the
 old node's replica resyncs by itself when the node comes back.
 
-Most of the wait is Kubernetes deciding the node is gone. By default it evicts
-the pod only after the node has been unreachable for 5 minutes (the 300-second
-tolerations Kubernetes adds to every pod that sets none). With the 15-second tolerations
-below, the replacement pod runs about a minute and a half after the power
-loss. Haify's part of that, moving the volume, takes about 10 seconds. To
-shorten the wait for a workload, lower the `not-ready` and `unreachable`
-tolerations on the pod:
+On its own, Kubernetes evicts pods from an unreachable node only after 5
+minutes (the 300-second tolerations it adds to every pod that sets none), and
+it never replaces a StatefulSet pod until someone force-deletes it. The
+controller plugin's HA controller does not wait for that. It is on by default.
+
+**How it decides.** Every `--ha-failover-interval` (default `5s`) it reads the
+Haify controller's view of each volume a pod is using. A node counts as lost
+for a volume when all of these hold:
+
+- the surviving replica that answered has no DRBD connection to the pod's node
+  (a `StandAlone` connection, which DRBD leaves after a split brain, does not
+  count);
+- the surviving replicas, diskless tiebreakers included, are more than half
+  of the volume's nodes, which is DRBD quorum, and one of them is `UpToDate`;
+- Kubernetes reports the node `NotReady` or `Unknown`, or the node has looked
+  lost for `--ha-failover-grace` (default `10s`) in a row.
+
+Quorum is what makes moving the pod safe: a node cut off from the majority can
+no longer write to the volume, so the old pod cannot either.
+
+**What it does.** It taints the node `haify.csi/lost-quorum:NoSchedule`, so the
+replacement cannot be scheduled back onto it. Then it force-deletes (grace
+period 0) each pod on that node that mounts an affected volume, and deletes the
+volume's VolumeAttachments on that node, if there are any. The pod's
+StatefulSet or Deployment creates a new pod, the scheduler puts it on a node
+with a replica, and the node plugin promotes that replica. It posts a
+`Warning HaifyFailoverPodDeleted` event on the pod and on its PVC, and
+`HaifyFailoverNodeTainted` on the node, each saying which volume lost which
+node and which replicas still hold quorum. The plugin log has one line per
+action (`HA failover: tainted lost node`, `HA failover: force-deleted pod`).
+
+**Timing.** The surviving replicas notice the dead peer after DRBD's ping
+timeout, about 10 seconds. The pods are deleted one grace period after the
+next check sees it, so about 20 to 30 seconds after the node dies; when
+Kubernetes already reports the node `NotReady`, the grace period is skipped.
+If the dead node is the first replica the Haify controller asks for a volume's
+status, each check also waits for that SSH connection to time out. The new pod
+then starts like any other, and promoting its replica takes about 10 seconds.
+
+**When it does nothing.**
+
+- The surviving replicas do not have quorum, or none of them is `UpToDate`.
+  This is the case for a volume with 2 replicas and no tiebreaker.
+- The plugin cannot reach the Haify controller, or cannot read a volume's
+  status. No view of a volume is never taken as evidence that a node died.
+- More than `--ha-failover-max-lost-fraction` (default `0.5`) of the cluster's
+  nodes look lost at once, counting nodes Kubernetes reports not `Ready`. That
+  is more likely a network partition than that many machines failing.
+- The pod has no controller (a bare `Pod`): deleting it would only throw it
+  away. Kubernetes evicts it after its tolerations as before; its volume is
+  kept.
+- The pod opted out (below).
+
+**Taint removal.** The taint comes off once Kubernetes reports the node
+`Ready` and DRBD has reconnected it to every Haify volume it holds a replica
+of. The node gets a `HaifyFailoverNodeReturned` event. To take it off by hand:
+`kubectl taint nodes <node> haify.csi/lost-quorum-`.
+
+**Opting a pod out.** Set the annotation or label `haify.csi/ha-failover:
+"false"` on the pod (in a StatefulSet or Deployment, on the pod template). Such
+a pod is left for Kubernetes to evict after its `not-ready` and `unreachable`
+tolerations.
 
 ```yaml
-tolerations:
-- {key: node.kubernetes.io/not-ready,   operator: Exists, effect: NoExecute, tolerationSeconds: 15}
-- {key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 15}
+spec:
+  template:
+    metadata:
+      annotations:
+        haify.csi/ha-failover: "false"
 ```
 
-Only pods managed by a controller (Deployment, StatefulSet) are recreated. A
-bare `Pod` on a dead node is deleted and not replaced; its volume is kept.
+**Tuning and turning it off.** The flags are on the controller plugin
+(`20-controller.yaml`): `--ha-failover=false` turns it off,
+`--ha-failover-interval`, `--ha-failover-grace` and
+`--ha-failover-max-lost-fraction` tune it. With the Helm chart, set
+`haFailover.enabled`, `haFailover.interval`, `haFailover.grace` and
+`haFailover.maxLostFraction`. With more than one controller plugin replica,
+only the one holding the `haify-csi-ha-failover` Lease acts. Its permissions
+are the `haify-csi-ha-failover` ClusterRole in `10-rbac.yaml`.
 
 ## Haify Copilot access (optional)
 
