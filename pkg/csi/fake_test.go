@@ -43,6 +43,9 @@ type fakeBackend struct {
 	populateErr   error
 	populated     []string // "<res>/<vol><-<src res>/<src vol>@<snapshot> replicated=<bool> on <node>"
 
+	groupErr   error                            // makes CreateSnapshotGroup fail, taking nothing
+	groupCalls [][]*haifypb.SnapshotGroupMember // members passed to CreateSnapshotGroup (fake_group_test.go)
+
 	createCalls []createCall
 }
 

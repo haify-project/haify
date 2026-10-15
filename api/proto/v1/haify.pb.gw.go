@@ -3604,6 +3604,33 @@ func local_request_HaifyController_ListSnapshots_1(ctx context.Context, marshale
 	return msg, metadata, err
 }
 
+func request_HaifyController_CreateSnapshotGroup_0(ctx context.Context, marshaler runtime.Marshaler, client HaifyControllerClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq CreateSnapshotGroupRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.CreateSnapshotGroup(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_HaifyController_CreateSnapshotGroup_0(ctx context.Context, marshaler runtime.Marshaler, server HaifyControllerServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq CreateSnapshotGroupRequest
+		metadata runtime.ServerMetadata
+	)
+	if err := marshaler.NewDecoder(req.Body).Decode(&protoReq); err != nil && !errors.Is(err, io.EOF) {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	msg, err := server.CreateSnapshotGroup(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_HaifyController_PopulateVolume_0(ctx context.Context, marshaler runtime.Marshaler, client HaifyControllerClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq PopulateVolumeRequest
@@ -9463,6 +9490,26 @@ func RegisterHaifyControllerHandlerServer(ctx context.Context, mux *runtime.Serv
 		}
 		forward_HaifyController_ListSnapshots_1(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_HaifyController_CreateSnapshotGroup_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/v1.HaifyController/CreateSnapshotGroup", runtime.WithHTTPPathPattern("/v1/snapshot-groups"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_HaifyController_CreateSnapshotGroup_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_HaifyController_CreateSnapshotGroup_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_HaifyController_PopulateVolume_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -13135,6 +13182,23 @@ func RegisterHaifyControllerHandlerClient(ctx context.Context, mux *runtime.Serv
 		}
 		forward_HaifyController_ListSnapshots_1(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodPost, pattern_HaifyController_CreateSnapshotGroup_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/v1.HaifyController/CreateSnapshotGroup", runtime.WithHTTPPathPattern("/v1/snapshot-groups"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_HaifyController_CreateSnapshotGroup_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_HaifyController_CreateSnapshotGroup_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodPost, pattern_HaifyController_PopulateVolume_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -15094,6 +15158,7 @@ var (
 	pattern_HaifyController_RestoreSnapshot_1           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3, 1, 0, 4, 1, 5, 4, 2, 5}, []string{"v1", "volumes", "volume", "snapshots", "snapshot_name", "restore"}, ""))
 	pattern_HaifyController_ListSnapshots_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 1, 0, 4, 2, 5, 2, 2, 3}, []string{"v1", "volumes", "volume", "snapshots"}, ""))
 	pattern_HaifyController_ListSnapshots_1             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "volumes", "volume", "snapshots"}, ""))
+	pattern_HaifyController_CreateSnapshotGroup_0       = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "snapshot-groups"}, ""))
 	pattern_HaifyController_PopulateVolume_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "resources", "resource", "populate"}, ""))
 	pattern_HaifyController_CreateSnapshotSchedule_0    = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "snapshot-schedules"}, ""))
 	pattern_HaifyController_ListSnapshotSchedules_0     = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "snapshot-schedules"}, ""))
@@ -15292,6 +15357,7 @@ var (
 	forward_HaifyController_RestoreSnapshot_1           = runtime.ForwardResponseMessage
 	forward_HaifyController_ListSnapshots_0             = runtime.ForwardResponseMessage
 	forward_HaifyController_ListSnapshots_1             = runtime.ForwardResponseMessage
+	forward_HaifyController_CreateSnapshotGroup_0       = runtime.ForwardResponseMessage
 	forward_HaifyController_PopulateVolume_0            = runtime.ForwardResponseMessage
 	forward_HaifyController_CreateSnapshotSchedule_0    = runtime.ForwardResponseMessage
 	forward_HaifyController_ListSnapshotSchedules_0     = runtime.ForwardResponseMessage

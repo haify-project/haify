@@ -100,6 +100,7 @@ const (
 	HaifyController_DeleteSnapshot_FullMethodName            = "/v1.HaifyController/DeleteSnapshot"
 	HaifyController_RestoreSnapshot_FullMethodName           = "/v1.HaifyController/RestoreSnapshot"
 	HaifyController_ListSnapshots_FullMethodName             = "/v1.HaifyController/ListSnapshots"
+	HaifyController_CreateSnapshotGroup_FullMethodName       = "/v1.HaifyController/CreateSnapshotGroup"
 	HaifyController_PopulateVolume_FullMethodName            = "/v1.HaifyController/PopulateVolume"
 	HaifyController_CreateSnapshotSchedule_FullMethodName    = "/v1.HaifyController/CreateSnapshotSchedule"
 	HaifyController_ListSnapshotSchedules_FullMethodName     = "/v1.HaifyController/ListSnapshotSchedules"
@@ -334,6 +335,14 @@ type HaifyControllerClient interface {
 	DeleteSnapshot(ctx context.Context, in *DeleteSnapshotRequest, opts ...grpc.CallOption) (*DeleteSnapshotResponse, error)
 	RestoreSnapshot(ctx context.Context, in *RestoreSnapshotRequest, opts ...grpc.CallOption) (*RestoreSnapshotResponse, error)
 	ListSnapshots(ctx context.Context, in *ListSnapshotsRequest, opts ...grpc.CallOption) (*ListSnapshotsResponse, error)
+	// CreateSnapshotGroup takes one-node snapshots (as CreateSnapshot does) of
+	// several volumes at the same instant, so an application spread over them
+	// gets a crash-consistent set. I/O is suspended on every member's resource
+	// (its Primary first) while the snapshots are taken, under a transient
+	// timer on each node that resumes it whatever happens to the controller.
+	// All or nothing: a member that fails removes the ones already taken. The
+	// CSI driver's VolumeGroupSnapshot is built on it.
+	CreateSnapshotGroup(ctx context.Context, in *CreateSnapshotGroupRequest, opts ...grpc.CallOption) (*CreateSnapshotGroupResponse, error)
 	// PopulateVolume copies a snapshot, or a source block device such as another
 	// resource's backing volume, into an ALREADY-CREATED, still-empty DRBD
 	// resource. Unlike RestoreSnapshot — which merges a snapshot back into its own
@@ -1387,6 +1396,16 @@ func (c *haifyControllerClient) ListSnapshots(ctx context.Context, in *ListSnaps
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListSnapshotsResponse)
 	err := c.cc.Invoke(ctx, HaifyController_ListSnapshots_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) CreateSnapshotGroup(ctx context.Context, in *CreateSnapshotGroupRequest, opts ...grpc.CallOption) (*CreateSnapshotGroupResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateSnapshotGroupResponse)
+	err := c.cc.Invoke(ctx, HaifyController_CreateSnapshotGroup_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2606,6 +2625,14 @@ type HaifyControllerServer interface {
 	DeleteSnapshot(context.Context, *DeleteSnapshotRequest) (*DeleteSnapshotResponse, error)
 	RestoreSnapshot(context.Context, *RestoreSnapshotRequest) (*RestoreSnapshotResponse, error)
 	ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error)
+	// CreateSnapshotGroup takes one-node snapshots (as CreateSnapshot does) of
+	// several volumes at the same instant, so an application spread over them
+	// gets a crash-consistent set. I/O is suspended on every member's resource
+	// (its Primary first) while the snapshots are taken, under a transient
+	// timer on each node that resumes it whatever happens to the controller.
+	// All or nothing: a member that fails removes the ones already taken. The
+	// CSI driver's VolumeGroupSnapshot is built on it.
+	CreateSnapshotGroup(context.Context, *CreateSnapshotGroupRequest) (*CreateSnapshotGroupResponse, error)
 	// PopulateVolume copies a snapshot, or a source block device such as another
 	// resource's backing volume, into an ALREADY-CREATED, still-empty DRBD
 	// resource. Unlike RestoreSnapshot — which merges a snapshot back into its own
@@ -3097,6 +3124,9 @@ func (UnimplementedHaifyControllerServer) RestoreSnapshot(context.Context, *Rest
 }
 func (UnimplementedHaifyControllerServer) ListSnapshots(context.Context, *ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSnapshots not implemented")
+}
+func (UnimplementedHaifyControllerServer) CreateSnapshotGroup(context.Context, *CreateSnapshotGroupRequest) (*CreateSnapshotGroupResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateSnapshotGroup not implemented")
 }
 func (UnimplementedHaifyControllerServer) PopulateVolume(context.Context, *PopulateVolumeRequest) (*PopulateVolumeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PopulateVolume not implemented")
@@ -4897,6 +4927,24 @@ func _HaifyController_ListSnapshots_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HaifyControllerServer).ListSnapshots(ctx, req.(*ListSnapshotsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_CreateSnapshotGroup_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateSnapshotGroupRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).CreateSnapshotGroup(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_CreateSnapshotGroup_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).CreateSnapshotGroup(ctx, req.(*CreateSnapshotGroupRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -7168,6 +7216,10 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSnapshots",
 			Handler:    _HaifyController_ListSnapshots_Handler,
+		},
+		{
+			MethodName: "CreateSnapshotGroup",
+			Handler:    _HaifyController_CreateSnapshotGroup_Handler,
 		},
 		{
 			MethodName: "PopulateVolume",

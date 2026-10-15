@@ -10,3 +10,8 @@ Check the plugins are up:
 No VolumeSnapshotClass was created: this cluster has no snapshot CRDs. Install
 kubernetes-csi/external-snapshotter, then upgrade this release.
 {{- end }}
+{{- if eq (include "haify-csi.groupSnapshots" .) "true" }}
+
+Volume group snapshots are on (class {{ .Values.groupSnapshots.className }}). The
+snapshot-controller must run with --feature-gates=CSIVolumeGroupSnapshot=true.
+{{- end }}

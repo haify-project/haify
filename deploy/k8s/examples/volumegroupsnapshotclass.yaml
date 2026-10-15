@@ -1,0 +1,22 @@
+# VolumeGroupSnapshotClass for Haify volumes: several PVCs snapshotted at one
+# instant (I/O is suspended on all of them while each is snapshotted).
+#
+# PREREQUISITE (cluster-wide, install once): the group snapshot CRDs, the
+# snapshot-controller with --feature-gates=CSIVolumeGroupSnapshot=true, and the
+# same gate on the csi-snapshotter sidecar in 20-controller.yaml. Without the
+# CRDs this file does not apply, which is why it is not in the directory that
+# `kubectl apply -f deploy/k8s/` applies. See "Volume group snapshots" in
+# ../README.md.
+#
+# apiVersion must be the one the snapshotter image speaks. The shipped
+# csi-snapshotter v8.2.0 speaks v1beta1; external-snapshotter v8.4 and v8.5
+# speak v1beta2, v8.6 and later v1.
+#
+# Each member of a group is an ordinary snapshot on one node's backing volume,
+# and can be restored as a VolumeSnapshot on its own.
+apiVersion: groupsnapshot.storage.k8s.io/v1beta1
+kind: VolumeGroupSnapshotClass
+metadata:
+  name: haify-group-snapshot
+driver: haify.csi.liliang-cn.com
+deletionPolicy: Delete

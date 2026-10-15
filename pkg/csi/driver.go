@@ -72,6 +72,10 @@ type HaifyBackend interface {
 	// ResizeVolume expands the backing DRBD+LVM/ZFS volume to newSizeGB on
 	// all replica nodes. Called by ControllerExpandVolume.
 	ResizeVolume(ctx context.Context, resource string, volumeID uint32, sizeGB uint32) error
+	// CreateSnapshotGroup takes one-node snapshots (as CreateSnapshot) of
+	// several volumes at one instant, with I/O suspended on all of their
+	// resources meanwhile. All or nothing. It backs VolumeGroupSnapshot.
+	CreateSnapshotGroup(ctx context.Context, members []*haifypb.SnapshotGroupMember) error
 }
 
 // Driver wires the CSI services onto a gRPC server over a unix socket.
@@ -126,6 +130,12 @@ func (d *Driver) Run(ctx context.Context) error {
 	if d.controller != nil {
 		d.log.Debug("Driver.Run: registering controller service")
 		csi.RegisterControllerServer(d.srv, d.controller)
+		// Group snapshots are served by the controller service itself, so
+		// a controller that implements them gets them registered too.
+		if gc, ok := d.controller.(csi.GroupControllerServer); ok {
+			d.log.Debug("Driver.Run: registering group controller service")
+			csi.RegisterGroupControllerServer(d.srv, gc)
+		}
 	}
 	if d.node != nil {
 		d.log.Debug("Driver.Run: registering node service")

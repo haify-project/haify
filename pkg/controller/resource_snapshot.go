@@ -97,12 +97,12 @@ func (rm *ResourceManager) CreateResourceSnapshot(ctx context.Context, resource,
 	if err != nil {
 		return err
 	}
-	watchdog, err := rm.suspendForSnapshot(ctx, resource, hosts)
+	watchdog, suspended, err := rm.suspendForSnapshot(ctx, resource, hosts)
 	if err != nil {
 		log.Debug("CreateResourceSnapshot: suspend failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
-	defer rm.resumeAfterSnapshot(resource, hosts, watchdog)
+	defer rm.resumeAfterSnapshot(resource, suspended, watchdog)
 
 	var made []func()
 	undo := func() {
@@ -129,8 +129,12 @@ func (rm *ResourceManager) CreateResourceSnapshot(ctx context.Context, resource,
 
 // suspendForSnapshot arms each node's resume watchdog, then suspends I/O,
 // the Primary first so nothing new is replicated while the others stop. It
-// returns the watchdog's unit name, for resumeAfterSnapshot to disarm.
-func (rm *ResourceManager) suspendForSnapshot(ctx context.Context, resource string, hosts []string) (string, error) {
+// returns the watchdog's unit name and the hosts it suspended, for
+// resumeAfterSnapshot. Those can be more than hosts: a diskless Primary (a
+// client with no replica of its own) is where the writes come from, so it is
+// suspended too, and must be resumed with the rest rather than a minute later
+// by its watchdog.
+func (rm *ResourceManager) suspendForSnapshot(ctx context.Context, resource string, hosts []string) (string, []string, error) {
 	log := rm.resourcesLog()
 	ordered := append([]string(nil), hosts...)
 	if info, err := rm.GetResource(ctx, resource); err == nil {
@@ -154,10 +158,10 @@ func (rm *ResourceManager) suspendForSnapshot(ctx context.Context, resource stri
 			zap.String("unit", unit), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			rm.resumeAfterSnapshot(resource, ordered[:i+1], unit)
-			return "", err
+			return "", nil, err
 		}
 	}
-	return unit, nil
+	return unit, ordered, nil
 }
 
 // resumeAfterSnapshot resumes I/O everywhere and disarms the watchdog; it runs

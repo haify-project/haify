@@ -5458,6 +5458,39 @@
         ]
       }
     },
+    "/v1/snapshot-groups": {
+      "post": {
+        "summary": "CreateSnapshotGroup takes one-node snapshots (as CreateSnapshot does) of\nseveral volumes at the same instant, so an application spread over them\ngets a crash-consistent set. I/O is suspended on every member's resource\n(its Primary first) while the snapshots are taken, under a transient\ntimer on each node that resumes it whatever happens to the controller.\nAll or nothing: a member that fails removes the ones already taken. The\nCSI driver's VolumeGroupSnapshot is built on it.",
+        "operationId": "HaifyController_CreateSnapshotGroup",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateSnapshotGroupResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CreateSnapshotGroupRequest"
+            }
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
     "/v1/snapshot-schedules": {
       "get": {
         "operationId": "HaifyController_ListSnapshotSchedules",
@@ -8973,6 +9006,29 @@
           "type": "string"
         },
         "configPath": {
+          "type": "string"
+        }
+      }
+    },
+    "v1CreateSnapshotGroupRequest": {
+      "type": "object",
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1SnapshotGroupMember"
+          }
+        }
+      }
+    },
+    "v1CreateSnapshotGroupResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
           "type": "string"
         }
       }
@@ -12961,6 +13017,26 @@
           "title": "false when the app was not running (nothing to freeze)"
         }
       }
+    },
+    "v1SnapshotGroupMember": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string",
+          "description": "resource is the DRBD resource whose I/O is suspended for the group."
+        },
+        "volume": {
+          "type": "string",
+          "description": "volume, snapshot_name and node are as in CreateSnapshotRequest:\n\"\u003cpool\u003e/\u003cbacking\u003e\", the snapshot's name, and the node whose replica is\nsnapshotted."
+        },
+        "snapshotName": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        }
+      },
+      "description": "SnapshotGroupMember is one volume of a CreateSnapshotGroup."
     },
     "v1SnapshotInfo": {
       "type": "object",
