@@ -67,6 +67,7 @@ nav:
   - Integrations:
       - Kubernetes (CSI): kubernetes.md
       - Kubernetes (Helm chart): helm.md
+      - DRBD on Kubernetes nodes: kubernetes-drbd.md
       - Docker: docker.md
       - Proxmox VE: proxmox.md
       - XCP-ng: xcp-ng.md

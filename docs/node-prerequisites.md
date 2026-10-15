@@ -326,6 +326,10 @@ The Kubernetes nodes must be the DRBD storage nodes: the node plugin runs
 privileged and promotes and mounts DRBD on the host. `haify-controller` runs
 outside Kubernetes, reachable at an IP or VIP on 3374.
 
+The DRBD 9 kernel module can come from `drbd-dkms` (§1) or from the Helm
+chart's module loader, which builds and loads it on each node; see
+[DRBD on Kubernetes nodes](./kubernetes-drbd.md).
+
 ### k3s
 
 Pin the node IP and flannel interface to the network the nodes share. When image

@@ -22,7 +22,10 @@ namespace `haify-ai`).
 ## Prerequisites
 
 - Every Kubernetes node that runs volumes is a registered Haify node, with the
-  DRBD 9 kernel module, `drbd-utils`, and LVM or ZFS.
+  DRBD 9 kernel module, `drbd-utils`, and LVM or ZFS. Instead of installing
+  `drbd-dkms` on each node, the module can be loaded from Kubernetes:
+  [DRBD on Kubernetes nodes](../../docs/kubernetes-drbd.md)
+  (`optional/drbd-loader.yaml`, or the chart's `drbdModuleLoader`).
 - **The Kubernetes node name must be the same as the Haify node name.** The
   node plugin reports `spec.nodeName` as its location, and the controller
   plugin looks that name up in `haify node list`.
@@ -272,7 +275,10 @@ The nodes are Haify nodes like any other: the DRBD 9 kernel module and
 `drbd-utils` installed, and root SSH from the controller. That holds on
 MicroShift running on RHEL, CentOS Stream or Ubuntu. OpenShift Container
 Platform nodes run RHCOS, which takes no packages and no root SSH, so they
-cannot be Haify nodes yet.
+cannot be Haify nodes yet. The chart can load the DRBD module on OpenShift
+nodes through the Kernel Module Management operator
+([DRBD on Kubernetes nodes](../../docs/kubernetes-drbd.md#openshift-kernel-module-management)),
+but that provides the module only.
 
 ## What the driver supports
 

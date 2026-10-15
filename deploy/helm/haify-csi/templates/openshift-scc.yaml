@@ -30,6 +30,16 @@ subjects:
   - kind: ServiceAccount
     name: haify-csi-node
     namespace: {{ .Release.Namespace }}
+  {{- if .Values.drbdModuleLoader.enabled }}
+  - kind: ServiceAccount
+    name: haify-drbd-loader
+    namespace: {{ .Release.Namespace }}
+  {{- end }}
+  {{- if .Values.drbdModuleLoader.kmm.enabled }}
+  - kind: ServiceAccount
+    name: haify-drbd-kmm
+    namespace: {{ .Release.Namespace }}
+  {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

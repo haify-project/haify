@@ -89,3 +89,81 @@ nodePlugin:
 # SCC. Detected from the cluster's APIs; set true to render it offline.
 openshift:
   enabled: false
+
+# Load the DRBD 9 kernel module on the nodes from Kubernetes, instead of
+# installing drbd-dkms on each node. Off by default: a node that already has
+# DRBD 9 needs none of this. See docs/kubernetes-drbd.md.
+drbdModuleLoader:
+  enabled: false
+  # The oldest DRBD module Haify accepts. A node with this or newer loaded is
+  # left as it is; the node plugin waits until a node has it.
+  minVersion: "9.2.0"
+  # The Piraeus loader image for the nodes' distribution (see the table in
+  # docs/kubernetes-drbd.md); its tag is the DRBD version it loads.
+  image:
+    repository: quay.io/piraeusdatastore/drbd9-noble
+    tag: v9.3.4
+    pullPolicy: IfNotPresent
+  # compile: build DRBD against the node's kernel headers (/usr/src).
+  # shipped_modules: install a prebuilt module the image carries.
+  # deps_only: load only the modules DRBD depends on, not DRBD.
+  # Empty lets the loader choose (compile when /usr/src is mounted).
+  how: compile
+  # Write /etc/modprobe.d/haify-drbd-loader.conf on nodes where the loader
+  # loads DRBD, so that drbdadm cannot load the distribution's DRBD 8.4 first.
+  blockHostModule: true
+  # After loading DRBD, run the node's haify-drbd-up.service, which brings its
+  # Haify resources up (at boot it ran before DRBD was there).
+  bringUpResources: true
+  # The node plugin waits for DRBD minVersion before it serves volumes.
+  waitInNodePlugin: true
+  # A Secret with signing_key.pem and signing_key.x509, for nodes with Secure
+  # Boot: the loader signs the module with it. The certificate must be
+  # enrolled on every node (mokutil --import).
+  signingKeySecret: ""
+  extraEnv: []
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists
+  resources: {}
+  # One loader per distribution, when the nodes run more than one. Each entry
+  # gets its own DaemonSet with its image on the nodes its nodeSelector picks:
+  #   - name: noble
+  #     image: quay.io/piraeusdatastore/drbd9-noble:v9.3.4
+  #     nodeSelector: {feature.node.kubernetes.io/system-os_release.VERSION_ID: "24.04"}
+  distros: []
+  # OpenShift (or any cluster with the Kernel Module Management operator):
+  # a KMM Module that builds and loads DRBD for each node kernel.
+  kmm:
+    enabled: false
+    # Where KMM finds, or pushes after building, the kmod image for a kernel.
+    # KMM fills in ${KERNEL_FULL_VERSION}. Required.
+    containerImage: ""
+    # The kernels this image is for (a regular expression).
+    kernelRegexp: "^.+$"
+    # Build the image in the cluster from the Dockerfile in the chart's
+    # ConfigMap when containerImage does not exist yet.
+    build:
+      enabled: true
+      drbdVersion: 9.3.4
+      # The build stage. Empty: OpenShift's Driver Toolkit for the node
+      # kernel (KMM fills in DTK_AUTO). Elsewhere, an image with gcc, make and
+      # the headers of the kernel being built for.
+      builderImage: ""
+      # The final stage; needs kmod.
+      baseImage: registry.access.redhat.com/ubi9/ubi-minimal:9.6
+      # Replace the whole Dockerfile.
+      dockerfile: ""
+    # Secure Boot: Secrets holding the private key (key "key") and the
+    # certificate (key "cert"); KMM signs the module with them.
+    sign:
+      keySecret: ""
+      certSecret: ""
+    # Pull (and, for the build, push) credentials for containerImage.
+    imageRepoSecret: ""
+    selector:
+      node-role.kubernetes.io/worker: ""
+    tolerations: []
+    # In-tree modules KMM unloads first, e.g. [drbd] on a kernel that ships
+    # DRBD 8.4.
+    inTreeModulesToRemove: []
