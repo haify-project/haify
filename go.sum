@@ -141,8 +141,8 @@ github.com/kubernetes-csi/csi-test/v5 v5.6.0 h1:fQgB/CRoqTEAtlHwfD0Y785LjQJ/OxNG
 github.com/kubernetes-csi/csi-test/v5 v5.6.0/go.mod h1:IXPOop3n6Mlco/6/3nGrE+MTOx3uXiIQVDJh3KBt/DI=
 github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0SNc=
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
-github.com/liliang-cn/dispatch v1.1.9 h1:ZgN4t40oQxTzwfGRx85ieGyHmJ7UbeeDHolNvgOmb8k=
-github.com/liliang-cn/dispatch v1.1.9/go.mod h1:ULO2NnrQ+koX5b0ntlhksqI15p5DG0W9MNqkwPhjkU0=
+github.com/liliang-cn/dispatch v1.1.10 h1:z5s/YmZd5ufCFlzrEgcS6CLMifxZALKM/hbnE97KHw0=
+github.com/liliang-cn/dispatch v1.1.10/go.mod h1:ULO2NnrQ+koX5b0ntlhksqI15p5DG0W9MNqkwPhjkU0=
 github.com/lucasb-eyer/go-colorful v1.4.0 h1:UtrWVfLdarDgc44HcS7pYloGHJUjHV/4FwW4TvVgFr4=
 github.com/lucasb-eyer/go-colorful v1.4.0/go.mod h1:R4dSotOR9KMtayYi1e77YzuveK+i7ruzyGqttikkLy0=
 github.com/maruel/natural v1.1.1 h1:Hja7XhhmvEFhcByqDoHz9QZbkWey+COd9xWfCfn1ioo=
