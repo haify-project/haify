@@ -130,7 +130,7 @@ func resourceStatus() *cobra.Command {
 				// status page is exactly who might otherwise conclude that the
 				// replication link is protected too.
 				fmt.Printf("  Encryption: LUKS2 on each replica's backing volume (at rest).\n")
-				fmt.Printf("              Replication between nodes is NOT encrypted.\n")
+				fmt.Printf("              %s\n", replicationEncryption(status.GetNodeStates()))
 			}
 
 			volumes := status.GetVolumes()
