@@ -350,10 +350,7 @@ func (c *Client) Exec(ctx context.Context, hosts []string, cmd string, opts ...E
 	// Execute on remote hosts using dispatch
 	if len(remoteHosts) > 0 {
 		dispatchStart := time.Now()
-		dispatchResult, dispatchErr := c.dispatch.Exec(ctx, remoteHosts, cmd,
-			dispatch.WithParallel(parallel),
-			dispatch.WithTimeout(timeout),
-		)
+		dispatchResult, dispatchErr := c.dispatchExec(ctx, remoteHosts, cmd, parallel, timeout, options.readOnly)
 		if dispatchErr != nil {
 			c.logger.Warn("Remote dispatch.Exec failed", zap.Error(dispatchErr))
 			return nil, dispatchErr
@@ -459,6 +456,7 @@ type ExecOption func(*execOptions)
 type execOptions struct {
 	parallel int
 	timeout  time.Duration
+	readOnly bool // see WithReadOnly
 }
 
 // ExecTimeoutOf reports the timeout an option list would apply, or 0 when it

@@ -113,7 +113,7 @@ func (c *Client) DRBDAdjust(ctx context.Context, hosts []string, resource string
 func (c *Client) DRBDStatus(ctx context.Context, hosts []string, resource string) (*ExecResult, error) {
 	c.log().Debug("DRBDStatus: reading status", zap.Strings("hosts", hosts), zap.String("resource", resource))
 	cmd := fmt.Sprintf("sudo drbdadm status %s --verbose 2>/dev/null || sudo drbdadm status %s", resource, resource)
-	return c.Exec(ctx, hosts, cmd)
+	return c.Exec(ctx, hosts, cmd, WithReadOnly())
 }
 
 // DRBDStatusJSON gets structured DRBD resource status via
@@ -123,5 +123,5 @@ func (c *Client) DRBDStatus(ctx context.Context, hosts []string, resource string
 // machine-parseable way.
 func (c *Client) DRBDStatusJSON(ctx context.Context, hosts []string, resource string) (*ExecResult, error) {
 	c.log().Debug("DRBDStatusJSON: reading status", zap.Strings("hosts", hosts), zap.String("resource", resource))
-	return c.Exec(ctx, hosts, fmt.Sprintf("sudo drbdsetup status %s --json", resource))
+	return c.Exec(ctx, hosts, fmt.Sprintf("sudo drbdsetup status %s --json", resource), WithReadOnly())
 }
