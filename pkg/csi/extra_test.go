@@ -149,8 +149,14 @@ func TestDriverRun(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		_, err := net.Dial("unix", sock)
-		return err == nil
+		// Closed at once: an open connection that never speaks HTTP/2 holds
+		// GracefulStop until gRPC's 120s handshake timeout drops it.
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
 	}, 2*time.Second, 50*time.Millisecond)
 
 	cancel()
