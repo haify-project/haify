@@ -425,10 +425,19 @@ func disklessByDesign(c *Controller, dbRes *database.Resource) map[string]bool {
 func (rm *ResourceManager) drbdStatusFromAnyHost(ctx context.Context, hosts []string, resource string) (*deployment.ExecResult, int, error) {
 	log := rm.resourcesLog()
 	var lastErr error
-	for _, i := range rm.statusAskOrder(resource, hosts) {
+	order := rm.statusAskOrder(resource, hosts)
+	for n, i := range order {
 		host := hosts[i]
 		start := time.Now()
-		result, err := rm.deployment.DRBDStatus(ctx, []string{host}, resource)
+		// Every host but the last gets statusAskTimeout: a powered-off node
+		// lets the SSH connection hang rather than refusing it, and another
+		// replica can answer instead. The last one gets whatever ctx allows.
+		askCtx, cancel := ctx, context.CancelFunc(func() {})
+		if n < len(order)-1 {
+			askCtx, cancel = context.WithTimeout(ctx, statusAskTimeout)
+		}
+		result, err := rm.deployment.DRBDStatus(askCtx, []string{host}, resource)
+		cancel()
 		log.Debug("drbdStatusFromAnyHost: asked host", zap.String("resource", resource), zap.String("host", host),
 			zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {

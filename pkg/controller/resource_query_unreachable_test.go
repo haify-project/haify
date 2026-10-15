@@ -53,3 +53,25 @@ func TestDrbdStatusFromAnyHostSkipsAHostThatJustFailed(t *testing.T) {
 	assert.Equal(t, 1, idx)
 	assert.Equal(t, []string{"10.0.0.2"}, asked, "the dead host is not asked first again")
 }
+
+// A host that hangs is given up on after statusAskTimeout while another can
+// answer; the last host is not cut short.
+func TestDrbdStatusFromAnyHostDoesNotWaitOutAHungHost(t *testing.T) {
+	dep := &fakeDeploymentClient{}
+	dep.drbdStatusFunc = func(ctx context.Context, hosts []string, _ string) (*deployment.ExecResult, error) {
+		if hosts[0] == "10.0.0.1" {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		_, hasDeadline := ctx.Deadline()
+		assert.False(t, hasDeadline, "the last host gets the caller's context")
+		return successExecResult(hosts, "r role:Secondary"), nil
+	}
+	rm := newBasicTestController(dep).resources
+	start := time.Now()
+	_, idx, err := rm.drbdStatusFromAnyHost(context.Background(), []string{"10.0.0.1", "10.0.0.2"}, "r")
+	require.NoError(t, err)
+	assert.Equal(t, 1, idx)
+	assert.Less(t, time.Since(start), statusAskTimeout+2*time.Second)
+	assert.True(t, rm.recentlyUnreachable("10.0.0.1"))
+}

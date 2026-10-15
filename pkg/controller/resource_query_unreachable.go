@@ -17,6 +17,11 @@ import (
 // noticed within a minute even if nothing else asked it.
 const unreachableFor = time.Minute
 
+// statusAskTimeout bounds a status query to one host while other hosts are
+// left to ask. `drbdadm status` over SSH answers in well under a second on a
+// live node.
+const statusAskTimeout = 5 * time.Second
+
 // markHostUnreachable records that host failed a status query just now.
 func (rm *ResourceManager) markHostUnreachable(host string) {
 	rm.unreachableHosts.Store(host, time.Now())
