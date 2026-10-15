@@ -140,6 +140,9 @@ type ResourceManager struct {
 	// alloc holds the ports and minors of creates still in progress; see
 	// allocReservations.
 	alloc allocReservations
+	// unreachableHosts remembers hosts that failed a status query, so they
+	// are asked last for a while; see unreachableFor.
+	unreachableHosts sync.Map
 }
 
 // NewResourceManager creates a new resource manager

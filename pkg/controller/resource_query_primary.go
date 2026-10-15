@@ -27,6 +27,7 @@ func (rm *ResourceManager) statusAskOrder(resource string, hosts []string) []int
 			order = append(order, i)
 		}
 	}
+	order = rm.unreachableLast(hosts, order)
 	rm.resourcesLog().Debug("statusAskOrder: order", zap.String("resource", resource), zap.Strings("hosts", hosts),
 		zap.Bool("known_primary_first", first >= 0), zap.Ints("order", order))
 	return order

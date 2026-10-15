@@ -433,12 +433,15 @@ func (rm *ResourceManager) drbdStatusFromAnyHost(ctx context.Context, hosts []st
 			zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			lastErr = err
+			rm.markHostUnreachable(host)
 			continue
 		}
 		if result == nil || !result.AllSuccess() {
 			lastErr = fmt.Errorf("drbdadm status for %s on %s did not succeed", resource, host)
+			rm.markHostUnreachable(host)
 			continue
 		}
+		rm.markHostReachable(host)
 		return result, i, nil
 	}
 	if lastErr == nil {
