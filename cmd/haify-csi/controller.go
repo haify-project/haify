@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -21,22 +20,26 @@ import (
 	"k8s.io/client-go/tools/record"
 )
 
-func main() {
-	endpoint := flag.String("endpoint", "unix:///csi/csi.sock", "CSI gRPC endpoint")
-	haifyAddr := flag.String("haify-controller", "haify-controller:3374", "haify-controller gRPC address")
-	healthInterval := flag.Duration("health-interval", time.Minute,
+// runController runs the CSI controller plugin: provisioning, snapshots,
+// expansion, ModifyVolume, the volume health reporter and the HA failover
+// controller.
+func runController(args []string) int {
+	fs := flag.NewFlagSet("controller", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "unix:///csi/csi.sock", "CSI gRPC endpoint")
+	haifyAddr := fs.String("haify-controller", "haify-controller:3374", "haify-controller gRPC address")
+	healthInterval := fs.Duration("health-interval", time.Minute,
 		"how often to check each volume's replicas and post VolumeDegraded/VolumeRecovered events on its PVC and the Pods using it; 0 disables")
-	leaderElection := flag.Bool("leader-election", false,
+	leaderElection := fs.Bool("leader-election", false,
 		"run the health reporter only on the replica holding the "+healthLeaseName+" Lease, and the HA controller on the one holding "+
 			haFailoverLeaseName+"; set it when the Deployment has more than one replica")
-	leaderElectionNamespace := flag.String("leader-election-namespace", "",
+	leaderElectionNamespace := fs.String("leader-election-namespace", "",
 		"namespace of the Lease (default: the pod's own namespace)")
-	haFailover := registerHAFailoverFlags()
-	flag.Parse()
+	haFailover := registerHAFailoverFlags(fs)
+	_ = fs.Parse(args)
 
 	log := logging.Production()
 	defer func() { _ = log.Sync() }()
-	log.Debug("main: csi-controller starting", zap.String("endpoint", *endpoint), zap.String("haify_controller", *haifyAddr),
+	log.Debug("runController: starting", zap.String("endpoint", *endpoint), zap.String("haify_controller", *haifyAddr),
 		zap.Duration("health_interval", *healthInterval), zap.Bool("leader_election", *leaderElection),
 		zap.String("leader_election_namespace", *leaderElectionNamespace))
 
@@ -44,7 +47,7 @@ func main() {
 	// HAIFY_TOKEN (the manifests fill it from the haify-api-token Secret),
 	// else ~/.haify/token or /etc/haify/token.
 	token := client.ResolveToken("")
-	log.Debug("main: connecting to haify-controller", zap.String("addr", *haifyAddr), zap.Bool("has_token", token != ""))
+	log.Debug("runController: connecting to haify-controller", zap.String("addr", *haifyAddr), zap.Bool("has_token", token != ""))
 	haify, err := client.NewHaifyClient(*haifyAddr, client.WithToken(token))
 	if err != nil {
 		log.Fatal("connect haify-controller", zap.Error(err))
@@ -69,10 +72,10 @@ func main() {
 		if *leaderElection {
 			lease = leaseNamespace(*leaderElectionNamespace)
 		}
-		log.Debug("main: starting health reporter", zap.Duration("interval", *healthInterval), zap.String("lease_namespace", lease))
+		log.Debug("runController: starting health reporter", zap.Duration("interval", *healthInterval), zap.String("lease_namespace", lease))
 		startHealthReporter(ctx, haify, *healthInterval, lease, log)
 	} else {
-		log.Debug("main: health reporter disabled by --health-interval=0")
+		log.Debug("runController: health reporter disabled by --health-interval=0")
 	}
 
 	if *haFailover.enabled {
@@ -82,13 +85,14 @@ func main() {
 		}
 		startHAFailover(ctx, haify, haFailover, lease, log)
 	} else {
-		log.Debug("main: HA failover disabled by --ha-failover=false")
+		log.Debug("runController: HA failover disabled by --ha-failover=false")
 	}
 
 	if err := d.Run(ctx); err != nil {
 		log.Error("driver exited", zap.Error(err))
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // startHealthReporter posts replica health on PVCs and their Pods. It needs the

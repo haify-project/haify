@@ -73,7 +73,7 @@ spec:
         - name: plugin
           image: {{ include "haify-csi.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: [/usr/local/bin/csi-controller]
+          command: [/usr/local/bin/haify-csi, controller]
           args:
             - --endpoint=unix:///csi/csi.sock
             - --haify-controller=haify-controller:{{ .Values.controller.port }}

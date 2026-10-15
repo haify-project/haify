@@ -41,7 +41,7 @@ spec:
           image: haify-csi:latest
           imagePullPolicy: IfNotPresent
           command:
-            - /usr/local/bin/csi-node
+            - /usr/local/bin/haify-csi
             - drbd-module
             - prepare
             - --min-version=9.2.0
@@ -68,7 +68,7 @@ spec:
         - name: bring-up
           image: haify-csi:latest
           imagePullPolicy: IfNotPresent
-          command: [/usr/local/bin/csi-node, drbd-module, bring-up, --state-dir=/run/haify-drbd-loader]
+          command: [/usr/local/bin/haify-csi, drbd-module, bring-up, --state-dir=/run/haify-drbd-loader]
           securityContext: { privileged: true }
           volumeMounts:
             - { name: state, mountPath: /run/haify-drbd-loader }
@@ -76,10 +76,10 @@ spec:
         - name: drbd
           image: haify-csi:latest
           imagePullPolicy: IfNotPresent
-          command: [/usr/local/bin/csi-node, drbd-module, hold, --min-version=9.2.0]
+          command: [/usr/local/bin/haify-csi, drbd-module, hold, --min-version=9.2.0]
           readinessProbe:
             exec:
-              command: [/usr/local/bin/csi-node, drbd-module, check, --min-version=9.2.0]
+              command: [/usr/local/bin/haify-csi, drbd-module, check, --min-version=9.2.0]
             periodSeconds: 30
             timeoutSeconds: 10
           resources:

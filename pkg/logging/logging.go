@@ -16,7 +16,7 @@ import (
 )
 
 // EnvLevel sets the level of the binaries configured by environment rather
-// than a file: haify, csi-controller, csi-node and haify-docker. Values:
+// than a file: haify, haify-csi and haify-docker. Values:
 // debug, info, warn, error.
 const EnvLevel = "HAIFY_LOG_LEVEL"
 

@@ -15,7 +15,7 @@ import (
 //
 // The view is keyed by two different things at once: the node that answered is
 // filed under the name the resource was created with (the Kubernetes node name,
-// since csi-node registers itself by it), and each peer under the host name in
+// since the node plugin registers itself by it), and each peer under the host name in
 // the DRBD configuration, which is the machine's real hostname and need not be
 // the node name. Matching on the node name alone would miss exactly the peer
 // that died.

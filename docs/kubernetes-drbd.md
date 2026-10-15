@@ -237,7 +237,7 @@ kubectl -n kube-system logs <loader-pod> -c bring-up
 cat /proc/drbd            # version: 9.3.4 ...
 ```
 
-`scripts/k8s-drbd-versions.sh` runs `csi-node drbd-module check` in each node
+`scripts/k8s-drbd-versions.sh` runs `haify-csi drbd-module check` in each node
 plugin and prints one line per node. For a node whose plugin is still waiting
 for DRBD, it prints the loader's last log line instead. It exits 1 if any node
 is below the version.
@@ -259,5 +259,5 @@ the node plugin wait for DRBD, add this init container to the DaemonSet in
       initContainers:
         - name: wait-for-drbd
           image: haify-csi:latest
-          command: [/usr/local/bin/csi-node, drbd-module, wait, --min-version=9.2.0]
+          command: [/usr/local/bin/haify-csi, drbd-module, wait, --min-version=9.2.0]
 ```

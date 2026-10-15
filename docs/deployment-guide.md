@@ -62,8 +62,8 @@ make build
 
 `make build` builds the web UI and copies it into `ui/dist`, where the
 controller embeds it (`go:embed`). It then builds `bin/haify-controller`,
-`bin/haify`, `bin/haify-mcp`, `bin/service-ip`, `bin/csi-controller`,
-`bin/csi-node` and `bin/haify-docker` (the Docker volume plugin). All of them
+`bin/haify`, `bin/haify-mcp`, `bin/service-ip`, `bin/haify-csi`
+and `bin/haify-docker` (the Docker volume plugin). All of them
 are built for the build host's OS and architecture, except `service-ip`,
 which is always built for Linux (on the build host's architecture).
 

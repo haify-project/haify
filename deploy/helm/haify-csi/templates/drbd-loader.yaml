@@ -71,7 +71,7 @@ spec:
           image: {{ include "haify-csi.image" $root }}
           imagePullPolicy: {{ $root.Values.image.pullPolicy }}
           command:
-            - /usr/local/bin/csi-node
+            - /usr/local/bin/haify-csi
             - drbd-module
             - prepare
             - --min-version={{ $l.minVersion }}
@@ -119,7 +119,7 @@ spec:
         - name: bring-up
           image: {{ include "haify-csi.image" $root }}
           imagePullPolicy: {{ $root.Values.image.pullPolicy }}
-          command: [/usr/local/bin/csi-node, drbd-module, bring-up, --state-dir=/run/haify-drbd-loader]
+          command: [/usr/local/bin/haify-csi, drbd-module, bring-up, --state-dir=/run/haify-drbd-loader]
           securityContext: { privileged: true }
           volumeMounts:
             - { name: state, mountPath: /run/haify-drbd-loader }
@@ -128,10 +128,10 @@ spec:
         - name: drbd
           image: {{ include "haify-csi.image" $root }}
           imagePullPolicy: {{ $root.Values.image.pullPolicy }}
-          command: [/usr/local/bin/csi-node, drbd-module, hold, --min-version={{ $l.minVersion }}]
+          command: [/usr/local/bin/haify-csi, drbd-module, hold, --min-version={{ $l.minVersion }}]
           readinessProbe:
             exec:
-              command: [/usr/local/bin/csi-node, drbd-module, check, --min-version={{ $l.minVersion }}]
+              command: [/usr/local/bin/haify-csi, drbd-module, check, --min-version={{ $l.minVersion }}]
             periodSeconds: 30
             timeoutSeconds: 10
           resources:

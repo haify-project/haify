@@ -2,7 +2,7 @@
 // module Haify needs, and prepares the node for the module loader of the
 // haify-csi chart (drbdModuleLoader) when it does not.
 //
-// The csi-node binary runs it as `csi-node drbd-module <command>`: the loader
+// The haify-csi binary runs it as `haify-csi drbd-module <command>`: the loader
 // DaemonSet uses prepare, bring-up, hold and check; the node plugin waits with
 // wait before it serves any volume. Everything here reads the kernel's own
 // view of the module (/sys/module/drbd, /proc/drbd), which a container sees

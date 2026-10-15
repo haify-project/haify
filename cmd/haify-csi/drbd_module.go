@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -14,9 +13,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// drbdModuleUsage is printed for `csi-node drbd-module` without a valid
+// drbdModuleUsage is printed for `haify-csi drbd-module` without a valid
 // command.
-const drbdModuleUsage = `usage: csi-node drbd-module <command> [flags]
+const drbdModuleUsage = `usage: haify-csi drbd-module <command> [flags]
 
 Commands used by the haify-csi chart's DRBD module loader and node plugin:
   check     print the loaded DRBD version; exit 1 if it is older than --min-version
@@ -115,15 +114,4 @@ func runDRBDModule(log *zap.Logger, args []string, stdout, stderr io.Writer) int
 	log.Debug("runDRBDModule: unknown command", zap.String("command", cmd))
 	_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n%s", cmd, drbdModuleUsage)
 	return 2
-}
-
-// maybeRunDRBDModule handles `csi-node drbd-module ...` and exits; for any
-// other command line it returns and the node plugin starts as usual.
-func maybeRunDRBDModule(log *zap.Logger) {
-	if len(os.Args) < 2 || os.Args[1] != "drbd-module" {
-		return
-	}
-	code := runDRBDModule(log, os.Args[2:], os.Stdout, os.Stderr)
-	_ = log.Sync()
-	os.Exit(code)
 }

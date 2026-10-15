@@ -43,8 +43,7 @@ build: ui-sync
 	@echo "Building haify-mcp..."
 	go build -o bin/haify-mcp ./cmd/mcp
 	GOOS=linux go build -o bin/service-ip ./cmd/service-ip
-	go build -o bin/csi-controller ./cmd/csi-controller
-	go build -o bin/csi-node ./cmd/csi-node
+	go build -o bin/haify-csi ./cmd/haify-csi
 	go build -o bin/haify-docker ./cmd/haify-docker
 ifeq ($(AI),1)
 	@echo "Building haify-ai..."

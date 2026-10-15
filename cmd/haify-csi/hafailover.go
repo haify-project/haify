@@ -28,19 +28,19 @@ type haFailoverFlags struct {
 	maxLostFraction *float64
 }
 
-// registerHAFailoverFlags declares the HA controller's flags; call it before
-// flag.Parse.
-func registerHAFailoverFlags() haFailoverFlags {
+// registerHAFailoverFlags declares the HA controller's flags on fs; call it
+// before fs.Parse.
+func registerHAFailoverFlags(fs *flag.FlagSet) haFailoverFlags {
 	return haFailoverFlags{
-		enabled: flag.Bool("ha-failover", true,
+		enabled: fs.Bool("ha-failover", true,
 			"move Pods off a node that has dropped out of its volumes' DRBD resources while the other replicas keep quorum: "+
 				"taint the node "+csi.FailoverTaintKey+":NoSchedule and force-delete the Pods so their controller recreates them elsewhere"),
-		interval: flag.Duration("ha-failover-interval", 5*time.Second,
+		interval: fs.Duration("ha-failover-interval", 5*time.Second,
 			"how often the HA controller checks the volumes Pods are using"),
-		grace: flag.Duration("ha-failover-grace", 10*time.Second,
+		grace: fs.Duration("ha-failover-grace", 10*time.Second,
 			"how long a node must look lost to Haify before the HA controller acts while Kubernetes still reports the node Ready; "+
 				"a node Kubernetes reports NotReady or Unknown is acted on at once"),
-		maxLostFraction: flag.Float64("ha-failover-max-lost-fraction", 0.5,
+		maxLostFraction: fs.Float64("ha-failover-max-lost-fraction", 0.5,
 			"the HA controller does nothing while more than this fraction of the cluster's nodes look lost, treating it as a partition"),
 	}
 }

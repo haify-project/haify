@@ -6,7 +6,7 @@ Haify is a Software Defined Storage controller written in Go, built on DRBD and 
 
 ```
 haify/
-├── cmd/              # Entry points: controller, cli, mcp, csi-controller, csi-node,
+├── cmd/              # Entry points: controller, cli, mcp, haify-csi,
 │                     #   service-ip (Linux only), haify-ai (its own Go module)
 ├── pkg/
 │   ├── controller/   # Controller and gRPC server: pools, resources, snapshots, nodes, HA, Self-HA, WAN, backups
@@ -47,7 +47,7 @@ Tests live next to the code as `*_test.go`.
 
 ```bash
 make build          # web UI build + sync, then bin/haify-controller, bin/haify, bin/haify-mcp,
-                    #   bin/service-ip (GOOS=linux), bin/csi-controller, bin/csi-node
+                    #   bin/service-ip (GOOS=linux), bin/haify-csi
 make test           # go test -v ./...
 make ci             # what CI runs: file size, gofmt -l, vet, golangci-lint (also as GOOS=linux),
                     #   build, go test -race, govulncheck, web-ui build

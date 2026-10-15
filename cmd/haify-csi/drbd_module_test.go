@@ -11,7 +11,7 @@ import (
 func TestRunDRBDModuleUsage(t *testing.T) {
 	var out, errb bytes.Buffer
 	assert.Equal(t, 2, runDRBDModule(zap.NewNop(), nil, &out, &errb))
-	assert.Contains(t, errb.String(), "usage: csi-node drbd-module")
+	assert.Contains(t, errb.String(), "usage: haify-csi drbd-module")
 
 	errb.Reset()
 	assert.Equal(t, 2, runDRBDModule(zap.NewNop(), []string{"frobnicate"}, &out, &errb))

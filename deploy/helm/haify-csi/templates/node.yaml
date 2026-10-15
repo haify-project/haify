@@ -32,7 +32,7 @@ spec:
         - name: wait-for-drbd
           image: {{ include "haify-csi.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: [/usr/local/bin/csi-node, drbd-module, wait, --min-version={{ .Values.drbdModuleLoader.minVersion }}]
+          command: [/usr/local/bin/haify-csi, drbd-module, wait, --min-version={{ .Values.drbdModuleLoader.minVersion }}]
       {{- end }}
       containers:
         - name: node-driver-registrar
@@ -46,7 +46,7 @@ spec:
         - name: plugin
           image: {{ include "haify-csi.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: [/usr/local/bin/csi-node]
+          command: [/usr/local/bin/haify-csi, node]
           args:
             - --endpoint=unix:///csi/csi.sock
             - --haify-controller=haify-controller:{{ .Values.controller.port }}

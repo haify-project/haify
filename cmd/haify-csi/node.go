@@ -15,21 +15,23 @@ import (
 	"go.uber.org/zap"
 )
 
-func main() {
-	endpoint := flag.String("endpoint", "unix:///csi/csi.sock", "CSI gRPC endpoint")
-	haifyAddr := flag.String("haify-controller", "haify-controller:3374", "haify-controller gRPC address")
-	nodeName := flag.String("node-name", os.Getenv("NODE_NAME"), "Kubernetes node name")
-	nodeIP := flag.String("node-ip", os.Getenv("NODE_IP"), "this node's storage IP, registered with the controller at startup")
-	qosInterval := flag.Duration("qos-interval", 30*time.Second,
+// runNode runs the CSI node plugin: staging, publishing and I/O limits on this
+// node.
+func runNode(args []string) int {
+	fs := flag.NewFlagSet("node", flag.ExitOnError)
+	endpoint := fs.String("endpoint", "unix:///csi/csi.sock", "CSI gRPC endpoint")
+	haifyAddr := fs.String("haify-controller", "haify-controller:3374", "haify-controller gRPC address")
+	nodeName := fs.String("node-name", os.Getenv("NODE_NAME"), "Kubernetes node name")
+	nodeIP := fs.String("node-ip", os.Getenv("NODE_IP"), "this node's storage IP, registered with the controller at startup")
+	qosInterval := fs.Duration("qos-interval", 30*time.Second,
 		"how often to re-read the I/O limits of published volumes (changed through a VolumeAttributesClass) and rewrite io.max; 0 applies them only at publish")
-	qosStateDir := flag.String("qos-state-dir", "/csi/qos",
+	qosStateDir := fs.String("qos-state-dir", "/csi/qos",
 		"where the published volumes whose I/O limits are kept current are recorded, so a restarted plugin still knows them; empty keeps them in memory")
-	flag.Parse()
+	_ = fs.Parse(args)
 
 	log := logging.Production()
-	maybeRunDRBDModule(log)
 	defer func() { _ = log.Sync() }()
-	log.Debug("main: csi-node starting", zap.String("endpoint", *endpoint), zap.String("haify_controller", *haifyAddr),
+	log.Debug("runNode: starting", zap.String("endpoint", *endpoint), zap.String("haify_controller", *haifyAddr),
 		zap.String("node", *nodeName), zap.String("node_ip", *nodeIP))
 
 	if *nodeName == "" || *nodeIP == "" {
@@ -40,7 +42,7 @@ func main() {
 	// HAIFY_TOKEN (the manifests fill it from the haify-api-token Secret),
 	// else ~/.haify/token or /etc/haify/token.
 	token := client.ResolveToken("")
-	log.Debug("main: connecting to haify-controller", zap.String("addr", *haifyAddr), zap.Bool("has_token", token != ""))
+	log.Debug("runNode: connecting to haify-controller", zap.String("addr", *haifyAddr), zap.Bool("has_token", token != ""))
 	haify, err := client.NewHaifyClient(*haifyAddr, client.WithToken(token))
 	if err != nil {
 		log.Fatal("connect haify-controller", zap.Error(err))
@@ -57,7 +59,7 @@ func main() {
 	if _, err := haify.RegisterNode(context.Background(), *nodeName, *nodeIP); err != nil {
 		log.Warn("register node (continuing)", zap.Error(err))
 	} else {
-		log.Debug("main: registered node", zap.String("node", *nodeName), zap.String("node_ip", *nodeIP),
+		log.Debug("runNode: registered node", zap.String("node", *nodeName), zap.String("node_ip", *nodeIP),
 			zap.Duration("took", time.Since(start)))
 	}
 
@@ -70,10 +72,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	log.Debug("main: enabling I/O limit upkeep", zap.Duration("interval", *qosInterval), zap.String("state_dir", *qosStateDir))
+	log.Debug("runNode: enabling I/O limit upkeep", zap.Duration("interval", *qosInterval), zap.String("state_dir", *qosStateDir))
 	csi.EnableQoSReconcile(ctx, ns, *qosStateDir, *qosInterval)
 	if err := d.Run(ctx); err != nil {
 		log.Error("driver exited", zap.Error(err))
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }

@@ -35,7 +35,7 @@ spec:
         - name: plugin
           image: haify-csi:latest
           imagePullPolicy: IfNotPresent
-          command: ["/usr/local/bin/csi-node"]
+          command: ["/usr/local/bin/haify-csi", "node"]
           args:
             - "--endpoint=unix:///csi/csi.sock"
             - "--haify-controller=haify-controller:3374"

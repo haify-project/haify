@@ -34,7 +34,7 @@ Binaries (`make build` puts them in `bin/`):
 | `haify` | `cmd/cli` |
 | `haify-mcp` | `cmd/mcp` |
 | `service-ip` | `cmd/service-ip` (Linux only; brings a floating IP up/down on a node) |
-| `csi-controller`, `csi-node` | `cmd/csi-controller`, `cmd/csi-node` |
+| `haify-csi` | `cmd/haify-csi` (`haify-csi controller`, `haify-csi node`: the Kubernetes CSI driver) |
 | `haify-ai` | `cmd/haify-ai` — separate Go module (own `go.mod`), not built by `make build` |
 
 **Key Design:**
@@ -386,7 +386,7 @@ pvs
 
 Every step is traced at Debug, so a problem can be followed through the code
 by lowering the level: `[log] level = "debug"` for the controller,
-`HAIFY_LOG_LEVEL=debug` for csi-controller, csi-node and haify-docker,
+`HAIFY_LOG_LEVEL=debug` for haify-csi and haify-docker,
 `--debug` (or the same variable) for `haify`, `--debug` for `haify-mcp`. At
 the default level a trace costs one level check.
 

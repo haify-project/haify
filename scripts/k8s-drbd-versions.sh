@@ -24,7 +24,7 @@ fi
 while read -r pod node phase; do
   [ -n "$pod" ] || continue
   if out=$(kubectl -n "$NS" exec "$pod" -c plugin -- \
-      /usr/local/bin/csi-node drbd-module check --min-version="$MIN" </dev/null 2>&1); then
+      /usr/local/bin/haify-csi drbd-module check --min-version="$MIN" </dev/null 2>&1); then
     printf '%-24s ok    %s\n' "$node" "$out"
     continue
   fi
