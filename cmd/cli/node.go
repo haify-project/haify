@@ -85,11 +85,15 @@ func nodeList() *cobra.Command {
 				if node.OfflineSince > 0 {
 					state += " since " + formatLastSeen(node.OfflineSince)
 				}
+				version := node.Version
+				if node.LocalAgent && version == "" {
+					version = "local agent"
+				}
 				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 					node.Name,
 					displayAddr,
 					state,
-					node.Version)
+					version)
 			}
 
 			// Flush pushes the buffered table to stdout; like the Fprint calls above it

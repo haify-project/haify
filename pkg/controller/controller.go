@@ -182,12 +182,19 @@ func New(cfg *config.Config, logger *zap.Logger) (*Controller, error) {
 	}
 	// Every DRBD config written or read goes through the replication-paths
 	// layer (replication_paths.go).
-	ctrl.deployment = &resPathsDeployment{deploymentClient: deploymentClient, extra: func() map[string][]string {
-		if ctrl.nodes == nil {
-			return nil
-		}
-		return ctrl.nodes.replicationPathsByDRBDName()
-	}}
+	// Commands for local-agent nodes are dropped before they reach SSH
+	// (local_agent_deployment.go).
+	ctrl.deployment = &localAgentDeployment{
+		deploymentClient: &resPathsDeployment{deploymentClient: deploymentClient, extra: func() map[string][]string {
+			if ctrl.nodes == nil {
+				return nil
+			}
+			return ctrl.nodes.replicationPathsByDRBDName()
+		}},
+		isAgent: func(host string) bool {
+			return ctrl.nodes != nil && ctrl.nodes.isLocalAgentHost(host)
+		},
+	}
 
 	// Initialize managers
 	ctrl.storage = NewStorageManager(ctrl)

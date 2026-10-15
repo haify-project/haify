@@ -316,7 +316,7 @@ export function NodesPage() {
                       label: 'System',
                       value: (
                         <span className="font-mono text-muted-foreground">
-                          {node.version || '-'}
+                          {node.version || (node.localAgent ? 'Local agent' : '-')}
                         </span>
                       ),
                     },

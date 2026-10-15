@@ -138,6 +138,11 @@ nodePlugin:
   # published, so a VolumeAttributesClass change reaches running Pods; "0s"
   # applies limits only when a volume is published.
   qosInterval: 30s
+  # For nodes the controller cannot SSH into, such as RHCOS on OpenShift: the
+  # plugin registers its node itself and configures DRBD there (in the host's
+  # /etc/drbd.d), so the node can mount volumes as a diskless client. A node
+  # the controller already reaches over SSH stays managed that way.
+  localAgent: false
   nodeSelector: {}
   tolerations:
     - operator: Exists

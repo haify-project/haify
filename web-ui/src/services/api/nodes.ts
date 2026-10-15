@@ -8,6 +8,8 @@ export interface Node {
   lastSeen: string;
   version: string;
   labels?: Record<string, string>;
+  /** Reached through its Haify CSI node plugin, not over SSH. */
+  localAgent?: boolean;
 }
 
 export interface NodesResponse extends ApiResponse {

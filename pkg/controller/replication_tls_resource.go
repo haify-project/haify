@@ -226,6 +226,12 @@ func (rm *ResourceManager) assertNewMemberTLS(ctx context.Context, resource, nod
 		log.Debug("assertNewMemberTLS: resource does not use TLS", zap.String("resource", resource))
 		return nil
 	}
+	// The node's certificate is written by the controller, which cannot
+	// reach a local-agent node.
+	if rm.controller.nodes != nil && rm.controller.nodes.isLocalAgentHost(node) {
+		log.Debug("assertNewMemberTLS: refusing, local-agent node", zap.String("node", node))
+		return fmt.Errorf("%s replicates over TLS, which a local-agent node cannot join: its certificate cannot be installed there", resource)
+	}
 	if err := rm.assertTLSReady(ctx, []string{node}); err != nil {
 		log.Debug("assertNewMemberTLS: new member not ready", zap.String("resource", resource), zap.String("node", node), zap.Error(err))
 		return fmt.Errorf("%s replicates over TLS: %w", resource, err)

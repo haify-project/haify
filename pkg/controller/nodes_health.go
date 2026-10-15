@@ -99,6 +99,10 @@ func (nm *NodeManager) CheckNodeHealth(ctx context.Context, address string) erro
 		log.Debug("NodeManager.CheckNodeHealth: node not found", zap.String("address", address))
 		return fmt.Errorf("node not found: %s", address)
 	}
+	if node.LocalAgent {
+		log.Debug("NodeManager.CheckNodeHealth: local-agent node, judging by its reports", zap.String("address", address))
+		return nm.checkLocalAgentHealth(node)
+	}
 
 	start := time.Now()
 	result, err := nm.controller.deployment.Exec(ctx, []string{address}, "echo ok")

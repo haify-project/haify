@@ -58,6 +58,10 @@ spec:
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
             - name: NODE_IP
               valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            {{- if .Values.nodePlugin.localAgent }}
+            - name: HAIFY_LOCAL_AGENT
+              value: "true"
+            {{- end }}
           {{- with .Values.nodePlugin.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -66,6 +70,10 @@ spec:
             - { name: kubelet-dir, mountPath: {{ .Values.kubeletDir }}, mountPropagation: Bidirectional }
             - { name: dev-dir, mountPath: /dev }
             - { name: cgroup, mountPath: /sys/fs/cgroup }
+            {{- if .Values.nodePlugin.localAgent }}
+            - { name: drbd-conf, mountPath: /etc/drbd.d }
+            - { name: drbd-state, mountPath: /var/lib/drbd }
+            {{- end }}
       volumes:
         - name: socket-dir
           hostPath: { path: {{ $plugins }}, type: DirectoryOrCreate }
@@ -77,3 +85,9 @@ spec:
           hostPath: { path: /dev, type: Directory }
         - name: cgroup
           hostPath: { path: /sys/fs/cgroup, type: Directory }
+        {{- if .Values.nodePlugin.localAgent }}
+        - name: drbd-conf
+          hostPath: { path: /etc/drbd.d, type: DirectoryOrCreate }
+        - name: drbd-state
+          hostPath: { path: /var/lib/drbd, type: DirectoryOrCreate }
+        {{- end }}

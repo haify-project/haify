@@ -27,6 +27,10 @@ func runNode(args []string) int {
 		"how often to re-read the I/O limits of published volumes (changed through a VolumeAttributesClass) and rewrite io.max; 0 applies them only at publish")
 	qosStateDir := fs.String("qos-state-dir", "/csi/qos",
 		"where the published volumes whose I/O limits are kept current are recorded, so a restarted plugin still knows them; empty keeps them in memory")
+	localAgent := fs.Bool("local-agent", os.Getenv("HAIFY_LOCAL_AGENT") == "true",
+		"act as this node's agent: for nodes the controller cannot SSH into (RHCOS); DRBD is configured and promoted from this plugin")
+	drbdConfDir := fs.String("drbd-conf-dir", "/etc/drbd.d", "the host's DRBD configuration directory, mounted into the plugin (local agent only)")
+	agentInterval := fs.Duration("agent-interval", 10*time.Second, "how often the local agent asks the controller for this node's resources")
 	_ = fs.Parse(args)
 
 	log := logging.Production()
@@ -53,25 +57,32 @@ func runNode(args []string) int {
 	// is dropped rather than logged as a shutdown failure.
 	defer func() { _ = haify.Close() }()
 
-	// Auto-register this node into haify (idempotent on the controller side):
-	// maps the k8s node name to its storage IP so topology and SSH line up.
-	start := time.Now()
-	if _, err := haify.RegisterNode(context.Background(), *nodeName, *nodeIP); err != nil {
-		log.Warn("register node (continuing)", zap.Error(err))
-	} else {
-		log.Debug("runNode: registered node", zap.String("node", *nodeName), zap.String("node_ip", *nodeIP),
-			zap.Duration("took", time.Since(start)))
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	ns := csi.NewNodeServer(haify, csi.NewMounter(), *nodeName, log)
+	var ns csiNodeServer
+	if *localAgent {
+		ns = startLocalAgent(ctx, haify, *nodeName, *nodeIP, *drbdConfDir, *agentInterval, log)
+	} else {
+		// Auto-register this node into haify (idempotent on the controller side):
+		// maps the k8s node name to its storage IP so topology and SSH line up.
+		start := time.Now()
+		if _, err := haify.RegisterNode(context.Background(), *nodeName, *nodeIP); err != nil {
+			log.Warn("register node (continuing)", zap.Error(err))
+		} else {
+			log.Debug("runNode: registered node", zap.String("node", *nodeName), zap.String("node_ip", *nodeIP),
+				zap.Duration("took", time.Since(start)))
+		}
+		ns = csi.NewNodeServer(haify, csi.NewMounter(), *nodeName, log)
+	}
+	if ns == nil {
+		return 1
+	}
 	d := csi.NewDriver(*endpoint, log,
 		csi.NewIdentityServer(),
 		nil,
 		ns,
 	)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	log.Debug("runNode: enabling I/O limit upkeep", zap.Duration("interval", *qosInterval), zap.String("state_dir", *qosStateDir))
 	csi.EnableQoSReconcile(ctx, ns, *qosStateDir, *qosInterval)
 	if err := d.Run(ctx); err != nil {

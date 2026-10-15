@@ -124,7 +124,7 @@ export function NodeDetail({
                 <Fact label="Hostname" value={node.hostname || '-'} />
                 <Fact label="Address" value={node.address} />
                 <Fact label="State" value={node.state} tone={toneOf(node.state)} />
-                <Fact label="Version" value={node.version || '-'} />
+                <Fact label="Version" value={node.version || (node.localAgent ? 'Local agent' : '-')} />
                 <Fact label="Last seen" value={formatLastSeen(node.lastSeen)} />
               </div>
 

@@ -23,7 +23,9 @@ namespace `haify-ai`).
 ## Prerequisites
 
 - Every Kubernetes node that runs volumes is a registered Haify node, with the
-  DRBD 9 kernel module, `drbd-utils`, and LVM or ZFS. Instead of installing
+  DRBD 9 kernel module, `drbd-utils`, and LVM or ZFS, or a local-agent node
+  that has only the DRBD 9 module (see [Nodes without SSH](#nodes-without-ssh-local-agent)).
+  Instead of installing
   `drbd-dkms` on each node, the module can be loaded from Kubernetes:
   [DRBD on Kubernetes nodes](../../docs/kubernetes-drbd.md)
   (`optional/drbd-loader.yaml`, or the chart's `drbdModuleLoader`).
@@ -33,7 +35,8 @@ namespace `haify-ai`).
 - When the node plugin starts, it registers its node with the controller under
   that name and the node's `status.hostIP` (`--node-name`/`--node-ip`, filled
   from `NODE_NAME`/`NODE_IP`). Registering a node that is already registered
-  changes nothing. The controller still needs SSH access to that address.
+  changes nothing. The controller still needs SSH access to that address,
+  unless the node is a local-agent node.
 - The Haify pool named in the StorageClass exists on at least as many of those
   nodes as the StorageClass asks for `replicas` (`haify pool create --name vg0 ...`).
 
@@ -364,14 +367,47 @@ Applications need nothing special. A Pod admitted under `restricted-v2`, with
 the random user ID OpenShift assigns, owns what it writes on the volume:
 kubelet applies the Pod's `fsGroup` to the filesystem.
 
-The nodes are Haify nodes like any other: the DRBD 9 kernel module and
-`drbd-utils` installed, and root SSH from the controller. That holds on
-MicroShift running on RHEL, CentOS Stream or Ubuntu. OpenShift Container
-Platform nodes run RHCOS, which takes no packages and no root SSH, so they
-cannot be Haify nodes yet. The chart can load the DRBD module on OpenShift
-nodes through the Kernel Module Management operator
-([DRBD on Kubernetes nodes](../../docs/kubernetes-drbd.md#openshift-kernel-module-management)),
-but that provides the module only.
+On MicroShift running on RHEL, CentOS Stream or Ubuntu, the nodes are Haify
+nodes like any other: the DRBD 9 kernel module and `drbd-utils` installed, and
+root SSH from the controller.
+
+OpenShift Container Platform nodes run RHCOS, which takes no packages and no
+root SSH. They mount volumes as local-agent nodes, below, with the DRBD module
+loaded through the Kernel Module Management operator
+([DRBD on Kubernetes nodes](../../docs/kubernetes-drbd.md#openshift-kernel-module-management)).
+The data lives on Haify storage nodes outside the cluster, or on cluster nodes
+that run RHEL.
+
+## Nodes without SSH (local agent)
+
+A node the controller cannot SSH into can still run Pods with Haify volumes.
+With
+
+```yaml
+nodePlugin:
+  localAgent: true
+```
+
+the node plugin registers its node itself and becomes its agent: it writes the
+DRBD configuration of the node's volumes to the host's `/etc/drbd.d`, brings
+them up, and makes the node Primary when a Pod starts there and Secondary when
+it leaves. The image carries `drbd-utils`; the node needs only the DRBD 9
+kernel module.
+
+Such a node holds no replica. It reads and writes its volumes over the network
+from the nodes that hold them, so its volumes need
+`allowRemoteVolumeAccess: "true"` on the StorageClass. It is never chosen as a
+tiebreaker either.
+
+The setting can be on for every node. A node the controller already reaches
+over SSH stays managed that way, and its plugin works as before; `haify node
+list` shows `local agent` in the VERSION column for the others. Registering a
+local-agent node with `haify node register` later makes it an SSH node; restart
+its node plugin afterwards.
+
+The controller counts a local-agent node offline when its plugin has not
+reported for a minute. Resources that replicate over kernel TLS cannot be
+attached to one, because the controller cannot install its certificate there.
 
 ## What the driver supports
 

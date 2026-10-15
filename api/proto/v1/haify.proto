@@ -67,6 +67,12 @@ service HaifyController {
   rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse) {
     option (google.api.http) = { post: "/v1/nodes"; body: "*"; };
   }
+  // GetNodeAgentState is polled by a local-agent node's CSI node plugin: the
+  // resources the node is a diskless client of, with each one's DRBD config.
+  // Each call also counts as the node's heartbeat.
+  rpc GetNodeAgentState(GetNodeAgentStateRequest) returns (GetNodeAgentStateResponse) {
+    option (google.api.http) = { get: "/v1/nodes/{node}/agent-state" };
+  }
   rpc UnregisterNode(UnregisterNodeRequest) returns (UnregisterNodeResponse) {
     option (google.api.http) = { delete: "/v1/nodes/{address}"; };
   }
@@ -1151,6 +1157,31 @@ message RegisterNodeRequest {
   // the controller keeps reaching the node over `address` (SSH/management).
   // Empty means "same as address", which is the historical behavior.
   string replication_address = 3;
+  // local_agent registers a node the controller cannot reach over SSH, such
+  // as an OpenShift (RHCOS) worker: its own CSI node plugin applies DRBD
+  // changes there, and it can only be a diskless client. A node already
+  // registered for SSH stays as it is.
+  bool local_agent = 4;
+  // hostname is the node's own host name, which DRBD matches in its config.
+  // Only a local-agent node sends it; for the others the controller asks.
+  string hostname = 5;
+}
+
+message GetNodeAgentStateRequest {
+  string node = 1;
+}
+
+message AgentResource {
+  string name = 1;
+  // config is the resource's DRBD config, the same text every participant has
+  // in /etc/drbd.d/<name>.res.
+  string config = 2;
+}
+
+message GetNodeAgentStateResponse {
+  bool success = 1;
+  string message = 2;
+  repeated AgentResource resources = 3;
 }
 
 message RegisterNodeResponse {
@@ -1221,6 +1252,9 @@ message NodeInfo {
   // additional replication network; each pair of nodes gets a path per
   // network both are on.
   repeated string replication_paths = 10;
+  // local_agent: the controller does not reach this node over SSH; its CSI
+  // node plugin applies DRBD changes there (see RegisterNodeRequest).
+  bool local_agent = 11;
 }
 
 // Health check messages

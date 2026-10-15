@@ -134,6 +134,10 @@ type ResourceManager struct {
 	verifyMarks sync.Map
 	// haProbes keeps recent HA status probes of nodes; see GetHaStatus.
 	haProbes haProbeCache
+	// agentCfg caches resource configurations read for local agents; see
+	// agentConfig.
+	agentCfgMu sync.Mutex
+	agentCfg   map[string]agentConfigEntry
 	// primaryHosts remembers, per resource, the address of the node last seen
 	// Primary, so its status is read first; see drbdStatusFromAnyHost.
 	primaryHosts sync.Map
@@ -151,6 +155,7 @@ func NewResourceManager(ctrl *Controller) *ResourceManager {
 		controller: ctrl,
 		hosts:      make([]string, 0),
 		hostMap:    make(map[string]string),
+		agentCfg:   make(map[string]agentConfigEntry),
 	}
 }
 

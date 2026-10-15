@@ -573,6 +573,45 @@ func local_request_HaifyController_RegisterNode_0(ctx context.Context, marshaler
 	return msg, metadata, err
 }
 
+func request_HaifyController_GetNodeAgentState_0(ctx context.Context, marshaler runtime.Marshaler, client HaifyControllerClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetNodeAgentStateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["node"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "node")
+	}
+	protoReq.Node, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "node", err)
+	}
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+	}
+	msg, err := client.GetNodeAgentState(ctx, &protoReq, grpc.Header(&metadata.HeaderMD), grpc.Trailer(&metadata.TrailerMD))
+	return msg, metadata, err
+}
+
+func local_request_HaifyController_GetNodeAgentState_0(ctx context.Context, marshaler runtime.Marshaler, server HaifyControllerServer, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
+	var (
+		protoReq GetNodeAgentStateRequest
+		metadata runtime.ServerMetadata
+		err      error
+	)
+	val, ok := pathParams["node"]
+	if !ok {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "missing parameter %s", "node")
+	}
+	protoReq.Node, err = runtime.String(val)
+	if err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "type mismatch, parameter: %s, error: %v", "node", err)
+	}
+	msg, err := server.GetNodeAgentState(ctx, &protoReq)
+	return msg, metadata, err
+}
+
 func request_HaifyController_UnregisterNode_0(ctx context.Context, marshaler runtime.Marshaler, client HaifyControllerClient, req *http.Request, pathParams map[string]string) (proto.Message, runtime.ServerMetadata, error) {
 	var (
 		protoReq UnregisterNodeRequest
@@ -8110,6 +8149,26 @@ func RegisterHaifyControllerHandlerServer(ctx context.Context, mux *runtime.Serv
 		}
 		forward_HaifyController_RegisterNode_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodGet, pattern_HaifyController_GetNodeAgentState_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		var stream runtime.ServerTransportStream
+		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/v1.HaifyController/GetNodeAgentState", runtime.WithHTTPPathPattern("/v1/nodes/{node}/agent-state"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := local_request_HaifyController_GetNodeAgentState_0(annotatedContext, inboundMarshaler, server, req, pathParams)
+		md.HeaderMD, md.TrailerMD = metadata.Join(md.HeaderMD, stream.Header()), metadata.Join(md.TrailerMD, stream.Trailer())
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_HaifyController_GetNodeAgentState_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodDelete, pattern_HaifyController_UnregisterNode_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -12009,6 +12068,23 @@ func RegisterHaifyControllerHandlerClient(ctx context.Context, mux *runtime.Serv
 		}
 		forward_HaifyController_RegisterNode_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
 	})
+	mux.Handle(http.MethodGet, pattern_HaifyController_GetNodeAgentState_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
+		ctx, cancel := context.WithCancel(req.Context())
+		defer cancel()
+		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
+		annotatedContext, err := runtime.AnnotateContext(ctx, mux, req, "/v1.HaifyController/GetNodeAgentState", runtime.WithHTTPPathPattern("/v1/nodes/{node}/agent-state"))
+		if err != nil {
+			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		resp, md, err := request_HaifyController_GetNodeAgentState_0(annotatedContext, inboundMarshaler, client, req, pathParams)
+		annotatedContext = runtime.NewServerMetadataContext(annotatedContext, md)
+		if err != nil {
+			runtime.HTTPError(annotatedContext, mux, outboundMarshaler, w, req, err)
+			return
+		}
+		forward_HaifyController_GetNodeAgentState_0(annotatedContext, mux, outboundMarshaler, w, req, resp, mux.GetForwardResponseOptions()...)
+	})
 	mux.Handle(http.MethodDelete, pattern_HaifyController_UnregisterNode_0, func(w http.ResponseWriter, req *http.Request, pathParams map[string]string) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -15089,6 +15165,7 @@ var (
 	pattern_HaifyController_ListStorageJobs_0           = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 2, 2}, []string{"v1", "storage", "jobs"}, ""))
 	pattern_HaifyController_AddDiskToPool_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "pools", "pool", "disks"}, ""))
 	pattern_HaifyController_RegisterNode_0              = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1}, []string{"v1", "nodes"}, ""))
+	pattern_HaifyController_GetNodeAgentState_0         = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "nodes", "node", "agent-state"}, ""))
 	pattern_HaifyController_UnregisterNode_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2}, []string{"v1", "nodes", "address"}, ""))
 	pattern_HaifyController_SetNodeLabels_0             = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "nodes", "node", "labels"}, ""))
 	pattern_HaifyController_SetNodeAddress_0            = runtime.MustPattern(runtime.NewPattern(1, []int{2, 0, 2, 1, 1, 0, 4, 1, 5, 2, 2, 3}, []string{"v1", "nodes", "node", "address"}, ""))
@@ -15288,6 +15365,7 @@ var (
 	forward_HaifyController_ListStorageJobs_0           = runtime.ForwardResponseMessage
 	forward_HaifyController_AddDiskToPool_0             = runtime.ForwardResponseMessage
 	forward_HaifyController_RegisterNode_0              = runtime.ForwardResponseMessage
+	forward_HaifyController_GetNodeAgentState_0         = runtime.ForwardResponseMessage
 	forward_HaifyController_UnregisterNode_0            = runtime.ForwardResponseMessage
 	forward_HaifyController_SetNodeLabels_0             = runtime.ForwardResponseMessage
 	forward_HaifyController_SetNodeAddress_0            = runtime.ForwardResponseMessage

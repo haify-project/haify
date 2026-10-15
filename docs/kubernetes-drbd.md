@@ -217,9 +217,10 @@ certificate must be enrolled on the nodes as above.
 KMM's module loader pods run as the service account `haify-drbd-kmm`, which
 the chart lets use the `privileged` SCC.
 
-The module is only one of the things a Haify node needs. RHCOS nodes take no
-packages and no root SSH, so they cannot be Haify storage nodes; see
-[OpenShift and MicroShift](../deploy/k8s/README.md#openshift-and-microshift).
+RHCOS nodes take no packages and no root SSH, so they cannot be Haify storage
+nodes. With the module loaded they mount volumes as local-agent nodes, whose
+node plugin brings DRBD up there itself; see
+[Nodes without SSH](../deploy/k8s/README.md#nodes-without-ssh-local-agent).
 
 ## Checking the nodes
 

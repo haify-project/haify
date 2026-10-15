@@ -225,8 +225,12 @@ type Node struct {
 	// OfflineSince is when the node stopped answering, zero while it does.
 	// Self-healing (auto-evict) counts from it, across controller failovers.
 	OfflineSince time.Time `json:",omitempty"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// LocalAgent marks a node the controller does not reach over SSH: the
+	// Haify CSI node plugin running there applies its DRBD configuration
+	// locally and reports in over the API instead.
+	LocalAgent bool `json:",omitempty"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // SaveNode saves or updates a node

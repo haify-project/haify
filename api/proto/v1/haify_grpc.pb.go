@@ -35,6 +35,7 @@ const (
 	HaifyController_ListStorageJobs_FullMethodName           = "/v1.HaifyController/ListStorageJobs"
 	HaifyController_AddDiskToPool_FullMethodName             = "/v1.HaifyController/AddDiskToPool"
 	HaifyController_RegisterNode_FullMethodName              = "/v1.HaifyController/RegisterNode"
+	HaifyController_GetNodeAgentState_FullMethodName         = "/v1.HaifyController/GetNodeAgentState"
 	HaifyController_UnregisterNode_FullMethodName            = "/v1.HaifyController/UnregisterNode"
 	HaifyController_SetNodeLabels_FullMethodName             = "/v1.HaifyController/SetNodeLabels"
 	HaifyController_SetNodeAddress_FullMethodName            = "/v1.HaifyController/SetNodeAddress"
@@ -243,6 +244,10 @@ type HaifyControllerClient interface {
 	AddDiskToPool(ctx context.Context, in *AddDiskToPoolRequest, opts ...grpc.CallOption) (*AddDiskToPoolResponse, error)
 	// Node operations
 	RegisterNode(ctx context.Context, in *RegisterNodeRequest, opts ...grpc.CallOption) (*RegisterNodeResponse, error)
+	// GetNodeAgentState is polled by a local-agent node's CSI node plugin: the
+	// resources the node is a diskless client of, with each one's DRBD config.
+	// Each call also counts as the node's heartbeat.
+	GetNodeAgentState(ctx context.Context, in *GetNodeAgentStateRequest, opts ...grpc.CallOption) (*GetNodeAgentStateResponse, error)
 	UnregisterNode(ctx context.Context, in *UnregisterNodeRequest, opts ...grpc.CallOption) (*UnregisterNodeResponse, error)
 	SetNodeLabels(ctx context.Context, in *SetNodeLabelsRequest, opts ...grpc.CallOption) (*SetNodeLabelsResponse, error)
 	SetNodeAddress(ctx context.Context, in *SetNodeAddressRequest, opts ...grpc.CallOption) (*SetNodeAddressResponse, error)
@@ -746,6 +751,16 @@ func (c *haifyControllerClient) RegisterNode(ctx context.Context, in *RegisterNo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RegisterNodeResponse)
 	err := c.cc.Invoke(ctx, HaifyController_RegisterNode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) GetNodeAgentState(ctx context.Context, in *GetNodeAgentStateRequest, opts ...grpc.CallOption) (*GetNodeAgentStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNodeAgentStateResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetNodeAgentState_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2533,6 +2548,10 @@ type HaifyControllerServer interface {
 	AddDiskToPool(context.Context, *AddDiskToPoolRequest) (*AddDiskToPoolResponse, error)
 	// Node operations
 	RegisterNode(context.Context, *RegisterNodeRequest) (*RegisterNodeResponse, error)
+	// GetNodeAgentState is polled by a local-agent node's CSI node plugin: the
+	// resources the node is a diskless client of, with each one's DRBD config.
+	// Each call also counts as the node's heartbeat.
+	GetNodeAgentState(context.Context, *GetNodeAgentStateRequest) (*GetNodeAgentStateResponse, error)
 	UnregisterNode(context.Context, *UnregisterNodeRequest) (*UnregisterNodeResponse, error)
 	SetNodeLabels(context.Context, *SetNodeLabelsRequest) (*SetNodeLabelsResponse, error)
 	SetNodeAddress(context.Context, *SetNodeAddressRequest) (*SetNodeAddressResponse, error)
@@ -2929,6 +2948,9 @@ func (UnimplementedHaifyControllerServer) AddDiskToPool(context.Context, *AddDis
 }
 func (UnimplementedHaifyControllerServer) RegisterNode(context.Context, *RegisterNodeRequest) (*RegisterNodeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterNode not implemented")
+}
+func (UnimplementedHaifyControllerServer) GetNodeAgentState(context.Context, *GetNodeAgentStateRequest) (*GetNodeAgentStateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNodeAgentState not implemented")
 }
 func (UnimplementedHaifyControllerServer) UnregisterNode(context.Context, *UnregisterNodeRequest) (*UnregisterNodeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UnregisterNode not implemented")
@@ -3757,6 +3779,24 @@ func _HaifyController_RegisterNode_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HaifyControllerServer).RegisterNode(ctx, req.(*RegisterNodeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_GetNodeAgentState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNodeAgentStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetNodeAgentState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetNodeAgentState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetNodeAgentState(ctx, req.(*GetNodeAgentStateRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6956,6 +6996,10 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RegisterNode",
 			Handler:    _HaifyController_RegisterNode_Handler,
+		},
+		{
+			MethodName: "GetNodeAgentState",
+			Handler:    _HaifyController_GetNodeAgentState_Handler,
 		},
 		{
 			MethodName: "UnregisterNode",

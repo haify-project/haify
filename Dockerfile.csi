@@ -11,9 +11,30 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/haify-csi ./cmd/haify-csi
 
+# drbdadm, drbdsetup and drbdmeta, for the node plugin's local-agent mode
+# (nodes the controller cannot SSH into, such as RHCOS). Built from LINBIT's
+# release so the tools match the DRBD 9 module Haify loads; distributions ship
+# older ones that do not know every option Haify writes.
+FROM debian:bookworm-slim AS drbd-utils
+ARG DRBD_UTILS_VERSION=9.35.0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential flex libkeyutils-dev curl ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl -fsSL https://pkg.linbit.com/downloads/drbd/utils/drbd-utils-${DRBD_UTILS_VERSION}.tar.gz | tar xz --strip-components=1
+RUN ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
+        --without-manual --without-83support --without-84support --without-udev \
+        --without-xen --without-heartbeat --without-pacemaker --without-rgmanager \
+        --without-bashcompletion --without-windrbd && \
+    make -C user/shared && make -C user/v9 && \
+    mkdir -p /out && cp user/v9/drbdadm user/v9/drbdsetup user/v9/drbdmeta /out/
+
 # Node plugin needs mount/umount/mkfs from the host PATH; use a small base that
 # has util-linux + e2fsprogs + xfsprogs.
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        util-linux e2fsprogs xfsprogs && rm -rf /var/lib/apt/lists/*
+        util-linux e2fsprogs xfsprogs libkeyutils1 && rm -rf /var/lib/apt/lists/*
+COPY --from=drbd-utils /out/ /usr/sbin/
+# The agent writes only *.res files to the host's /etc/drbd.d, mounted here.
+RUN printf 'global { usage-count no; udev-always-use-vnr; }\ninclude "/etc/drbd.d/*.res";\n' > /etc/drbd.conf && \
+    mkdir -p /etc/drbd.d /var/lib/drbd /var/run/drbd
 COPY --from=build /out/haify-csi /usr/local/bin/haify-csi

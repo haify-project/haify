@@ -81,6 +81,14 @@ func (s *nodeServer) openMultiWriter(ctx context.Context, resource, staging stri
 		s.log.Debug("nodeServer.openMultiWriter: writing marker failed", zap.String("staging", staging), zap.Error(err))
 		return status.Errorf(codes.Internal, "mark staging: %v", err)
 	}
+	if s.agent != nil {
+		// The controller cannot read a local-agent node's role; this node
+		// sees every peer's.
+		local, err := s.agent.OtherPrimaries(ctx, resource)
+		s.log.Debug("nodeServer.openMultiWriter: Primaries seen from this node", zap.String("resource", resource),
+			zap.Strings("primaries", local), zap.Error(err))
+		others = append(others, local...)
+	}
 	if len(others) == 0 {
 		s.log.Debug("nodeServer.openMultiWriter: no other Primary, single-Primary attach", zap.String("resource", resource))
 		return nil
@@ -91,6 +99,13 @@ func (s *nodeServer) openMultiWriter(ctx context.Context, resource, staging stri
 		zap.Strings("other_primaries", others), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return status.Errorf(codes.Internal, "allow two primaries for %q (Primary on %s): %v", resource, strings.Join(others, ", "), err)
+	}
+	if s.agent != nil {
+		// The controller set it on the nodes it reaches. When the other
+		// Primary is a local-agent node too, only this one can.
+		if err := s.agent.SetTwoPrimaries(ctx, resource, true); err != nil {
+			return status.Errorf(codes.Internal, "allow two primaries for %q on this node: %v", resource, err)
+		}
 	}
 	s.log.Info("ReadWriteMany block volume Primary on two nodes for a live migration",
 		zap.String("resource", resource), zap.String("node", s.nodeName), zap.Strings("other_primaries", others))
@@ -112,6 +127,11 @@ func (s *nodeServer) closeMultiWriter(ctx context.Context, resource, staging str
 	// would make that fail.
 	rmErr := os.Remove(marker)
 	s.log.Debug("nodeServer.closeMultiWriter: marker removed", zap.String("marker", marker), zap.Error(rmErr))
+	if s.agent != nil {
+		if err := s.agent.SetTwoPrimaries(ctx, resource, false); err != nil {
+			s.log.Debug("nodeServer.closeMultiWriter: closing this node's end failed", zap.String("resource", resource), zap.Error(err))
+		}
+	}
 	primaries, err := s.primariesOf(ctx, resource)
 	if err != nil {
 		s.log.Warn("could not check the Primaries of a ReadWriteMany volume; two Primaries may stay allowed",

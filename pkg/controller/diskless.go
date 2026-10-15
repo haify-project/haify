@@ -264,7 +264,9 @@ func (rm *ResourceManager) DetachDisklessClient(ctx context.Context, resource, n
 	rm.controller.logger.Info("Detaching diskless client from resource",
 		zap.String("resource", resource), zap.String("node", node))
 
-	if lastVoteBesidesTwoReplicas(dbRes, node) {
+	// A local-agent node stays only while its CSI plugin keeps it up, so it
+	// is no vote to keep.
+	if lastVoteBesidesTwoReplicas(dbRes, node) && !rm.controller.nodes.isLocalAgentHost(node) {
 		log.Debug("ResourceManager.DetachDisklessClient: client is the third vote, keeping it as tiebreaker", zap.String("node", node))
 		return rm.clientToTiebreaker(ctx, dbRes, node)
 	}

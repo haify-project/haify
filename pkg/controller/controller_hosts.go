@@ -65,6 +65,12 @@ func (c *Controller) loadHostsFromDatabase(ctx context.Context) error {
 
 	var hosts []string
 	for _, node := range nodes {
+		if node.LocalAgent {
+			// Reached through its agent, never over SSH.
+			log.Debug("Controller.loadHostsFromDatabase: local-agent node, not an SSH host",
+				zap.String("node", node.Name), zap.String("host", node.Address))
+			continue
+		}
 		log.Debug("Controller.loadHostsFromDatabase: adding node host",
 			zap.String("node", node.Name), zap.String("host", node.Address))
 		hosts = append(hosts, node.Address)
@@ -197,8 +203,13 @@ func (c *Controller) loadFromDatabase(ctx context.Context) error {
 			Capacity:           make(map[string]interface{}),
 			Labels:             labels,
 			OfflineSince:       dbNode.OfflineSince,
+			LocalAgent:         dbNode.LocalAgent,
 		}
+		loaded := c.nodes.nodes[dbNode.Address]
 		c.nodes.mu.Unlock()
+		if loaded.LocalAgent {
+			c.nodes.markLocalAgent(loaded)
+		}
 
 		// Build hostname -> IP address mapping for DRBD config
 		log.Debug("Controller.loadFromDatabase: mapping node names",

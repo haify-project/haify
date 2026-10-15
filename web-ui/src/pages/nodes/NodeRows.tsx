@@ -101,7 +101,7 @@ export function NodeRows({
           {node.address}
         </TableCell>
         <TableCell className="hidden font-mono tabular-nums text-muted-foreground @min-[1000px]:table-cell">
-          {node.version || '-'}
+          {node.version || (node.localAgent ? 'Local agent' : '-')}
         </TableCell>
         <TableCell>
           {readiness ? (

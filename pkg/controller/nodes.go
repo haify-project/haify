@@ -49,6 +49,10 @@ type NodeInfo struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// OfflineSince is when the node stopped answering; zero while it answers.
 	OfflineSince time.Time `json:"offline_since,omitempty"`
+	// LocalAgent is a node the controller never SSHes into: the CSI node
+	// plugin there is its agent (node_local_agent.go). It can only be a
+	// diskless client.
+	LocalAgent bool `json:"local_agent,omitempty"`
 }
 
 // NodeManager manages cluster nodes
@@ -56,6 +60,11 @@ type NodeManager struct {
 	controller *Controller
 	mu         sync.RWMutex
 	nodes      map[string]*NodeInfo
+	// agents holds every address, name and hostname of the local-agent nodes.
+	// It has its own lock because the deployment client consults it on every
+	// command, including ones run while mu is held.
+	agentMu sync.RWMutex
+	agents  map[string]bool
 }
 
 // NewNodeManager creates a new node manager
@@ -63,6 +72,7 @@ func NewNodeManager(ctrl *Controller) *NodeManager {
 	return &NodeManager{
 		controller: ctrl,
 		nodes:      make(map[string]*NodeInfo),
+		agents:     make(map[string]bool),
 	}
 }
 
@@ -157,10 +167,16 @@ func (nm *NodeManager) RegisterNodeWithReplicationAddress(ctx context.Context, n
 		Labels:             labels,
 	}
 
-	// Save to in-memory cache
+	// Save to in-memory cache. A node its CSI plugin registered as a local
+	// agent is managed over SSH from now on.
 	nm.mu.Lock()
+	previous := nm.nodes[address]
 	nm.nodes[address] = nodeInfo
 	nm.mu.Unlock()
+	if previous != nil && previous.LocalAgent {
+		log.Debug("NodeManager.RegisterNodeWithReplicationAddress: local-agent node now SSH-managed", zap.String("address", address))
+		nm.unmarkLocalAgent(previous)
+	}
 
 	// Update controller's hosts list if not already present
 	nm.controller.hostsLock.Lock()
@@ -336,6 +352,9 @@ func (nm *NodeManager) UnregisterNode(ctx context.Context, address string) error
 		zap.String("name", node.Name))
 
 	delete(nm.nodes, resolved)
+	if node.LocalAgent {
+		nm.unmarkLocalAgent(node)
+	}
 
 	nm.controller.hostsLock.Lock()
 	filteredHosts := make([]string, 0, len(nm.controller.hosts))
@@ -473,6 +492,7 @@ func nodeRecord(n *NodeInfo) *database.Node {
 		LastSeen:           n.LastSeen,
 		Version:            n.Version,
 		OfflineSince:       n.OfflineSince,
+		LocalAgent:         n.LocalAgent,
 	}
 	if len(n.Labels) > 0 {
 		if encoded, err := json.Marshal(n.Labels); err == nil {

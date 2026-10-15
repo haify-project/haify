@@ -2709,6 +2709,37 @@
         ]
       }
     },
+    "/v1/nodes/{node}/agent-state": {
+      "get": {
+        "summary": "GetNodeAgentState is polled by a local-agent node's CSI node plugin: the\nresources the node is a diskless client of, with each one's DRBD config.\nEach call also counts as the node's heartbeat.",
+        "operationId": "HaifyController_GetNodeAgentState",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetNodeAgentStateResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "node",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
     "/v1/nodes/{node}/health": {
       "get": {
         "operationId": "HaifyController_HealthCheck",
@@ -7989,6 +8020,18 @@
         }
       }
     },
+    "v1AgentResource": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "config": {
+          "type": "string",
+          "description": "config is the resource's DRBD config, the same text every participant has\nin /etc/drbd.d/\u003cname\u003e.res."
+        }
+      }
+    },
     "v1AppInfo": {
       "type": "object",
       "properties": {
@@ -9827,6 +9870,24 @@
         }
       }
     },
+    "v1GetNodeAgentStateResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1AgentResource"
+          }
+        }
+      }
+    },
     "v1GetNodeResponse": {
       "type": "object",
       "properties": {
@@ -11408,6 +11469,10 @@
             "type": "string"
           },
           "description": "replication_paths are further addresses DRBD uses for this node, one per\nadditional replication network; each pair of nodes gets a path per\nnetwork both are on."
+        },
+        "localAgent": {
+          "type": "boolean",
+          "description": "local_agent: the controller does not reach this node over SSH; its CSI\nnode plugin applies DRBD changes there (see RegisterNodeRequest)."
         }
       }
     },
@@ -11927,6 +11992,14 @@
         "replicationAddress": {
           "type": "string",
           "description": "replication_address is the address DRBD uses for this node in generated\n.res files, letting replication traffic ride a dedicated NIC/subnet while\nthe controller keeps reaching the node over `address` (SSH/management).\nEmpty means \"same as address\", which is the historical behavior."
+        },
+        "localAgent": {
+          "type": "boolean",
+          "description": "local_agent registers a node the controller cannot reach over SSH, such\nas an OpenShift (RHCOS) worker: its own CSI node plugin applies DRBD\nchanges there, and it can only be a diskless client. A node already\nregistered for SSH stays as it is."
+        },
+        "hostname": {
+          "type": "string",
+          "description": "hostname is the node's own host name, which DRBD matches in its config.\nOnly a local-agent node sends it; for the others the controller asks."
         }
       },
       "title": "Node messages"

@@ -47,11 +47,13 @@ func (rm *ResourceManager) selectTiebreaker(ctx context.Context, nodes []string)
 	var onlineStorage, onlineCompute, offlineStorage, offlineCompute []string
 	for _, n := range all {
 		// A drained node takes nothing new, not even a diskless vote: it is
-		// about to go down, and a tiebreaker that goes down costs quorum.
-		if n == nil || inUse[n.Name] || n.State == NodeStateMaintenance {
+		// about to go down, and a tiebreaker that goes down costs quorum. A
+		// local-agent node only ever serves its own pods, and its vote would
+		// come and go with the CSI plugin there.
+		if n == nil || inUse[n.Name] || n.State == NodeStateMaintenance || n.LocalAgent {
 			if n != nil {
 				log.Debug("selectTiebreaker: candidate skipped", zap.String("node", n.Name), zap.Bool("member", inUse[n.Name]),
-					zap.String("state", string(n.State)))
+					zap.String("state", string(n.State)), zap.Bool("local_agent", n.LocalAgent))
 			}
 			continue
 		}

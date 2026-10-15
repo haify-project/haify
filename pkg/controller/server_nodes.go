@@ -13,8 +13,14 @@ import (
 func (s *Server) RegisterNode(ctx context.Context, req *haifypb.RegisterNodeRequest) (*haifypb.RegisterNodeResponse, error) {
 	log := s.serverLog()
 	log.Debug("RegisterNode: registering", zap.String("node", req.Name), zap.String("address", req.Address),
-		zap.String("replication_address", req.ReplicationAddress))
-	node, err := s.nodes.RegisterNodeWithReplicationAddress(ctx, req.Name, req.Address, req.ReplicationAddress)
+		zap.String("replication_address", req.ReplicationAddress), zap.Bool("local_agent", req.LocalAgent))
+	var node *NodeInfo
+	var err error
+	if req.LocalAgent {
+		node, err = s.nodes.RegisterLocalAgentNode(ctx, req.Name, req.Address, req.Hostname)
+	} else {
+		node, err = s.nodes.RegisterNodeWithReplicationAddress(ctx, req.Name, req.Address, req.ReplicationAddress)
+	}
 	if err != nil {
 		log.Debug("RegisterNode: failed", zap.String("node", req.Name), zap.Error(err))
 		return &haifypb.RegisterNodeResponse{
@@ -27,19 +33,26 @@ func (s *Server) RegisterNode(ctx context.Context, req *haifypb.RegisterNodeRequ
 	return &haifypb.RegisterNodeResponse{
 		Success: true,
 		Message: "Node registered successfully",
-		Node: &haifypb.NodeInfo{
-			Name:               node.Name,
-			Address:            node.Address,
-			ReplicationAddress: node.ReplicationAddress,
-			ReplicationPaths:   node.ReplicationPaths,
-			Hostname:           node.Hostname,
-			State:              string(node.State),
-			LastSeen:           node.LastSeen.Unix(),
-			OfflineSince:       unixOrZero(node.OfflineSince),
-			Version:            node.Version,
-			Labels:             node.Labels,
-		},
+		Node:    nodeInfoPB(node),
 	}, nil
+}
+
+// GetNodeAgentState is what the agent on a local-agent node polls: the
+// resources it must have up and their configuration (node_local_agent.go).
+func (s *Server) GetNodeAgentState(ctx context.Context, req *haifypb.GetNodeAgentStateRequest) (*haifypb.GetNodeAgentStateResponse, error) {
+	log := s.serverLog()
+	log.Debug("GetNodeAgentState: agent polling", zap.String("node", req.Node))
+	resources, err := s.resources.AgentState(ctx, req.Node)
+	if err != nil {
+		log.Debug("GetNodeAgentState: failed", zap.String("node", req.Node), zap.Error(err))
+		return &haifypb.GetNodeAgentStateResponse{Success: false, Message: err.Error()}, nil
+	}
+	out := make([]*haifypb.AgentResource, 0, len(resources))
+	for _, r := range resources {
+		out = append(out, &haifypb.AgentResource{Name: r.Name, Config: r.Config})
+	}
+	log.Debug("GetNodeAgentState: answered", zap.String("node", req.Node), zap.Int("resources", len(out)))
+	return &haifypb.GetNodeAgentStateResponse{Success: true, Resources: out}, nil
 }
 
 func (s *Server) UnregisterNode(ctx context.Context, req *haifypb.UnregisterNodeRequest) (*haifypb.UnregisterNodeResponse, error) {
@@ -102,18 +115,7 @@ func (s *Server) GetNode(ctx context.Context, req *haifypb.GetNodeRequest) (*hai
 	return &haifypb.GetNodeResponse{
 		Success: true,
 		Message: "Node found",
-		Node: &haifypb.NodeInfo{
-			Name:               node.Name,
-			Address:            node.Address,
-			Hostname:           node.Hostname,
-			State:              string(node.State),
-			LastSeen:           node.LastSeen.Unix(),
-			OfflineSince:       unixOrZero(node.OfflineSince),
-			Version:            node.Version,
-			Labels:             node.Labels,
-			ReplicationAddress: node.ReplicationAddress,
-			ReplicationPaths:   node.ReplicationPaths,
-		},
+		Node:    nodeInfoPB(node),
 	}, nil
 }
 
@@ -188,18 +190,7 @@ func (s *Server) SetNodeLabels(ctx context.Context, req *haifypb.SetNodeLabelsRe
 	return &haifypb.SetNodeLabelsResponse{
 		Success: true,
 		Message: "Node labels updated",
-		Node: &haifypb.NodeInfo{
-			Name:               node.Name,
-			Address:            node.Address,
-			Hostname:           node.Hostname,
-			State:              string(node.State),
-			LastSeen:           node.LastSeen.Unix(),
-			OfflineSince:       unixOrZero(node.OfflineSince),
-			Version:            node.Version,
-			Labels:             node.Labels,
-			ReplicationAddress: node.ReplicationAddress,
-			ReplicationPaths:   node.ReplicationPaths,
-		},
+		Node:    nodeInfoPB(node),
 	}, nil
 }
 
@@ -219,17 +210,7 @@ func (s *Server) ListNodes(ctx context.Context, req *haifypb.ListNodesRequest) (
 	for _, n := range nodes {
 		log.Debug("ListNodes: node", zap.String("node", n.Name), zap.String("address", n.Address),
 			zap.String("state", string(n.State)))
-		pbNodes = append(pbNodes, &haifypb.NodeInfo{
-			Name:               n.Name,
-			Address:            n.Address,
-			Hostname:           n.Hostname,
-			State:              string(n.State),
-			LastSeen:           n.LastSeen.Unix(),
-			OfflineSince:       unixOrZero(n.OfflineSince),
-			Version:            n.Version,
-			Labels:             n.Labels,
-			ReplicationAddress: n.ReplicationAddress,
-		})
+		pbNodes = append(pbNodes, nodeInfoPB(n))
 	}
 
 	log.Debug("ListNodes: listed", zap.Int("count", len(pbNodes)))
@@ -277,4 +258,21 @@ func unixOrZero(t time.Time) int64 {
 		return 0
 	}
 	return t.Unix()
+}
+
+// nodeInfoPB is the API form of a node.
+func nodeInfoPB(n *NodeInfo) *haifypb.NodeInfo {
+	return &haifypb.NodeInfo{
+		Name:               n.Name,
+		Address:            n.Address,
+		ReplicationAddress: n.ReplicationAddress,
+		ReplicationPaths:   n.ReplicationPaths,
+		Hostname:           n.Hostname,
+		State:              string(n.State),
+		LastSeen:           n.LastSeen.Unix(),
+		OfflineSince:       unixOrZero(n.OfflineSince),
+		Version:            n.Version,
+		Labels:             n.Labels,
+		LocalAgent:         n.LocalAgent,
+	}
 }

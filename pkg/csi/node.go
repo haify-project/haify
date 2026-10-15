@@ -28,6 +28,10 @@ type nodeServer struct {
 
 	// qos keeps the I/O limits of published volumes current (qos_reconcile.go).
 	qos *qosTracker
+
+	// agent is set on a local-agent node, one the controller cannot SSH into:
+	// DRBD is then brought up and its role changed here (node_agent.go).
+	agent *LocalAgent
 }
 
 // NewNodeServer returns the CSI Node service for this node.
@@ -100,6 +104,9 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "attach diskless client: %v", err)
 		}
+		if err := s.agentAttached(ctx, res); err != nil {
+			return nil, err
+		}
 	}
 
 	if isMultiWriterBlock(req.GetVolumeCapability()) {
@@ -119,7 +126,7 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 	// node lacks quorum the controller refuses, and we surface that error rather
 	// than risk a dual-Primary split-brain.
 	start := time.Now()
-	err = s.backend.PromoteForNode(ctx, res, s.nodeName)
+	err = s.promote(ctx, res)
 	s.log.Debug("nodeServer.NodeStageVolume: quorum-guarded promote returned", zap.String("resource", res),
 		zap.String("node", s.nodeName), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
@@ -165,7 +172,7 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 		// Roll the role back so another node can take over.
 		s.log.Debug("nodeServer.NodeStageVolume: format and mount failed, demoting", zap.String("device", device),
 			zap.String("staging", staging), zap.Duration("took", time.Since(start)), zap.Error(err))
-		serr := s.backend.SetSecondary(ctx, res, s.nodeName)
+		serr := s.demote(ctx, res)
 		s.log.Debug("nodeServer.NodeStageVolume: rollback demote returned", zap.String("resource", res), zap.Error(serr))
 		return nil, status.Errorf(codes.Internal, "format+mount: %v", err)
 	}
@@ -188,7 +195,7 @@ func (s *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstage
 		return nil, status.Errorf(codes.Internal, "unmount staging: %v", err)
 	}
 	start := time.Now()
-	err := s.backend.SetSecondary(ctx, res, s.nodeName)
+	err := s.demote(ctx, res)
 	s.log.Debug("nodeServer.NodeUnstageVolume: demote returned", zap.String("resource", res), zap.String("node", s.nodeName),
 		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
@@ -211,6 +218,8 @@ func (s *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstage
 		if err != nil {
 			s.log.Warn("detach diskless client on unstage failed (leaving it in place)",
 				zap.String("resource", res), zap.String("node", s.nodeName), zap.Error(err))
+		} else {
+			s.agentDetached(ctx, res)
 		}
 	}
 	return &csi.NodeUnstageVolumeResponse{}, nil
