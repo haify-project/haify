@@ -236,7 +236,7 @@
       "featureList": [
         "永不掉线的共享文件夹 (NFS / SMB)",
         "虚拟机磁盘多机冗余与热迁移（Proxmox VE、KVM、OpenStack）",
-        "Kubernetes 持久卷 (CSI)",
+        "Kubernetes 持久卷 (CSI)，节点宕机半分钟内接管",
         "数据库与任意服务的自动故障切换",
         "定时备份到 S3 / SMB / WebDAV 与异地实时副本",
         "iSCSI / NVMe-oF 块共享，替代存储阵列"
@@ -250,7 +250,7 @@
         { "@type": "Question", "name": "Haify 和 Ceph、LINSTOR 有什么区别？", "acceptedAnswer": { "@type": "Answer", "text": "与 Ceph 相比更轻：一个控制器管理全部节点，不用维护 MON/OSD/MGR 等多种守护进程。与 LINSTOR 相比，存储节点上不需要常驻代理进程。" } },
         { "@type": "Question", "name": "服务器坏了会怎样？多久恢复？", "acceptedAnswer": { "@type": "Answer", "text": "存储和跑在上面的服务，连同对外访问的地址，会自动转到另一台健康的服务器上，大约 70 秒；客户端始终访问同一个地址，不用改配置。仲裁机制防止两台服务器同时写同一份数据（脑裂）。" } },
         { "@type": "Question", "name": "支持哪些虚拟化平台？", "acceptedAnswer": { "@type": "Answer", "text": "Proxmox VE（存储插件，PVE 网页里带 Haify 面板）、普通 KVM/libvirt，以及 OpenStack（Cinder 驱动，Horizon 里带面板）。三者都支持虚拟机热迁移；宿主机坏了，虚拟机能带着数据在另一台上重新启动。" } },
-        { "@type": "Question", "name": "Haify 支持 Kubernetes 吗？", "acceptedAnswer": { "@type": "Answer", "text": "支持。Haify 提供 CSI 驱动：动态创建持久卷，支持快照、克隆和扩容；Pod 换到别的节点，数据跟着过去。" } },
+        { "@type": "Question", "name": "Haify 支持 Kubernetes 吗？", "acceptedAnswer": { "@type": "Answer", "text": "支持，OpenShift 也能用。持久卷支持快照、克隆、扩容和加密；不用重建就能改副本数和限速；快照可以存到集群外，在另一个集群里恢复。节点断电后大约半分钟，Pod 带着数据在另一台机器上跑起来，不用等 Kubernetes 默认的 5 分钟。" } },
         { "@type": "Question", "name": "会丢数据吗？", "acceptedAnswer": { "@type": "Answer", "text": "写入返回时，数据已经在多台服务器上，所以坏一台不丢数据。另外可以定时备份到 S3、SMB 或 WebDAV，或在另一个机房保留一份实时副本，整个集群没了也能恢复。" } }
       ]
     }
@@ -374,7 +374,7 @@
         </div></div>
       <div class="card rv" style="transition-delay:0.1s"><div class="no">/03</div>
         <div class="ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z"/><path d="M12 20V11M12 11l8-4.5M12 11L4 6.5"/></svg></div>
-        <h4>Kubernetes 上的数据库和应用</h4><p>持久卷不再绑死在一个节点上。Pod 被调度到别的节点，数据跟着过去。</p>
+        <h4>Kubernetes 上的数据库和应用</h4><p>持久卷不再绑死在一个节点上。节点断电，大约半分钟后 Pod 带着数据在另一台机器上跑起来；跑在 Kubernetes 里的虚拟机也能在节点之间热迁移。</p>
         <div class="go">
           <a href="https://haify-project.github.io/haify/kubernetes/">用在 Kubernetes ›</a>
         </div></div>
@@ -492,7 +492,7 @@ haify <span class="p">gateway nfs create</span> <span class="f">--resource</span
       <div class="faq-item rv"><h3>支持哪些虚拟化平台？</h3>
         <p>Proxmox VE（存储插件，PVE 网页里带 Haify 面板）、普通 KVM/libvirt，以及 OpenStack（Cinder 驱动，Horizon 里带面板）。三者都支持虚拟机热迁移；宿主机坏了，虚拟机能带着数据在另一台上重新启动。</p></div>
       <div class="faq-item rv"><h3>Haify 支持 Kubernetes 吗？</h3>
-        <p>支持。Haify 提供 CSI 驱动：动态创建持久卷，支持快照、克隆和扩容；Pod 换到别的节点，数据跟着过去。</p></div>
+        <p>支持，OpenShift 也能用。持久卷支持快照、克隆、扩容和加密；不用重建就能改副本数和限速；快照可以存到集群外，在另一个集群里恢复。节点断电后大约半分钟，Pod 带着数据在另一台机器上跑起来，不用等 Kubernetes 默认的 5 分钟。</p></div>
       <div class="faq-item rv"><h3>会丢数据吗？</h3>
         <p>写入返回时，数据已经在多台服务器上，所以坏一台不丢数据。另外可以定时备份到 S3、SMB 或 WebDAV，或在另一个机房保留一份实时副本，整个集群没了也能恢复。</p></div>
     </div>

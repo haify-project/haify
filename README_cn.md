@@ -19,7 +19,8 @@ Haify 是一套坏一台服务器也照常工作的存储。它用 DRBD 9 把卷
 - **快照与备份**：LVM / ZFS 快照和保留策略；定时、增量备份到 S3、SMB 或 WebDAV，可在重建的或另一个集群上恢复；也可以把资源直接复制到另一个 Haify 集群。
 - **跨站点**：通过能穿过 NAT 的 TCP 隧道做异步容灾副本。
 - **数据完整性**：定时做 DRBD verify，发现不一致的块后可按需重同步；副本降级、Primary 丢失、数据不同步、存储池写满时发出告警。
-- **Kubernetes 和 Docker**：CSI 驱动（清单或 Helm chart），支持快照、克隆、扩容、原始块设备和远程（无盘）访问；Docker 卷插件，卷跟着容器在主机间走。
+- **Kubernetes**：CSI 驱动（清单或 Helm chart，也支持 OpenShift 和 MicroShift），支持快照、多个卷同一时刻的组快照、克隆、扩容、原始块设备和远程（无盘）访问。按 StorageClass 开启加密和复制链路 TLS。正在使用的卷可以通过 VolumeAttributesClass 改副本数和 I/O 限速。快照可以送到 S3、SMB 或 WebDAV 备份目标，在另一个集群里恢复；卷也可以在另一个机房保留一份异步副本。节点宕机后，上面的 Pod 大约 30 秒就在另一个节点上跑起来，不用等 Kubernetes 默认的 5 分钟。KubeVirt 和 OpenShift Virtualization 的虚拟机可以在 ReadWriteMany 块设备卷上热迁移。
+- **Docker**：卷插件，卷跟着容器在主机间走。
 - **虚拟机**：Proxmox VE 存储插件（PVE 网页里带 Haify 面板）；XCP-ng 存储驱动；普通 KVM 用 libvirt 钩子；OpenStack 有 Cinder 驱动和 Horizon 面板。四者都支持热迁移。
 - **AI**：给 Claude Code、ChatGPT 等用的 MCP 服务（本地，或带角色令牌和 OAuth 的远程），以及 Web UI 里的 Copilot（作为单独的可选服务运行）。
 - **运维**：令牌认证、RBAC、审计日志、TLS、Prometheus 指标，通知可发到飞书 / Slack / 企业微信 / 钉钉 / Webhook。
