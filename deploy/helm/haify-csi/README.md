@@ -51,6 +51,8 @@ entry loses its name and every other field.
 | `token.existingSecret` / `token.value` | | API token, when the controller requires one |
 | `image.repository`, `image.tag`, `image.pullPolicy` | `haify-csi`, `latest`, `IfNotPresent` | The plugin image |
 | `storageClasses` | one class `haify` on pool `vg0`, 2 replicas | `name`, `pool`, `replicas`, `default`, `reclaimPolicy`, `volumeBindingMode`, `allowVolumeExpansion`, and any other driver `parameters` |
+| `volumeAttributesClasses` | none | VolumeAttributesClasses to create, each a `name` and `parameters` (`replicas`, `resourceProfile`, `readIOPS`, `writeIOPS`, `readBytesPerSecond`, `writeBytesPerSecond`). Needs Kubernetes 1.34+ |
+| `nodePlugin.qosInterval` | `30s` | How often the node plugin re-reads the I/O limits of published volumes, so a changed class reaches running Pods. `0s` applies limits only at publish |
 | `snapshotClass.enabled` | `true` | Created only when the cluster has the snapshot CRDs |
 | `snapshotClass.name`, `snapshotClass.default`, `snapshotClass.deletionPolicy` | `haify-snapshot`, `false`, `Delete` | The VolumeSnapshotClass's name, whether it is the default class, and whether deleting a `VolumeSnapshot` also deletes the snapshot |
 | `groupSnapshots.enabled` | `auto` | Volume group snapshots (several PVCs at one instant). `auto` turns on the `csi-snapshotter`'s `CSIVolumeGroupSnapshot` gate and creates the class only when the cluster serves `groupSnapshots.apiVersion`; with the gate on and the CRDs missing, the sidecar stops handling ordinary snapshots too. The snapshot-controller needs the same gate. See "Volume group snapshots" in `deploy/k8s/README.md` |
@@ -88,6 +90,28 @@ volumes on the disks (LUKS2 beneath DRBD, LVM pools only); one with
 the chart creates no Secret for them. `values.yaml` has a commented example,
 and `deploy/k8s/README.md` explains both, where the keys are and what losing a
 node's root disk means.
+
+## Changing a volume in place
+
+On Kubernetes 1.34 and later, naming a VolumeAttributesClass in a PVC changes
+that volume's replicas, resource profile or I/O limits while it stays in use:
+
+```yaml
+volumeAttributesClasses:
+  - name: haify-three-copies
+    parameters:
+      replicas: "3"
+```
+
+```bash
+kubectl patch pvc data -p '{"spec":{"volumeAttributesClassName":"haify-three-copies"}}'
+```
+
+The chart's csi-resizer (v2.0.0) does the change. What each parameter does,
+and what shrinking will not do, is in `deploy/k8s/README.md`. The chart's
+external-provisioner (v5) does not apply a class at creation; name the class
+after the PVC is bound, or set `sidecars.provisioner` to a v6 image on
+Kubernetes 1.34+.
 
 ## Changing a StorageClass
 

@@ -50,6 +50,7 @@ spec:
           args:
             - --endpoint=unix:///csi/csi.sock
             - --haify-controller=haify-controller:{{ .Values.controller.port }}
+            - --qos-interval={{ .Values.nodePlugin.qosInterval | default "30s" }}
           securityContext: { privileged: true }
           env:
             {{- include "haify-csi.tokenEnv" . | nindent 12 }}

@@ -20,6 +20,10 @@ func main() {
 	haifyAddr := flag.String("haify-controller", "haify-controller:3374", "haify-controller gRPC address")
 	nodeName := flag.String("node-name", os.Getenv("NODE_NAME"), "Kubernetes node name")
 	nodeIP := flag.String("node-ip", os.Getenv("NODE_IP"), "this node's storage IP, registered with the controller at startup")
+	qosInterval := flag.Duration("qos-interval", 30*time.Second,
+		"how often to re-read the I/O limits of published volumes (changed through a VolumeAttributesClass) and rewrite io.max; 0 applies them only at publish")
+	qosStateDir := flag.String("qos-state-dir", "/csi/qos",
+		"where the published volumes whose I/O limits are kept current are recorded, so a restarted plugin still knows them; empty keeps them in memory")
 	flag.Parse()
 
 	log := logging.Production()
@@ -57,14 +61,17 @@ func main() {
 			zap.Duration("took", time.Since(start)))
 	}
 
+	ns := csi.NewNodeServer(haify, csi.NewMounter(), *nodeName, log)
 	d := csi.NewDriver(*endpoint, log,
 		csi.NewIdentityServer(),
 		nil,
-		csi.NewNodeServer(haify, csi.NewMounter(), *nodeName, log),
+		ns,
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	log.Debug("main: enabling I/O limit upkeep", zap.Duration("interval", *qosInterval), zap.String("state_dir", *qosStateDir))
+	csi.EnableQoSReconcile(ctx, ns, *qosStateDir, *qosInterval)
 	if err := d.Run(ctx); err != nil {
 		log.Error("driver exited", zap.Error(err))
 		os.Exit(1)

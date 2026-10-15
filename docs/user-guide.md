@@ -2494,8 +2494,19 @@ volume is published, the node plugin writes these limits for the volume's
 device into the pod's cgroup (`io.max`). This needs cgroup v2 with the `io`
 controller enabled for pod cgroups, and the node plugin's `/sys/fs/cgroup`
 mount from `deploy/k8s/30-node.yaml`. Without them, the volume is still
-published, but without limits, and the node plugin logs why. The limits are
-fixed per StorageClass; to change them, move the volume to another class.
+published, but without limits, and the node plugin logs why.
+
+**Changing a volume in place.** On Kubernetes 1.34 and later, a
+VolumeAttributesClass named in a PVC's `volumeAttributesClassName` changes an
+existing volume while it stays in use: `replicas` adds or removes diskful
+replicas, `resourceProfile` moves the resource into a profile, and the four
+I/O limits change (`max` lifts one). Running Pods get new limits within the
+node plugin's `--qos-interval` (default 30 seconds). Shrinking never goes below
+two replicas, never removes the replica where the volume is in use, and never
+removes a node the PV's node affinity names: for a volume without
+`allowRemoteVolumeAccess`, its Pods stay on the nodes it was first created
+on, so extra replicas add safety but no new places to run. Details and limits
+are in `deploy/k8s/README.md`.
 
 **Snapshots and health.** A `VolumeSnapshot` is a snapshot of one replica's
 backing volume. A `VolumeGroupSnapshot` snapshots several PVCs at the same

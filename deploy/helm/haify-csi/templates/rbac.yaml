@@ -31,6 +31,11 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["csistoragecapacities"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # external-provisioner v6+ reads a PVC's VolumeAttributesClass to pass its
+  # parameters to CreateVolume.
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattributesclasses"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get"]

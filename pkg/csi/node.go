@@ -25,12 +25,15 @@ type nodeServer struct {
 	// rule, so losing this on a restart weakens the check but does not remove it.
 	mu           sync.Mutex
 	singleWriter map[string]string
+
+	// qos keeps the I/O limits of published volumes current (qos_reconcile.go).
+	qos *qosTracker
 }
 
 // NewNodeServer returns the CSI Node service for this node.
 func NewNodeServer(b HaifyBackend, m Mounter, nodeName string, log *zap.Logger) csi.NodeServer {
 	return &nodeServer{backend: b, mounter: m, nodeName: nodeName, log: log,
-		singleWriter: map[string]string{}}
+		singleWriter: map[string]string{}, qos: newQoSTracker(log)}
 }
 
 func (s *nodeServer) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
@@ -284,14 +287,7 @@ func (s *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublish
 			zap.String("target", target), zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "bind mount: %v", err)
 	}
-	if hasQoS(req.GetVolumeContext()) {
-		device, err := s.deviceFor(ctx, req.GetVolumeId())
-		s.log.Debug("nodeServer.NodePublishVolume: volume has I/O limits", zap.String("resource", req.GetVolumeId()),
-			zap.String("device", device), zap.Error(err))
-		if err == nil {
-			s.applyQoS(req.GetVolumeContext(), device, target)
-		}
-	}
+	s.publishQoS(ctx, req, "")
 	s.log.Debug("nodeServer.NodePublishVolume: published", zap.String("resource", req.GetVolumeId()), zap.String("target", target))
 	return &csi.NodePublishVolumeResponse{}, nil
 }
@@ -315,6 +311,7 @@ func (s *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpubli
 		delete(s.singleWriter, req.GetVolumeId())
 	}
 	s.mu.Unlock()
+	s.qos.forget(target)
 	// CSI spec requires the SP to delete the target_path after a successful unpublish.
 	err := os.Remove(target)
 	s.log.Debug("nodeServer.NodeUnpublishVolume: removed target path", zap.String("target", target),
@@ -413,7 +410,7 @@ func (s *nodeServer) publishBlock(ctx context.Context, req *csi.NodePublishVolum
 			zap.Error(err))
 		return nil, status.Errorf(codes.Internal, "bind mount %s onto %s: %v", device, target, err)
 	}
-	s.applyQoS(req.GetVolumeContext(), device, target)
+	s.publishQoS(ctx, req, device)
 	s.log.Debug("nodeServer.publishBlock: published", zap.String("device", device), zap.String("target", target),
 		zap.Bool("readonly", req.GetReadonly()))
 	return &csi.NodePublishVolumeResponse{}, nil

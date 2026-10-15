@@ -22,7 +22,9 @@ import (
 // cgroup v2 io controller can limit it: the node plugin writes
 // "<major>:<minor> rbps=… wbps=… riops=… wiops=…" for the volume's DRBD
 // device into the pod-level cgroup's io.max when it publishes the volume.
-// That limits the pod, every container in it, on that one device.
+// That limits the pod, every container in it, on that one device. A
+// VolumeAttributesClass can change the limits later; the node plugin then
+// rewrites io.max on its next pass (qos_reconcile.go).
 //
 // It needs cgroup v2 with the io controller enabled for the pod cgroups, and
 // the host's /sys/fs/cgroup in the node plugin (deploy/k8s/30-node.yaml).
@@ -74,27 +76,8 @@ var cgroupRoot = "/sys/fs/cgroup"
 
 var podUIDRE = regexp.MustCompile(`/pods/([0-9a-fA-F-]{36})/`)
 
-// applyQoS writes the volume's limits for its device into the cgroup of the
-// pod whose publish target this is.
-func (s *nodeServer) applyQoS(volumeContext map[string]string, device, target string) {
-	var parts []string
-	for _, param := range []string{"readBytesPerSecond", "writeBytesPerSecond", "readIOPS", "writeIOPS"} {
-		if v := volumeContext[param]; v != "" {
-			parts = append(parts, qosParams[param]+"="+v)
-		}
-	}
-	if len(parts) == 0 {
-		s.log.Debug("nodeServer.applyQoS: no I/O limits", zap.String("target", target))
-		return
-	}
-	s.log.Debug("nodeServer.applyQoS: applying I/O limits", zap.String("device", device), zap.String("target", target),
-		zap.Strings("limits", parts))
-	if err := writeIOMax(device, target, strings.Join(parts, " ")); err != nil {
-		s.log.Warn("I/O limits for the volume were not applied; the volume is published without them",
-			zap.String("target", target), zap.String("device", device), zap.Error(err))
-	}
-}
-
+// writeIOMax writes "<major>:<minor> <limits>" for device into the io.max of
+// the pod whose publish target this is.
 func writeIOMax(device, target, limits string) error {
 	log := zap.L()
 	m := podUIDRE.FindStringSubmatch(target)
@@ -157,13 +140,4 @@ func podCgroup(uid string) (string, error) {
 	}
 	zap.L().Debug("podCgroup: found", zap.String("pod_uid", uid), zap.String("cgroup", found))
 	return found, nil
-}
-
-func hasQoS(volumeContext map[string]string) bool {
-	for param := range qosParams {
-		if volumeContext[param] != "" {
-			return true
-		}
-	}
-	return false
 }

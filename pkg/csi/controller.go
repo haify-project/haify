@@ -89,7 +89,14 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		}}, nil
 	}
 
-	params, err := ParseVolumeParams(req.GetParameters())
+	// A PVC that names a VolumeAttributesClass from the start brings its
+	// parameters here; they override the StorageClass's (modify.go).
+	scParams, err := mergeMutableParameters(req.GetParameters(), req.GetMutableParameters())
+	if err != nil {
+		s.log.Debug("controllerServer.CreateVolume: invalid mutable parameters", zap.String("resource", name), zap.Error(err))
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	params, err := ParseVolumeParams(scParams)
 	if err != nil {
 		s.log.Debug("controllerServer.CreateVolume: invalid parameters", zap.String("resource", name), zap.Error(err))
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -111,15 +118,15 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		if profileErr != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "resource profile %q: %v", params.ResourceProfile, profileErr)
 		}
-		if _, explicit := req.GetParameters()["pool"]; !explicit {
+		if _, explicit := scParams["pool"]; !explicit {
 			s.log.Debug("controllerServer.CreateVolume: pool from profile", zap.String("pool", profile.Pool))
 			params.Pool = profile.Pool
 		}
-		if _, explicit := req.GetParameters()["replicas"]; !explicit && profile.Replicas > 0 {
+		if _, explicit := scParams["replicas"]; !explicit && profile.Replicas > 0 {
 			s.log.Debug("controllerServer.CreateVolume: replicas from profile", zap.Uint32("replicas", profile.Replicas))
 			params.Replicas = int(profile.Replicas)
 		}
-		if _, explicit := req.GetParameters()["storageType"]; !explicit && profile.StorageType != "" {
+		if _, explicit := scParams["storageType"]; !explicit && profile.StorageType != "" {
 			s.log.Debug("controllerServer.CreateVolume: storage type from profile", zap.String("storage_type", profile.StorageType))
 			params.StorageType = profile.StorageType
 		}
@@ -212,6 +219,7 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		labels[key] = value
 	}
 	labels[managedByLabel] = managedByValue
+	placementLabels(labels, params.AllowRemoteVolumeAccess, replicaNodes, params.FaultDomainLabel)
 	if params.PVC != "" {
 		// So the volume is recognisable in Haify by its claim, not only by
 		// the generated pvc-<uid> name.
@@ -380,6 +388,9 @@ func (s *controllerServer) ControllerGetCapabilities(context.Context, *csi.Contr
 		cap(csi.ControllerServiceCapability_RPC_GET_VOLUME),
 		cap(csi.ControllerServiceCapability_RPC_GET_CAPACITY),
 		cap(csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER),
+		// Replicas, resource profile and I/O limits of a provisioned volume,
+		// through a VolumeAttributesClass (modify.go).
+		cap(csi.ControllerServiceCapability_RPC_MODIFY_VOLUME),
 	}}, nil
 }
 

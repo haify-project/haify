@@ -44,6 +44,8 @@ func TestSanity(t *testing.T) {
 	cfg.TargetPath = filepath.Join(dir, "target")
 	cfg.StagingPath = filepath.Join(dir, "staging")
 	cfg.TestVolumeParameters = map[string]string{"pool": "vg0"}
+	// A VolumeAttributesClass changing an I/O limit, for the ModifyVolume tests.
+	cfg.TestVolumeMutableParameters = map[string]string{"readIOPS": "1000"}
 	// The nop mounter's EnsureDir creates real subdirectories inside TargetPath/StagingPath,
 	// so sanity's default os.Remove (which requires empty dirs) won't work. Use RemoveAll.
 	cfg.RemoveTargetPath = func(path string) error { return os.RemoveAll(path) }

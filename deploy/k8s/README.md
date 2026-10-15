@@ -234,6 +234,92 @@ What that means in practice:
 - `haify backup` of an encrypted volume stores plaintext on the backup target;
   protect the target with its own encryption and access policy.
 
+## Changing a volume after provisioning (VolumeAttributesClass)
+
+A StorageClass is read once, when the volume is created. To change the number
+of replicas, the resource profile or the I/O limits of a volume that already
+exists, while it stays in use, name a VolumeAttributesClass in its PVC.
+
+Requirements: Kubernetes 1.34 or later (VolumeAttributesClass is GA there)
+and csi-resizer v2.0.0 or later, which `20-controller.yaml` and the Helm chart
+run. The resizer's RBAC already reads `volumeattributesclasses`.
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: VolumeAttributesClass
+metadata: {name: haify-three-copies}
+driverName: haify.csi.liliang-cn.com
+parameters:
+  replicas: "3"
+  writeIOPS: "2000"
+```
+
+```bash
+kubectl patch pvc data -p '{"spec":{"volumeAttributesClassName":"haify-three-copies"}}'
+kubectl get pvc data -o jsonpath='{.status.currentVolumeAttributesClassName}{"\n"}{.status.modifyVolumeStatus}{"\n"}'
+```
+
+`currentVolumeAttributesClassName` shows the class once the change is done.
+While it is under way, or when it cannot be done, `modifyVolumeStatus` says so
+and the PVC's events carry the driver's message. A class Kubernetes reports as
+`Infeasible` (a key the driver does not take, a value out of range, a shrink
+that cannot be done) is not retried: name another class, such as the one the
+volume had before. Other failures are retried.
+
+A VolumeAttributesClass can only change these keys. Any other key is refused,
+and nothing is changed:
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `replicas` | Number of diskful replicas. Growing places the new replicas the way provisioning does: on nodes that host the volume's pool and have room for it, nodes in a fault domain that has no replica yet first (by the `faultDomainLabel` the volume was created with), emptiest pool first. A node where the volume runs as a diskless client gets the first new replica when it has room, so its Pod then reads locally. The new replica syncs in the background. Shrinking removes replicas through the controller's `RemoveReplica` |
+| `resourceProfile` | Makes the Haify resource a member of this profile, which applies the profile's DRBD options to it. An empty value takes it out of its profile. The profile's replica count is not applied; set `replicas` for that |
+| `readBytesPerSecond`, `writeBytesPerSecond`, `readIOPS`, `writeIOPS` | New I/O limits, in the same form as the StorageClass parameters. `max` lifts a limit. A key the class leaves out keeps its current value |
+
+What shrinking will not do:
+
+- go below two diskful replicas; Haify keeps at least two copies of a
+  replicated volume;
+- remove the replica on a node where the volume is Primary (in use), or one
+  whose state the controller cannot see; the driver retries until it can;
+- leave no `UpToDate` copy, for example while a recently added replica is
+  still syncing; the driver retries until the sync is done;
+- remove a node named in the PV's node affinity (below).
+
+A replica that is not `UpToDate` goes first, then one that shares its fault
+domain with another replica, then the one on the fullest pool.
+
+**Node affinity.** Kubernetes writes a PV's node affinity once and never
+changes it. A volume with `allowRemoteVolumeAccess: "true"` has none, so its
+Pods run anywhere and replicas can be added and removed freely. Any other
+volume pins its Pods to the nodes it was first created on. Adding replicas to
+such a volume makes the data safer, but its Pods still run only on the
+original nodes. Its original nodes are never removed, because a Pod scheduled
+to one could no longer use the volume there; only replicas added later can
+go. The driver records this in the resource labels `haify.csi/topology`
+(`any`, or the original nodes joined by `+`) and `haify.csi/fault-domain-label`
+when it provisions a volume. A volume provisioned by an older driver has no
+such label: the first change records its current replicas as its original
+nodes. For such a volume that allows remote access, set the label yourself
+(`haify resource label <resource> haify.csi/topology=any`) to let every
+replica be removed.
+
+**I/O limits of a running Pod.** A volume's context, where the StorageClass's
+limits are kept, is fixed at provisioning, so the driver records a changed
+limit in the resource label `haify.csi/qos-<parameter>`, which wins over the
+StorageClass's value. Each node plugin reads the labels of the volumes it has
+published every `--qos-interval` (default `30s`, one `GetResource` per
+volume) and rewrites the Pod's `io.max` when the limits changed; a newly
+published volume gets them at once. The plugin keeps its list of published
+volumes in `/csi/qos` (on the host,
+`/var/lib/kubelet/plugins/haify.csi.liliang-cn.com/qos`), so a restarted
+plugin still keeps them current.
+
+**At creation.** When external-provisioner passes a PVC's class to
+CreateVolume, its parameters override the StorageClass's. external-provisioner
+v6 and later do this (they need Kubernetes 1.34); the v5 provisioner these
+manifests run does not read VolumeAttributesClasses, so name the class on the
+PVC after it is bound, or run a v6 provisioner.
+
 ## Live migration of virtual machines (KubeVirt, OpenShift Virtualization)
 
 KubeVirt live-migrates a VM only when its disks are `ReadWriteMany`. Give the
@@ -286,6 +372,8 @@ but that provides the module only.
 - Expansion: with `allowVolumeExpansion: true` and the `csi-resizer` sidecar,
   raising a PVC's request grows the LV, the DRBD device and the filesystem
   while the volume stays in use.
+- Changing a volume in place: replicas, resource profile and I/O limits through
+  a VolumeAttributesClass (Kubernetes 1.34+), see above.
 - Capacity-aware scheduling: with `storageCapacity: true` and the provisioner's
   `--enable-capacity`, each node's free pool space is published as a
   `CSIStorageCapacity` object. The scheduler then skips nodes that cannot hold

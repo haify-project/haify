@@ -39,6 +39,9 @@ spec:
           args:
             - "--endpoint=unix:///csi/csi.sock"
             - "--haify-controller=haify-controller:3374"
+            # Re-read the I/O limits of published volumes this often, so a
+            # VolumeAttributesClass change reaches running Pods.
+            - "--qos-interval=30s"
           securityContext:
             privileged: true
           env:
