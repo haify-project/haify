@@ -48,7 +48,7 @@ func backupRestoreReq(name string) *csi.CreateVolumeRequest {
 
 func importedBackup() *haifypb.BackupInfo {
 	return &haifypb.BackupInfo{Id: "pvc_abc_haifysnap_s1", Resource: "pvc_abc", Node: "n1", Target: "offsite",
-		State: backupStateCompleted, StartedAt: "2026-10-15T08:00:00Z", Volumes: []*haifypb.BackupVolumeInfo{{Bytes: 2*giB - 4<<20}}}
+		State: backupStateCompleted, StartedAt: "2026-10-15T08:00:00Z", Volumes: []*haifypb.BackupVolumeInfo{{Bytes: 2*giB + 7<<19}}}
 }
 
 func TestRestorePrefersTheLocalSnapshot(t *testing.T) {
@@ -145,4 +145,16 @@ func TestRestoreWithoutLocalOrBackupIsNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, codes.NotFound, status.Code(err))
 	assert.Contains(t, err.Error(), "haify backup import")
+}
+
+// A 1 GiB volume's DRBD device, and so its backup image, is a little over
+// 1 GiB; restoring it must not ask for 2.
+func TestBackupSizeIsTheProvisionedSize(t *testing.T) {
+	b := &haifypb.BackupInfo{Volumes: []*haifypb.BackupVolumeInfo{{Bytes: 1077665792}}}
+	assert.Equal(t, int64(giB), backupSizeBytes(b))
+	b.Volumes[0].Bytes = 10*giB + 5<<20
+	assert.Equal(t, int64(10*giB), backupSizeBytes(b))
+	b.Volumes[0].Bytes = 512 << 20
+	assert.Equal(t, int64(giB), backupSizeBytes(b))
+	assert.Equal(t, int64(0), backupSizeBytes(&haifypb.BackupInfo{}))
 }

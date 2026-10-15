@@ -218,7 +218,7 @@ func TestListSnapshotsAnswersForABackupAlone(t *testing.T) {
 	// imported backup does.
 	b := newFakeBackupBackend("m1")
 	b.putBackup(&haifypb.BackupInfo{Id: "pvc_abc_haifysnap_s1", Resource: "pvc_abc", Node: "n1", Target: "offsite",
-		State: backupStateCompleted, StartedAt: "2026-10-15T08:00:00Z", Volumes: []*haifypb.BackupVolumeInfo{{Bytes: 2*giB - 4<<20}}})
+		State: backupStateCompleted, StartedAt: "2026-10-15T08:00:00Z", Volumes: []*haifypb.BackupVolumeInfo{{Bytes: 2*giB + 7<<19}}})
 	s := newTestController(b)
 
 	resp, err := s.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{SnapshotId: "pvc_abc/n1/haifysnap_s1/backup"})

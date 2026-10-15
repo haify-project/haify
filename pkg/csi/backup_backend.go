@@ -94,12 +94,21 @@ func (s *controllerServer) findBackup(ctx context.Context, bb backupBackend, id,
 	return nil, nil
 }
 
-// backupSizeBytes is the restore size of a backup: its image, which is the
-// source's DRBD device, rounded up to whole GiB — the size the source volume
-// was provisioned at, since the device is that minus DRBD's metadata.
+// backupSizeBytes is the restore size of a backup: the size the source volume
+// was provisioned at, in whole GiB.
+//
+// The image is the source's DRBD device, which is a little larger than that:
+// the backing volume is rounded up to make room for DRBD's metadata, and what
+// is left over stays in the device (a 1 GiB volume's device is 1.004 GiB).
+// Rounding up asked for a restore one GiB larger than the volume and refused a
+// claim of the original size, so the size is rounded down.
 func backupSizeBytes(b *haifypb.BackupInfo) int64 {
 	if vols := b.GetVolumes(); len(vols) > 0 {
-		return int64(bytesToGiB(int64(vols[0].GetBytes()))) * giB
+		whole := int64(vols[0].GetBytes()) / giB
+		if whole < 1 {
+			whole = 1
+		}
+		return whole * giB
 	}
 	return 0
 }

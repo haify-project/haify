@@ -70,7 +70,7 @@ func (f *fakeBackupBackend) CreateBackupFromSnapshot(ctx context.Context, resour
 	f.mu.Lock()
 	f.uploads = append(f.uploads, fmt.Sprintf("%s/%s@%s -> %s", resource, snapshot, node, target))
 	rec := &haifypb.BackupInfo{Id: id, Resource: resource, Target: target, Node: node, State: backupStateRunning,
-		StartedAt: "2026-10-15T08:00:00Z", Volumes: []*haifypb.BackupVolumeInfo{{Bytes: 2*giB - 4<<20}}}
+		StartedAt: "2026-10-15T08:00:00Z", Volumes: []*haifypb.BackupVolumeInfo{{Bytes: 2*giB + 7<<19}}}
 	f.backups[id] = rec
 	f.mu.Unlock()
 
