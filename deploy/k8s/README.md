@@ -290,6 +290,9 @@ What shrinking will not do:
 
 A replica that is not `UpToDate` goes first, then one that shares its fault
 domain with another replica, then the one on the fullest pool.
+A volume shrunk to two replicas gets a diskless quorum tiebreaker again, on
+the node whose replica was removed, so losing either remaining node does not
+suspend its I/O.
 
 **Node affinity.** Kubernetes writes a PV's node affinity once and never
 changes it. A volume with `allowRemoteVolumeAccess: "true"` has none, so its
