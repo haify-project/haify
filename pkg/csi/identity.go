@@ -23,13 +23,16 @@ func (s *identityServer) GetPluginInfo(context.Context, *csi.GetPluginInfoReques
 }
 
 func (s *identityServer) GetPluginCapabilities(context.Context, *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
-	zap.L().Debug("identityServer.GetPluginCapabilities: reporting controller service and accessibility constraints")
+	zap.L().Debug("identityServer.GetPluginCapabilities: reporting controller, group controller and accessibility constraints")
 	return &csi.GetPluginCapabilitiesResponse{
 		Capabilities: []*csi.PluginCapability{
 			{Type: &csi.PluginCapability_Service_{Service: &csi.PluginCapability_Service{
 				Type: csi.PluginCapability_Service_CONTROLLER_SERVICE}}},
 			{Type: &csi.PluginCapability_Service_{Service: &csi.PluginCapability_Service{
 				Type: csi.PluginCapability_Service_VOLUME_ACCESSIBILITY_CONSTRAINTS}}},
+			// VolumeGroupSnapshot (group_snapshot.go).
+			{Type: &csi.PluginCapability_Service_{Service: &csi.PluginCapability_Service{
+				Type: csi.PluginCapability_Service_GROUP_CONTROLLER_SERVICE}}},
 		},
 	}, nil
 }

@@ -2497,6 +2497,15 @@ mount from `deploy/k8s/30-node.yaml`. Without them, the volume is still
 published, but without limits, and the node plugin logs why. The limits are
 fixed per StorageClass; to change them, move the volume to another class.
 
+**Snapshots and health.** A `VolumeSnapshot` is a snapshot of one replica's
+backing volume. A `VolumeGroupSnapshot` snapshots several PVCs at the same
+instant, with I/O suspended on all of them while it does, for an application
+that spreads its data over more than one volume. When a replica of a volume
+degrades or recovers, the driver posts a `VolumeDegraded` or `VolumeRecovered`
+event on the PVC and on every Pod using it, so `kubectl describe pod` shows it.
+`deploy/k8s/README.md` covers both, including what group snapshots need
+installed in the cluster.
+
 The manifests are in `deploy/k8s` (see its README); the CSI section of
 [deployment-guide.md](deployment-guide.md) covers installation.
 

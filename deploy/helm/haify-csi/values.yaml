@@ -73,6 +73,22 @@ haFailover:
   grace: 10s            # how long a node Kubernetes still calls Ready must look lost first
   maxLostFraction: 0.5  # do nothing while more than this share of nodes look lost
 
+# Volume group snapshots: several PVCs snapshotted at one instant
+# (VolumeGroupSnapshot). They need the group snapshot CRDs and a
+# snapshot-controller started with --feature-gates=CSIVolumeGroupSnapshot=true,
+# from the same external-snapshotter release as sidecars.snapshotter. "auto"
+# turns the snapshotter's gate on, and creates the class, only when the cluster
+# serves apiVersion: with the gate on and the CRDs missing, the sidecar stops
+# handling ordinary VolumeSnapshots too.
+groupSnapshots:
+  enabled: auto          # auto, true or false
+  # What sidecars.snapshotter speaks: groupsnapshot.storage.k8s.io/v1beta1 for
+  # external-snapshotter v8.2 and v8.3, v1beta2 for v8.4 and v8.5, v1 from v8.6.
+  apiVersion: groupsnapshot.storage.k8s.io/v1beta1
+  className: haify-group-snapshot
+  default: false
+  deletionPolicy: Delete
+
 controllerPlugin:
   replicas: 1
   nodeSelector: {}

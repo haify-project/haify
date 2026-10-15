@@ -16,6 +16,8 @@ const giB = 1 << 30
 
 type controllerServer struct {
 	csi.UnimplementedControllerServer
+	// VolumeGroupSnapshot is served here too (group_snapshot.go).
+	csi.UnimplementedGroupControllerServer
 	backend HaifyBackend
 	log     *zap.Logger
 }

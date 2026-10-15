@@ -92,6 +92,12 @@ spec:
             - "--leader-election"
             - "--leader-election-namespace=kube-system"
             - "--v=2"
+            # VolumeGroupSnapshot (several PVCs at one instant). Uncomment only
+            # once the group snapshot CRDs are installed and the
+            # snapshot-controller runs with the same gate: with the gate on and
+            # the CRDs missing this sidecar stops handling ordinary
+            # VolumeSnapshots too. See "Volume group snapshots" in README.md.
+            # - "--feature-gates=CSIVolumeGroupSnapshot=true"
           volumeMounts:
             - { name: socket-dir, mountPath: /csi }
         - name: plugin

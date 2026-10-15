@@ -75,6 +75,16 @@ rules:
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshots"]
     verbs: ["get", "list", "watch"]
+  # VolumeGroupSnapshot, when the group snapshot CRDs are installed.
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshotclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshotcontents"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshotcontents/status"]
+    verbs: ["update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -127,13 +137,17 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ---
 # The plugin's own health reporter: reads this driver's PVs and posts
-# VolumeDegraded/VolumeRecovered events on their PVCs.
+# VolumeDegraded/VolumeRecovered events on their PVCs and the Pods using them.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata: { name: haify-csi-health }
 rules:
   - apiGroups: [""]
     resources: ["persistentvolumes"]
+    verbs: ["list"]
+  # The Pods using a degraded volume get the same event as its PVC.
+  - apiGroups: [""]
+    resources: ["pods"]
     verbs: ["list"]
   - apiGroups: [""]
     resources: ["events"]

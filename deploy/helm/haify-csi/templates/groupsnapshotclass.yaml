@@ -1,0 +1,15 @@
+{{- if eq (include "haify-csi.groupSnapshots" .) "true" }}
+# Snapshots several PVCs at one instant: I/O is suspended on all of them while
+# each is snapshotted. Every member is an ordinary snapshot of one replica.
+apiVersion: {{ .Values.groupSnapshots.apiVersion }}
+kind: VolumeGroupSnapshotClass
+metadata:
+  name: {{ .Values.groupSnapshots.className }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+  {{- if .Values.groupSnapshots.default }}
+  annotations:
+    groupsnapshot.storage.kubernetes.io/is-default-class: "true"
+  {{- end }}
+driver: {{ include "haify-csi.driver" . }}
+deletionPolicy: {{ .Values.groupSnapshots.deletionPolicy }}
+{{- end }}

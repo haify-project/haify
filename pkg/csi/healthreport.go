@@ -13,14 +13,14 @@ import (
 	"k8s.io/client-go/tools/record"
 )
 
-// Event reasons the health reporter posts on a PVC.
+// Event reasons the health reporter posts on a PVC and on the Pods using it.
 const (
 	ReasonVolumeDegraded  = "VolumeDegraded"
 	ReasonVolumeRecovered = "VolumeRecovered"
 )
 
 // HealthReporter puts the health of each volume's DRBD replicas where a
-// Kubernetes user looks: as events on the PVC.
+// Kubernetes user looks: as events on the PVC, and on the Pods using it.
 //
 // CSI had a channel for this, VolumeCondition, and spec v1.13.0 removed it. The
 // state it would have carried still matters — a volume whose replica went
@@ -82,13 +82,14 @@ func (h *HealthReporter) Sweep(ctx context.Context) {
 	h.log.Debug("HealthReporter.Sweep: listed persistent volumes", zap.Int("count", len(pvs.Items)),
 		zap.Duration("took", time.Since(sweepStart)))
 	seen := map[string]bool{}
+	pods := newPodIndex(h.kube, h.log) // one Pod list per sweep at most, healthreport_pods.go
 	for i := range pvs.Items {
 		pv := &pvs.Items[i]
 		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != DriverName || pv.Spec.ClaimRef == nil {
 			continue
 		}
 		seen[pv.Name] = true
-		h.check(ctx, pv)
+		h.check(ctx, pv, pods)
 	}
 	// Forget PVs that are gone, so a recreated one with the same name starts
 	// from nothing rather than from a stranger's history.
@@ -111,7 +112,7 @@ func (h *HealthReporter) Sweep(ctx context.Context) {
 		zap.Duration("took", time.Since(sweepStart)))
 }
 
-func (h *HealthReporter) check(ctx context.Context, pv *corev1.PersistentVolume) {
+func (h *HealthReporter) check(ctx context.Context, pv *corev1.PersistentVolume, pods *podIndex) {
 	start := time.Now()
 	r, err := h.backend.GetResource(ctx, pv.Spec.CSI.VolumeHandle)
 	h.log.Debug("HealthReporter.check: got resource", zap.String("pv", pv.Name), zap.String("resource", pv.Spec.CSI.VolumeHandle),
@@ -156,10 +157,12 @@ func (h *HealthReporter) check(ctx context.Context, pv *corev1.PersistentVolume)
 		h.log.Debug("HealthReporter.check: posting VolumeDegraded", zap.String("pv", pv.Name),
 			zap.String("namespace", claim.Namespace), zap.String("pvc", claim.Name), zap.Bool("first_sight", !known), zap.String("message", msg))
 		h.recorder.Event(claim, corev1.EventTypeWarning, ReasonVolumeDegraded, msg)
+		h.postOnPods(ctx, pods, claim, corev1.EventTypeWarning, ReasonVolumeDegraded, msg)
 	case !abnormal && known && prev != "":
 		h.log.Debug("HealthReporter.check: posting VolumeRecovered", zap.String("pv", pv.Name),
 			zap.String("namespace", claim.Namespace), zap.String("pvc", claim.Name))
 		h.recorder.Event(claim, corev1.EventTypeNormal, ReasonVolumeRecovered, msg)
+		h.postOnPods(ctx, pods, claim, corev1.EventTypeNormal, ReasonVolumeRecovered, msg)
 	default:
 		h.log.Debug("HealthReporter.check: no change", zap.String("pv", pv.Name), zap.Bool("abnormal", abnormal),
 			zap.Bool("known", known))

@@ -307,6 +307,16 @@ service HaifyController {
       additional_bindings { get: "/v1/volumes/{volume}/snapshots"; }
     };
   }
+  // CreateSnapshotGroup takes one-node snapshots (as CreateSnapshot does) of
+  // several volumes at the same instant, so an application spread over them
+  // gets a crash-consistent set. I/O is suspended on every member's resource
+  // (its Primary first) while the snapshots are taken, under a transient
+  // timer on each node that resumes it whatever happens to the controller.
+  // All or nothing: a member that fails removes the ones already taken. The
+  // CSI driver's VolumeGroupSnapshot is built on it.
+  rpc CreateSnapshotGroup(CreateSnapshotGroupRequest) returns (CreateSnapshotGroupResponse) {
+    option (google.api.http) = { post: "/v1/snapshot-groups"; body: "*"; };
+  }
   // PopulateVolume copies a snapshot, or a source block device such as another
   // resource's backing volume, into an ALREADY-CREATED, still-empty DRBD
   // resource. Unlike RestoreSnapshot — which merges a snapshot back into its own
@@ -2341,6 +2351,27 @@ message RestoreSnapshotRequest {
 }
 
 message RestoreSnapshotResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// SnapshotGroupMember is one volume of a CreateSnapshotGroup.
+message SnapshotGroupMember {
+  // resource is the DRBD resource whose I/O is suspended for the group.
+  string resource = 1;
+  // volume, snapshot_name and node are as in CreateSnapshotRequest:
+  // "<pool>/<backing>", the snapshot's name, and the node whose replica is
+  // snapshotted.
+  string volume = 2;
+  string snapshot_name = 3;
+  string node = 4;
+}
+
+message CreateSnapshotGroupRequest {
+  repeated SnapshotGroupMember members = 1;
+}
+
+message CreateSnapshotGroupResponse {
   bool success = 1;
   string message = 2;
 }

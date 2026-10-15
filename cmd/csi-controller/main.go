@@ -25,7 +25,7 @@ func main() {
 	endpoint := flag.String("endpoint", "unix:///csi/csi.sock", "CSI gRPC endpoint")
 	haifyAddr := flag.String("haify-controller", "haify-controller:3374", "haify-controller gRPC address")
 	healthInterval := flag.Duration("health-interval", time.Minute,
-		"how often to check each volume's replicas and post VolumeDegraded/VolumeRecovered events on its PVC; 0 disables")
+		"how often to check each volume's replicas and post VolumeDegraded/VolumeRecovered events on its PVC and the Pods using it; 0 disables")
 	leaderElection := flag.Bool("leader-election", false,
 		"run the health reporter only on the replica holding the "+healthLeaseName+" Lease, and the HA controller on the one holding "+
 			haFailoverLeaseName+"; set it when the Deployment has more than one replica")
@@ -91,8 +91,8 @@ func main() {
 	}
 }
 
-// startHealthReporter posts replica health on PVCs. It needs the Kubernetes API,
-// so outside a cluster it logs why it is off and the driver runs without it —
+// startHealthReporter posts replica health on PVCs and their Pods. It needs the
+// Kubernetes API, so outside a cluster it logs why it is off and the driver runs without it —
 // provisioning does not depend on it. With leaseNamespace set it runs only while
 // this replica holds the Lease there.
 func startHealthReporter(ctx context.Context, haify csi.HaifyBackend, interval time.Duration, leaseNamespace string, log *zap.Logger) {

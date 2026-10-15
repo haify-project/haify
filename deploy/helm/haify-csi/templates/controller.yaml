@@ -68,7 +68,7 @@ spec:
           volumeMounts: [{ name: socket-dir, mountPath: /csi }]
         - name: csi-snapshotter
           image: {{ .Values.sidecars.snapshotter }}
-          args: [--csi-address=/csi/csi.sock, --timeout={{ .Values.operationTimeout }}, --leader-election, --leader-election-namespace={{ .Release.Namespace }}, --v=2]
+          args: [--csi-address=/csi/csi.sock, --timeout={{ .Values.operationTimeout }}, --leader-election, --leader-election-namespace={{ .Release.Namespace }}, --v=2{{ if eq (include "haify-csi.groupSnapshots" .) "true" }}, --feature-gates=CSIVolumeGroupSnapshot=true{{ end }}]
           volumeMounts: [{ name: socket-dir, mountPath: /csi }]
         - name: plugin
           image: {{ include "haify-csi.image" . }}

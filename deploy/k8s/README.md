@@ -17,6 +17,7 @@ namespace `haify-ai`).
 | `30-node.yaml` | DaemonSet `haify-csi-node`: node-driver-registrar, plugin (`csi-node`, privileged) |
 | `40-storageclass.yaml` | StorageClass `haify-drbd` |
 | `50-volumesnapshotclass.yaml` | VolumeSnapshotClass `haify-drbd-snapshot` (needs the snapshot CRDs, see below) |
+| `examples/volumegroupsnapshotclass.yaml` | VolumeGroupSnapshotClass `haify-group-snapshot`; not applied with the rest (needs the group snapshot CRDs, see below) |
 | `60-haify-ai-apps-rbac.yaml` | ServiceAccount + token Secret for the Haify Copilot's `haify_k8s_app_create` tool |
 
 ## Prerequisites
@@ -297,11 +298,15 @@ but that provides the module only.
   below). `ReadWriteMany` filesystems and the other multi-node modes are
   refused at provisioning: a DRBD resource has one Primary, and a filesystem
   cannot be written from two nodes.
-- Replica health on the PVC: the controller plugin checks each volume's
-  replicas every `--health-interval` (default `1m`). When a replica
+- Replica health on the PVC and its Pods: the controller plugin checks each
+  volume's replicas every `--health-interval` (default `1m`). When a replica
   disconnects, loses its disk, falls out of date or resyncs, it posts a
   `Warning VolumeDegraded` event on the PVC, and `Normal VolumeRecovered` when
-  the replica is healthy again. The first sync of a new volume is not reported.
+  the replica is healthy again. The same event goes on every Pod using the PVC
+  at that moment, with the claim's name in front of the message
+  (`PVC data: ...`), so `kubectl describe pod` shows it too. Events are posted
+  only when the state changes, not every check. The first sync of a new volume
+  is not reported. Kubernetes keeps events for an hour by default.
 - Node failover: when a node dies, the controller plugin moves the pods using
   its volumes to a node with a replica in about half a minute, rather than
   after Kubernetes' 5 minutes (see "When a node dies").
@@ -395,6 +400,79 @@ the new volume. If it cannot hold one, provisioning fails with
 A snapshot is crash-consistent: it holds what was on disk at that moment. If a
 database needs more than that, snapshot it after a `CHECKPOINT`/`FSYNC`, or
 pause its writes first.
+
+## Volume group snapshots
+
+An application that keeps its data on more than one PVC, such as a database
+with its write-ahead log on a volume of its own, can only be recovered from
+snapshots that are all from the same moment. A `VolumeGroupSnapshot` takes
+them that way. The driver suspends I/O on every volume in the group (each
+volume's Primary first), takes one snapshot of each, and resumes I/O. The
+snapshots then hold what a power cut at that moment would have left on all
+the volumes together.
+
+- Writes to every volume in the group wait while the snapshots are taken:
+  one `lvcreate` or `zfs snapshot` per volume, run over SSH on the storage
+  nodes.
+- A timer on each storage node resumes I/O after one minute whatever happens
+  to the Haify controller. A group that takes nearly that long fails, and its
+  snapshots are deleted, because I/O may have resumed in the middle of it.
+  Snapshot fewer volumes at once if that happens.
+- It is all or nothing: if one snapshot fails, the ones already taken are
+  deleted.
+- Each member is an ordinary snapshot of this driver, on one node's backing
+  volume. It appears as a `VolumeSnapshot` and is restored through a PVC
+  `dataSource` like any other.
+- Deleting the `VolumeGroupSnapshot` with `deletionPolicy: Delete` deletes
+  every member's LVM/ZFS snapshot.
+- Every PVC in the group must be a volume this driver provisioned. A PV made
+  by hand for some other Haify resource is refused.
+
+### Cluster prerequisites
+
+Group snapshots need, from one external-snapshotter release (v8.2.0 or later):
+
+1. The three group snapshot CRDs, as well as the snapshot CRDs above.
+2. The snapshot-controller started with `--feature-gates=CSIVolumeGroupSnapshot=true`.
+3. The same gate on the `csi-snapshotter` sidecar. In `20-controller.yaml` it
+   is commented out; uncomment it. Turn it on only after the CRDs are
+   installed: with the gate on and the CRDs missing, the sidecar stops handling
+   ordinary `VolumeSnapshot`s too.
+
+```bash
+V=v8.2.0
+B=https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$V
+kubectl apply -f $B/client/config/crd/groupsnapshot.storage.k8s.io_volumegroupsnapshotclasses.yaml \
+              -f $B/client/config/crd/groupsnapshot.storage.k8s.io_volumegroupsnapshotcontents.yaml \
+              -f $B/client/config/crd/groupsnapshot.storage.k8s.io_volumegroupsnapshots.yaml
+kubectl -n kube-system patch deployment snapshot-controller --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--feature-gates=CSIVolumeGroupSnapshot=true"}]'
+kubectl apply -f deploy/k8s/examples/volumegroupsnapshotclass.yaml
+```
+
+The API version of the group snapshot objects depends on the release:
+`groupsnapshot.storage.k8s.io/v1beta1` for v8.2 and v8.3 (the shipped
+`csi-snapshotter:v8.2.0`), `v1beta2` for v8.4 and v8.5, and `v1` from v8.6.
+Use the version your CRDs serve in the class and in every `VolumeGroupSnapshot`,
+and keep the snapshot-controller and the `csi-snapshotter` image on the same
+release.
+
+### Taking a group snapshot
+
+Label the PVCs that belong together, then select them:
+
+```yaml
+apiVersion: groupsnapshot.storage.k8s.io/v1beta1
+kind: VolumeGroupSnapshot
+metadata: { name: db-before-upgrade }
+spec:
+  volumeGroupSnapshotClassName: haify-group-snapshot
+  source:
+    selector:
+      matchLabels: { app: db }
+```
+
+`kubectl get volumesnapshot` then lists one `VolumeSnapshot` per PVC.
 
 ## When a node dies
 
