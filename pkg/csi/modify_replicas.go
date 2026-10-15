@@ -94,7 +94,7 @@ func (s *controllerServer) modifyReplicas(ctx context.Context, mod volumeModifie
 	current := diskfulReplicas(r)
 	s.log.Debug("controllerServer.modifyReplicas: start", zap.String("resource", r.GetName()), zap.Strings("current", current),
 		zap.Int("want", want))
-	if len(current) == want {
+	if len(current) == want && !needsTiebreaker(r, want, nil) {
 		s.log.Debug("controllerServer.modifyReplicas: already at the wanted count", zap.String("resource", r.GetName()))
 		return nil
 	}
@@ -111,6 +111,10 @@ func (s *controllerServer) modifyReplicas(ctx context.Context, mod volumeModifie
 		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return status.Errorf(codes.Unavailable, "list pools: %v", err)
+	}
+	if len(current) == want {
+		// An earlier shrink left it without a tiebreaker and failed to add one.
+		return s.ensureTiebreaker(ctx, mod, r, want, nodes, nil)
 	}
 	if len(current) < want {
 		return s.growReplicas(ctx, mod, r, current, want, nodes, pools)
@@ -406,5 +410,5 @@ func (s *controllerServer) shrinkReplicas(ctx context.Context, mod volumeModifie
 			return status.Errorf(codes.Internal, "remove the replica of %q on %s: %v", name, n, err)
 		}
 	}
-	return nil
+	return s.ensureTiebreaker(ctx, mod, r, want, nodes, remove)
 }

@@ -50,6 +50,7 @@ type volumeModifier interface {
 	RemoveReplica(ctx context.Context, resource, node string) error
 	SetResourceLabels(ctx context.Context, resource string, set map[string]string, remove []string) (map[string]string, error)
 	SetResourceProfile(ctx context.Context, resource, profile string) error
+	SetTiebreaker(ctx context.Context, resource, node string) (string, string, error)
 }
 
 // mutableChange is a validated set of mutable parameters. A field left at its

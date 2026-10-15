@@ -16,6 +16,7 @@ type modifyFake struct {
 	added, removed []string // "resource/node"
 	labelCalls     []map[string]string
 	profileCalls   []string // "resource=profile"
+	tiebreakers    []string // "resource/node"
 	addErr         error
 }
 
@@ -126,3 +127,14 @@ func (f *modifyFake) seedVolume(name string, nodes []string, labels map[string]s
 }
 
 var _ volumeModifier = (*modifyFake)(nil)
+
+func (f *modifyFake) SetTiebreaker(_ context.Context, resource, node string) (string, string, error) {
+	r, ok := f.resources[resource]
+	if !ok {
+		return "", "", fmt.Errorf("resource %q not found", resource)
+	}
+	f.tiebreakers = append(f.tiebreakers, resource+"/"+node)
+	r.DisklessNodes = []string{node}
+	r.QuorumRisk = false
+	return "", "tiebreaker set", nil
+}

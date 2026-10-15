@@ -78,3 +78,15 @@ func (b *sanityBackend) SetResourceProfile(_ context.Context, resource, profile 
 	r.Profile = profile
 	return nil
 }
+
+func (b *sanityBackend) SetTiebreaker(_ context.Context, resource, node string) (string, string, error) {
+	zap.L().Debug("sanityBackend.SetTiebreaker: setting", zap.String("resource", resource), zap.String("node", node))
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	r, ok := b.resources[resource]
+	if !ok {
+		return "", "", fmt.Errorf("resource %q not found", resource)
+	}
+	r.DisklessNodes = []string{node}
+	return "", "tiebreaker set", nil
+}
