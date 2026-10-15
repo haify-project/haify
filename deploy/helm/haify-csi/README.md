@@ -9,7 +9,10 @@ is in use.
 - A running Haify controller, and a pool on at least as many nodes as the
   number of replicas each StorageClass asks for.
 - Every Kubernetes node that runs volumes is registered with Haify **under the
-  same name as its Kubernetes node**, and has DRBD 9 and `drbd-utils`. When the
+  same name as its Kubernetes node**, and has DRBD 9 and `drbd-utils`. The
+  chart can load the DRBD 9 kernel module itself
+  (`drbdModuleLoader.enabled`, see
+  [DRBD on Kubernetes nodes](../../../docs/kubernetes-drbd.md)). When the
   StorageClass sets `allowRemoteVolumeAccess: "true"`, a node with no replica
   of its own can still use a volume; it reads and writes over the network.
 - The `haify-csi` image on every node, or in a registry (`image.repository`).
@@ -56,6 +59,18 @@ entry loses its name and every other field.
 | `controllerPlugin.*`, `nodePlugin.*` | | `nodeSelector`, `tolerations`, `resources` |
 | `openshift.enabled` | `false` | Lets the plugins' service accounts use the `privileged` SCC. Detected by itself on OpenShift and MicroShift; set it only for an offline `helm template` |
 | `sidecars.*` | the registry.k8s.io sig-storage images | Images of the provisioner, resizer, snapshotter, liveness probe and node driver registrar |
+| `drbdModuleLoader.enabled` | `false` | A DaemonSet that loads the DRBD 9 kernel module on the nodes ([DRBD on Kubernetes nodes](../../../docs/kubernetes-drbd.md)) |
+| `drbdModuleLoader.minVersion` | `9.2.0` | The oldest DRBD module accepted; a node with it or newer is left alone, and the node plugin waits until a node has it |
+| `drbdModuleLoader.image.*` | `quay.io/piraeusdatastore/drbd9-noble`, `v9.3.4` | The loader image for the nodes' distribution; the tag is the DRBD version |
+| `drbdModuleLoader.how` | `compile` | `compile` (needs the kernel headers on the node), `shipped_modules` or `deps_only` |
+| `drbdModuleLoader.distros` | `[]` | One loader per distribution: `name`, `image`, `nodeSelector` |
+| `drbdModuleLoader.blockHostModule` | `true` | Write `/etc/modprobe.d/haify-drbd-loader.conf` so the distribution's DRBD 8.4 cannot load first |
+| `drbdModuleLoader.bringUpResources` | `true` | After loading DRBD, run the node's `haify-drbd-up.service` to bring its resources up |
+| `drbdModuleLoader.waitInNodePlugin` | `true` | The node plugin waits for DRBD `minVersion` before serving volumes (also with `kmm.enabled`) |
+| `drbdModuleLoader.signingKeySecret` | | Secret with `signing_key.pem` and `signing_key.x509`, for Secure Boot |
+| `drbdModuleLoader.nodeSelector`, `tolerations`, `resources`, `extraEnv` | | For the loader DaemonSets |
+| `drbdModuleLoader.kmm.enabled` | `false` | A Kernel Module Management `Module` for DRBD (OpenShift); needs `kmm.containerImage` |
+| `drbdModuleLoader.kmm.*` | | `containerImage`, `kernelRegexp`, `build.*` (in-cluster build), `sign.*`, `imageRepoSecret`, `selector`, `tolerations`, `inTreeModulesToRemove` |
 
 ## Changing a StorageClass
 

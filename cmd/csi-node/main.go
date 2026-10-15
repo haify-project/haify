@@ -23,6 +23,7 @@ func main() {
 	flag.Parse()
 
 	log := logging.Production()
+	maybeRunDRBDModule(log)
 	defer func() { _ = log.Sync() }()
 	log.Debug("main: csi-node starting", zap.String("endpoint", *endpoint), zap.String("haify_controller", *haifyAddr),
 		zap.String("node", *nodeName), zap.String("node_ip", *nodeIP))

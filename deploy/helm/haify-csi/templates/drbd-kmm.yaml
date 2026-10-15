@@ -1,0 +1,100 @@
+{{- /*
+DRBD through the Kernel Module Management operator
+(drbdModuleLoader.kmm.enabled): a KMM Module (kmm.sigs.x-k8s.io/v1beta1) that
+loads drbd_transport_tcp, and with it drbd, on the nodes its selector picks,
+from a kmod image per kernel. With build.enabled, KMM builds that image in the
+cluster from the Dockerfile in the ConfigMap below the first time it meets a
+kernel; on OpenShift the build stage is the Driver Toolkit (DTK_AUTO), which
+has the headers of exactly that kernel. The operator must be installed first.
+*/ -}}
+{{- $k := .Values.drbdModuleLoader.kmm }}
+{{- if $k.enabled }}
+{{- if not $k.containerImage }}
+{{- fail "drbdModuleLoader.kmm.containerImage is required: the kmod image KMM pulls (or builds and pushes), e.g. image-registry.openshift-image-registry.svc:5000/<namespace>/haify-drbd:${KERNEL_FULL_VERSION}" }}
+{{- end }}
+{{- if $k.build.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haify-drbd-kmod-dockerfile
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+data:
+  dockerfile: |
+{{- if $k.build.dockerfile }}
+{{ $k.build.dockerfile | indent 4 }}
+{{- else }}
+    ARG DTK_AUTO
+    FROM {{ $k.build.builderImage | default "${DTK_AUTO}" }} AS builder
+    ARG KERNEL_FULL_VERSION
+    ARG DRBD_VERSION
+    WORKDIR /build
+    ADD https://pkg.linbit.com/downloads/drbd/9/drbd-${DRBD_VERSION}.tar.gz /build/drbd.tar.gz
+    RUN tar xzf drbd.tar.gz && \
+        make -C drbd-${DRBD_VERSION} KDIR=/lib/modules/${KERNEL_FULL_VERSION}/build && \
+        mkdir -p /build/ko && \
+        find drbd-${DRBD_VERSION} -name '*.ko' -exec cp {} /build/ko/ \;
+
+    FROM {{ $k.build.baseImage }}
+    ARG KERNEL_FULL_VERSION
+    RUN microdnf install -y kmod && microdnf clean all
+    COPY --from=builder /build/ko/ /opt/lib/modules/${KERNEL_FULL_VERSION}/
+    # drbd needs lru_cache and libcrc32c from the node's own kernel. KMM mounts
+    # the node's /lib/modules at /host/lib/modules; this link lets depmod and
+    # modprobe find them there.
+    RUN ln -s /host/lib/modules/${KERNEL_FULL_VERSION} /opt/lib/modules/${KERNEL_FULL_VERSION}/host && \
+        depmod -b /opt ${KERNEL_FULL_VERSION}
+{{- end }}
+---
+{{- end }}
+# The module loader pods KMM runs for this Module are privileged; on
+# OpenShift this account is bound to the privileged SCC (openshift-scc.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: haify-drbd-kmm
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+---
+apiVersion: kmm.sigs.x-k8s.io/v1beta1
+kind: Module
+metadata:
+  name: haify-drbd
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+spec:
+  moduleLoader:
+    serviceAccountName: haify-drbd-kmm
+    container:
+      modprobe:
+        # drbd_transport_tcp depends on drbd, so modprobe loads drbd first
+        # (modules.dep from depmod above).
+        moduleName: drbd_transport_tcp
+      {{- with $k.inTreeModulesToRemove }}
+      inTreeModulesToRemove: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      kernelMappings:
+        - regexp: {{ $k.kernelRegexp | quote }}
+          containerImage: {{ $k.containerImage | quote }}
+          {{- if $k.build.enabled }}
+          build:
+            buildArgs:
+              - { name: DRBD_VERSION, value: {{ $k.build.drbdVersion | quote }} }
+            dockerfileConfigMap:
+              name: haify-drbd-kmod-dockerfile
+          {{- end }}
+          {{- if and $k.sign.keySecret $k.sign.certSecret }}
+          sign:
+            keySecret: { name: {{ $k.sign.keySecret }} }
+            certSecret: { name: {{ $k.sign.certSecret }} }
+            filesToSign:
+              - /opt/lib/modules/${KERNEL_FULL_VERSION}/*.ko
+          {{- end }}
+  {{- with $k.imageRepoSecret }}
+  imageRepoSecret: { name: {{ . }} }
+  {{- end }}
+  selector: {{- toYaml $k.selector | nindent 4 }}
+  {{- with $k.tolerations }}
+  tolerations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

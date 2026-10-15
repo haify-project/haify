@@ -25,6 +25,15 @@ spec:
       {{- with .Values.nodePlugin.tolerations }}
       tolerations: {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if and (include "haify-csi.drbdManaged" .) .Values.drbdModuleLoader.waitInNodePlugin }}
+      # DRBD comes from this chart (drbdModuleLoader): serve no volume until
+      # the node has it, so nothing is staged on a node without DRBD 9.
+      initContainers:
+        - name: wait-for-drbd
+          image: {{ include "haify-csi.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [/usr/local/bin/csi-node, drbd-module, wait, --min-version={{ .Values.drbdModuleLoader.minVersion }}]
+      {{- end }}
       containers:
         - name: node-driver-registrar
           image: {{ .Values.sidecars.nodeDriverRegistrar }}

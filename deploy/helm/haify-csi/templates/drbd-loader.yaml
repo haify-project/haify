@@ -1,0 +1,159 @@
+{{- /*
+The DRBD module loader (drbdModuleLoader.enabled): a DaemonSet per
+distribution that loads the DRBD 9 kernel module on each node it runs on.
+
+  prepare   (haify-csi) says what is loaded; blocks the host's own drbd module
+            and unloads an older, unused one when the loader has to load DRBD
+  load      (Piraeus loader image) compiles or installs DRBD for the running
+            kernel and inserts drbd and drbd_transport_tcp; exits at once
+            when a new enough module is already loaded
+  bring-up  (haify-csi) runs the node's haify-drbd-up.service when DRBD was
+            loaded just now, so the node's resources come up after a reboot
+  drbd      (haify-csi) stays running; Ready only while DRBD minVersion or
+            newer is loaded
+
+docs/kubernetes-drbd.md explains when to use it.
+*/ -}}
+{{- $root := . }}
+{{- $l := .Values.drbdModuleLoader }}
+{{- if $l.enabled }}
+{{- $variants := $l.distros }}
+{{- if not $variants }}
+{{- $variants = list (dict "name" "" "image" "" "nodeSelector" (dict)) }}
+{{- end }}
+{{- /* compile reads the kernel headers under /usr/src, and so does signing:
+       the loader signs with scripts/sign-file from the kernel build dir. */ -}}
+{{- $usesSrc := or (not (has $l.how (list "shipped_modules" "deps_only"))) $l.signingKeySecret }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: haify-drbd-loader
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "haify-csi.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+{{- range $variants }}
+{{- $name := ternary (printf "haify-drbd-loader-%s" .name) "haify-drbd-loader" (ne (.name | default "") "") }}
+{{- $image := .image | default (printf "%s:%s" $l.image.repository $l.image.tag) }}
+{{- $nodeSelector := merge (dict) (.nodeSelector | default (dict)) ($l.nodeSelector | default (dict)) }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels: {{- include "haify-csi.labels" $root | nindent 4 }}
+spec:
+  selector: { matchLabels: { app: haify-drbd-loader, haify-drbd-loader: {{ $name }} } }
+  template:
+    metadata:
+      labels:
+        app: haify-drbd-loader
+        haify-drbd-loader: {{ $name }}
+        {{- include "haify-csi.labels" $root | nindent 8 }}
+      annotations:
+        kubectl.kubernetes.io/default-container: drbd
+    spec:
+      serviceAccountName: haify-drbd-loader
+      automountServiceAccountToken: false
+      priorityClassName: system-node-critical
+      {{- if $l.bringUpResources }}
+      # bring-up enters the host's PID 1 namespaces to run systemctl there.
+      hostPID: true
+      {{- end }}
+      {{- with $nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $l.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: prepare
+          image: {{ include "haify-csi.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/csi-node
+            - drbd-module
+            - prepare
+            - --min-version={{ $l.minVersion }}
+            - --state-dir=/run/haify-drbd-loader
+            {{- if $l.blockHostModule }}
+            - --modprobe-dir=/host/etc/modprobe.d
+            {{- end }}
+          securityContext: { privileged: true }
+          volumeMounts:
+            - { name: state, mountPath: /run/haify-drbd-loader }
+            {{- if $l.blockHostModule }}
+            - { name: etc-modprobe-d, mountPath: /host/etc/modprobe.d }
+            {{- end }}
+        - name: load
+          image: {{ $image }}
+          imagePullPolicy: {{ $l.image.pullPolicy }}
+          env:
+            {{- if $l.how }}
+            - { name: LB_HOW, value: {{ $l.how | quote }} }
+            {{- end }}
+            # Fail, rather than accept, a loaded module older than this.
+            - { name: LB_DRBD_MIN_LOADED_VERSION, value: {{ $l.minVersion | quote }} }
+            # On SELinux hosts, label the module so the kernel may load it.
+            - { name: LB_SELINUX_AS, value: modules_object_t }
+            {{- if $l.signingKeySecret }}
+            - { name: LB_SIGN, value: /signing-key }
+            {{- end }}
+            {{- with $l.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext: { privileged: true }
+          {{- with $l.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - { name: lib-modules, mountPath: /lib/modules, readOnly: true }
+            {{- if $usesSrc }}
+            - { name: usr-src, mountPath: /usr/src, readOnly: true }
+            {{- end }}
+            - { name: tmp, mountPath: /tmp }
+            {{- if $l.signingKeySecret }}
+            - { name: signing-key, mountPath: /signing-key, readOnly: true }
+            {{- end }}
+        {{- if $l.bringUpResources }}
+        - name: bring-up
+          image: {{ include "haify-csi.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: [/usr/local/bin/csi-node, drbd-module, bring-up, --state-dir=/run/haify-drbd-loader]
+          securityContext: { privileged: true }
+          volumeMounts:
+            - { name: state, mountPath: /run/haify-drbd-loader }
+        {{- end }}
+      containers:
+        - name: drbd
+          image: {{ include "haify-csi.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: [/usr/local/bin/csi-node, drbd-module, hold, --min-version={{ $l.minVersion }}]
+          readinessProbe:
+            exec:
+              command: [/usr/local/bin/csi-node, drbd-module, check, --min-version={{ $l.minVersion }}]
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+      volumes:
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: lib-modules
+          hostPath: { path: /lib/modules, type: Directory }
+        {{- if $usesSrc }}
+        - name: usr-src
+          hostPath: { path: /usr/src, type: Directory }
+        {{- end }}
+        {{- if $l.blockHostModule }}
+        - name: etc-modprobe-d
+          hostPath: { path: /etc/modprobe.d, type: DirectoryOrCreate }
+        {{- end }}
+        {{- if $l.signingKeySecret }}
+        - name: signing-key
+          secret: { secretName: {{ $l.signingKeySecret }} }
+        {{- end }}
+{{- end }}
+{{- end }}

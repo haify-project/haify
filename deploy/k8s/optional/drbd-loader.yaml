@@ -1,0 +1,97 @@
+# DRBD module loader: loads the DRBD 9 kernel module on every node it runs on,
+# for clusters whose nodes do not have drbd-dkms installed. Not applied by
+# `kubectl apply -f deploy/k8s/` (that does not descend into this directory):
+#
+#   kubectl apply -f deploy/k8s/optional/drbd-loader.yaml
+#
+# The same as the Helm chart with drbdModuleLoader.enabled=true. Change the
+# image of the "load" container to match the nodes' distribution, and add a
+# nodeSelector if only some nodes need it. See docs/kubernetes-drbd.md.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: haify-drbd-loader
+  namespace: kube-system
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: haify-drbd-loader
+  namespace: kube-system
+spec:
+  selector: { matchLabels: { app: haify-drbd-loader, haify-drbd-loader: haify-drbd-loader } }
+  template:
+    metadata:
+      labels:
+        app: haify-drbd-loader
+        haify-drbd-loader: haify-drbd-loader
+      annotations:
+        kubectl.kubernetes.io/default-container: drbd
+    spec:
+      serviceAccountName: haify-drbd-loader
+      automountServiceAccountToken: false
+      priorityClassName: system-node-critical
+      # bring-up enters the host's PID 1 namespaces to run systemctl there.
+      hostPID: true
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: prepare
+          image: haify-csi:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/csi-node
+            - drbd-module
+            - prepare
+            - --min-version=9.2.0
+            - --state-dir=/run/haify-drbd-loader
+            - --modprobe-dir=/host/etc/modprobe.d
+          securityContext: { privileged: true }
+          volumeMounts:
+            - { name: state, mountPath: /run/haify-drbd-loader }
+            - { name: etc-modprobe-d, mountPath: /host/etc/modprobe.d }
+        - name: load
+          image: quay.io/piraeusdatastore/drbd9-noble:v9.3.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: LB_HOW, value: "compile" }
+            # Fail, rather than accept, a loaded module older than this.
+            - { name: LB_DRBD_MIN_LOADED_VERSION, value: "9.2.0" }
+            # On SELinux hosts, label the module so the kernel may load it.
+            - { name: LB_SELINUX_AS, value: modules_object_t }
+          securityContext: { privileged: true }
+          volumeMounts:
+            - { name: lib-modules, mountPath: /lib/modules, readOnly: true }
+            - { name: usr-src, mountPath: /usr/src, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+        - name: bring-up
+          image: haify-csi:latest
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/csi-node, drbd-module, bring-up, --state-dir=/run/haify-drbd-loader]
+          securityContext: { privileged: true }
+          volumeMounts:
+            - { name: state, mountPath: /run/haify-drbd-loader }
+      containers:
+        - name: drbd
+          image: haify-csi:latest
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/csi-node, drbd-module, hold, --min-version=9.2.0]
+          readinessProbe:
+            exec:
+              command: [/usr/local/bin/csi-node, drbd-module, check, --min-version=9.2.0]
+            periodSeconds: 30
+            timeoutSeconds: 10
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+      volumes:
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: lib-modules
+          hostPath: { path: /lib/modules, type: Directory }
+        - name: usr-src
+          hostPath: { path: /usr/src, type: Directory }
+        - name: etc-modprobe-d
+          hostPath: { path: /etc/modprobe.d, type: DirectoryOrCreate }

@@ -14,6 +14,11 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 
 {{- define "haify-csi.image" -}}{{ .Values.image.repository }}:{{ .Values.image.tag }}{{- end -}}
 
+{{/* "true" when the chart puts DRBD on the nodes, by the loader or by KMM. */}}
+{{- define "haify-csi.drbdManaged" -}}
+{{- if or .Values.drbdModuleLoader.enabled .Values.drbdModuleLoader.kmm.enabled }}true{{ end -}}
+{{- end -}}
+
 {{/* The token, from the Secret; optional, so a controller without auth works. */}}
 {{- define "haify-csi.tokenEnv" -}}
 - name: HAIFY_TOKEN
