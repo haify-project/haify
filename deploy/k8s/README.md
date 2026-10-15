@@ -861,15 +861,16 @@ action (`HA failover: tainted lost node`, `HA failover: force-deleted pod`).
 
 **Timing.** The surviving replicas notice the dead peer after DRBD's ping
 timeout, about 10 seconds. The pods are deleted one grace period after the
-next check sees it, so about 20 to 30 seconds after the node dies; when
-Kubernetes already reports the node `NotReady`, the grace period is skipped.
-If the dead node is the first replica the Haify controller asks for a volume's
-status, each check also waits for that SSH connection to time out. The new pod
-then starts like any other, and promoting its replica takes about 10 seconds.
+next check sees it; when Kubernetes already reports the node `NotReady`, the
+grace period is skipped. The new pod then starts on a node with a replica and
+the volume is promoted there. From power loss to the pod running again takes
+about 30 seconds, well before Kubernetes marks the node `NotReady` (40
+seconds) or evicts its pods (5 minutes).
 
 The HA controller runs in the controller plugin's pod. If that pod was on the
 dead node too, another replica of it takes over first, once the dead one's
-Lease runs out after 15 seconds. That is why `20-controller.yaml` and the
+Lease runs out after 15 seconds, and the pod is running again after about 40
+seconds. That is why `20-controller.yaml` and the
 chart run two replicas, each on its own node, and let the pod leave a dead
 node after 10 seconds. With a single replica, a failure of its node delays
 everything above until Kubernetes moves the pod, five minutes by default.
