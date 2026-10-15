@@ -27,9 +27,11 @@ func main() {
 	healthInterval := flag.Duration("health-interval", time.Minute,
 		"how often to check each volume's replicas and post VolumeDegraded/VolumeRecovered events on its PVC; 0 disables")
 	leaderElection := flag.Bool("leader-election", false,
-		"run the health reporter only on the replica holding the "+healthLeaseName+" Lease; set it when the Deployment has more than one replica")
+		"run the health reporter only on the replica holding the "+healthLeaseName+" Lease, and the HA controller on the one holding "+
+			haFailoverLeaseName+"; set it when the Deployment has more than one replica")
 	leaderElectionNamespace := flag.String("leader-election-namespace", "",
 		"namespace of the Lease (default: the pod's own namespace)")
+	haFailover := registerHAFailoverFlags()
 	flag.Parse()
 
 	log := logging.Production()
@@ -71,6 +73,16 @@ func main() {
 		startHealthReporter(ctx, haify, *healthInterval, lease, log)
 	} else {
 		log.Debug("main: health reporter disabled by --health-interval=0")
+	}
+
+	if *haFailover.enabled {
+		lease := ""
+		if *leaderElection {
+			lease = leaseNamespace(*leaderElectionNamespace)
+		}
+		startHAFailover(ctx, haify, haFailover, lease, log)
+	} else {
+		log.Debug("main: HA failover disabled by --ha-failover=false")
 	}
 
 	if err := d.Run(ctx); err != nil {

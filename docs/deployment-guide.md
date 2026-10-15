@@ -554,9 +554,12 @@ reached at an IP or VIP on port 3374.
 Both plugin pods use `hostNetwork` with `dnsPolicy: ClusterFirstWithHostNet`, so
 they find the `haify-controller` Service through cluster DNS. A pod can move to
 any node that holds a replica of its volume, and its data is already there.
-Kubernetes waits 300 s before it moves pods off a lost node. To fail over
-sooner, run the workload as a Deployment or StatefulSet and set a short
-`tolerationSeconds` for `node.kubernetes.io/unreachable` and `not-ready`.
+When a node dies, the controller plugin's HA controller taints it
+`haify.csi/lost-quorum:NoSchedule` and force-deletes the pods there whose
+volumes kept quorum on the other replicas, so their Deployment or StatefulSet
+recreates them elsewhere within about half a minute instead of after
+Kubernetes' 300 s. How it decides, how to opt a pod out and how to tune or turn
+it off: `deploy/k8s/README.md`, "When a node dies".
 
 ---
 

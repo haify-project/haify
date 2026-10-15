@@ -140,8 +140,46 @@ roleRef:
   name: haify-csi-health
   apiGroup: rbac.authorization.k8s.io
 ---
+{{- if .Values.haFailover.enabled }}
+# The plugin's HA controller: watches nodes, this driver's PVs and the Pods
+# using them; taints a lost node, force-deletes its Pods so they are recreated
+# elsewhere, deletes their VolumeAttachments, and posts events saying so.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: haify-csi-ha-failover }
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["list", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: haify-csi-ha-failover }
+subjects:
+  - kind: ServiceAccount
+    name: haify-csi-controller
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: haify-csi-ha-failover
+  apiGroup: rbac.authorization.k8s.io
+---
+{{- end }}
 # Leader election: the provisioner, resizer, snapshotter and the plugin's
-# health reporter each keep a Lease here, so only one replica acts at a time.
+# health reporter and HA controller each keep a Lease here, so only one replica
+# acts at a time.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata: { name: haify-csi-leader-election, namespace: {{ .Release.Namespace }} }

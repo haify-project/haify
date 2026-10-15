@@ -4,7 +4,7 @@ metadata:
   name: haify-csi-controller
   namespace: kube-system
 spec:
-  # The sidecars and the plugin's health reporter run with leader election, so
+  # The sidecars and the plugin's health reporter and HA controller run with leader election, so
   # more replicas are safe: one does the work, the others stand by.
   replicas: 1
   selector: { matchLabels: { app: haify-csi-controller } }
@@ -105,6 +105,11 @@ spec:
             # each event is posted once, not once per replica.
             - "--leader-election"
             - "--leader-election-namespace=kube-system"
+            # The HA controller moves Pods off a node that dropped out of its
+            # volumes' DRBD resources (see README "When a node dies").
+            # --ha-failover=false turns it off.
+            - "--ha-failover-interval=5s"
+            - "--ha-failover-grace=10s"
           env:
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }

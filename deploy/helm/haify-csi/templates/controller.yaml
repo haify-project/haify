@@ -5,7 +5,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels: {{- include "haify-csi.labels" . | nindent 4 }}
 spec:
-  # The sidecars and the plugin's health reporter each hold a Lease, so with
+  # The sidecars and the plugin's health reporter and HA controller each hold a Lease, so with
   # several replicas one does the work and the others stand by to take over.
   replicas: {{ .Values.controllerPlugin.replicas }}
   selector: { matchLabels: { app: haify-csi-controller } }
@@ -79,6 +79,10 @@ spec:
             - --haify-controller=haify-controller:{{ .Values.controller.port }}
             - --leader-election
             - --leader-election-namespace={{ .Release.Namespace }}
+            - --ha-failover={{ .Values.haFailover.enabled }}
+            - --ha-failover-interval={{ .Values.haFailover.interval }}
+            - --ha-failover-grace={{ .Values.haFailover.grace }}
+            - --ha-failover-max-lost-fraction={{ .Values.haFailover.maxLostFraction }}
           env:
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }

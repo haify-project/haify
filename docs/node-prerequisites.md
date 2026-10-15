@@ -396,9 +396,10 @@ Volumes are RWO (one node at a time); `WaitForFirstConsumer` with
 
 A workload survives a node failure when the volume keeps quorum (two replicas
 plus the diskless tiebreaker) and the workload is a Deployment or StatefulSet; a
-bare Pod is not rescheduled. Kubernetes waits 300 s before evicting from an unreachable
-node; set short `tolerationSeconds` for `node.kubernetes.io/unreachable` and
-`node.kubernetes.io/not-ready` to fail over sooner. For PostgreSQL, set
+bare Pod is not rescheduled. The controller plugin's HA controller moves such
+a workload off a dead node within about half a minute, instead of the 300 s
+Kubernetes waits by itself: it taints the node `haify.csi/lost-quorum` and
+force-deletes the Pods there (`deploy/k8s/README.md`, "When a node dies"). For PostgreSQL, set
 `PGDATA` to a subdirectory of the mount (the volume root holds `lost+found`).
 
 For a smoke test, run `scripts/csi-e2e.sh`.

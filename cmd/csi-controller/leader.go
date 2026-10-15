@@ -60,40 +60,48 @@ func leaseIdentity() string {
 }
 
 // runWhileLeader calls run with a context that lives as long as this replica,
-// named id, holds the Lease, and competes for it again each time it is lost,
-// until ctx is cancelled. A standby replica takes over within the lease
-// duration of the leader stopping; on an orderly shutdown the Lease is released
-// at once.
+// named id, holds the health reporter's Lease, and competes for it again each
+// time it is lost, until ctx is cancelled. A standby replica takes over within
+// the lease duration of the leader stopping; on an orderly shutdown the Lease
+// is released at once.
 func runWhileLeader(ctx context.Context, kube kubernetes.Interface, namespace, id string, log *zap.Logger, run func(context.Context)) {
+	runWhileLeaderOf(ctx, kube, healthLeaseName, namespace, id, log, run)
+}
+
+// runWhileLeaderOf is runWhileLeader for the Lease named lease. Each job that
+// runs on one replica only has a Lease of its own, so the jobs move between
+// replicas independently.
+func runWhileLeaderOf(ctx context.Context, kube kubernetes.Interface, lease, namespace, id string, log *zap.Logger, run func(context.Context)) {
 	lock := &resourcelock.LeaseLock{
-		LeaseMeta:  metav1.ObjectMeta{Name: healthLeaseName, Namespace: namespace},
+		LeaseMeta:  metav1.ObjectMeta{Name: lease, Namespace: namespace},
 		Client:     kube.CoordinationV1(),
 		LockConfig: resourcelock.ResourceLockConfig{Identity: id},
 	}
-	log.Debug("runWhileLeader: competing for lease", zap.String("lease", healthLeaseName), zap.String("namespace", namespace),
+	log.Debug("runWhileLeaderOf: competing for lease", zap.String("lease", lease), zap.String("namespace", namespace),
 		zap.String("identity", id))
 	for ctx.Err() == nil {
-		log.Debug("runWhileLeader: starting an election round", zap.String("identity", id))
+		log.Debug("runWhileLeaderOf: starting an election round", zap.String("lease", lease), zap.String("identity", id))
 		leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 			Lock:            lock,
-			Name:            healthLeaseName,
+			Name:            lease,
 			LeaseDuration:   15 * time.Second,
 			RenewDeadline:   10 * time.Second,
 			RetryPeriod:     2 * time.Second,
 			ReleaseOnCancel: true,
 			Callbacks: leaderelection.LeaderCallbacks{
 				OnStartedLeading: func(leading context.Context) {
-					log.Info("health reporter: leading", zap.String("identity", id))
+					log.Info("leading", zap.String("lease", lease), zap.String("identity", id))
 					run(leading)
 				},
 				OnStoppedLeading: func() {
-					log.Info("health reporter: not leading", zap.String("identity", id))
+					log.Info("not leading", zap.String("lease", lease), zap.String("identity", id))
 				},
 				OnNewLeader: func(identity string) {
-					log.Debug("runWhileLeader: observed leader", zap.String("leader", identity), zap.String("identity", id))
+					log.Debug("runWhileLeaderOf: observed leader", zap.String("lease", lease), zap.String("leader", identity),
+						zap.String("identity", id))
 				},
 			},
 		})
 	}
-	log.Debug("runWhileLeader: context done, stopped competing", zap.String("identity", id))
+	log.Debug("runWhileLeaderOf: context done, stopped competing", zap.String("lease", lease), zap.String("identity", id))
 }
