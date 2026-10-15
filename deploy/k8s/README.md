@@ -765,6 +765,10 @@ controller runs before you need it.
    haify resource dr-failover pvc_3f2a... --yes
    ```
 
+   It refuses while a primary-site node still answers and is Primary for the
+   volume: then the site is not lost, and promoting the DR node would leave
+   two Primaries. Stop the workload there first.
+
 3. In the DR site's Kubernetes cluster, install the Haify CSI driver pointing
    at that controller. The DR node must be a Kubernetes node there, with the
    same name as the Haify node. Then bind the volume with a static PV and a

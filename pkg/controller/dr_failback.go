@@ -173,6 +173,15 @@ drbdadm connect --discard-my-data %[1]s`, name)
 	}
 	step("primary site in sync with the DR")
 
+	// A DR failover turned quorum off on the DR node at runtime
+	// (dr_failover.go). With the sites connected and in sync, the configured
+	// quorum comes back before the roles are swapped.
+	if err := rm.execAllSuccess(ctx, []string{drAddr}, "sudo drbdadm adjust "+name,
+		"restore the DR node's configured quorum"); err != nil {
+		return fail("%v", err)
+	}
+	step("%s: configured quorum restored", dr)
+
 	// Phase 3: swap the roles back. The DR must not be in use: demoting under
 	// a mounted filesystem fails, and the service would lose its disk.
 	if drState.Role == "Primary" {

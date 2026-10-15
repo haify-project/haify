@@ -1965,6 +1965,15 @@ haify resource dr-failover db --yes    # force-promotes the DR node
 Writes still buffered in the WAN link when the primary site died are lost.
 Mount the volumes on the DR node and resume there.
 
+Before it promotes anything, `dr-failover` asks the primary-site nodes for
+the volume's state, giving each five seconds. If one answers and is Primary,
+the site is not lost and it refuses: promoting the DR node then would leave
+two Primaries writing different data. Stop the service at the primary site
+first. Otherwise it disconnects the DR node from the primary site and turns
+DRBD quorum off on the DR node, because a DR node on its own is a minority of
+the resource's nodes and DRBD will not promote it with quorum on. This changes
+only the running DRBD, not the resource's configuration.
+
 To come back, run `dr-failback` repeatedly until it says done:
 
 ```bash
@@ -1972,8 +1981,9 @@ haify resource dr-failback db --wait 30m
 ```
 
 It reconnects the primary-site nodes, **discarding what they wrote after the
-failover** in favour of the DR copy, waits for them to resync from the DR, then
-makes a primary-site node (`--node`, default the first) Primary again. Each
+failover** in favour of the DR copy, waits for them to resync from the DR,
+turns quorum back on at the DR node, then makes a primary-site node (`--node`,
+default the first) Primary again. Each
 primary-site node must be unmounted for the first step and the DR node for the
 last.
 
