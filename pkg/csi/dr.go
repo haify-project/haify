@@ -3,7 +3,6 @@ package csi
 import (
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
@@ -22,10 +21,13 @@ import (
 // (`haify resource dr-failover`), because it can be behind.
 
 // StorageClass parameters for the DR replica.
+//
+// There is deliberately no WAN port parameter: a StorageClass serves many
+// volumes, and each volume's haify-proxy pair needs a port of its own on the
+// DR node. The controller picks a random free one above 3000 per volume.
 const (
 	paramDRNode          = "drNode"          // the Haify node at the DR site
 	paramDREndpoint      = "drEndpoint"      // the DR site's public address, without a port
-	paramDRWANPort       = "drWanPort"       // the haify-proxy port; default a random one above 3000
 	paramDREgressAddress = "drEgressAddress" // the primary site's source address for the WAN link
 )
 
@@ -33,12 +35,11 @@ const (
 type drParams struct {
 	node     string // empty: no DR replica
 	endpoint string
-	wanPort  uint32
 	egress   string
 }
 
 // parseDRParams validates the DR parameters. drNode and drEndpoint come
-// together; the rest are optional.
+// together; drEgressAddress is optional.
 func parseDRParams(p map[string]string) (drParams, error) {
 	log := zap.L()
 	out := drParams{
@@ -47,26 +48,21 @@ func parseDRParams(p map[string]string) (drParams, error) {
 		egress:   strings.TrimSpace(p[paramDREgressAddress]),
 	}
 	log.Debug("parseDRParams: start", zap.String("dr_node", out.node), zap.String("dr_endpoint", out.endpoint),
-		zap.String("egress", out.egress), zap.String("wan_port", p[paramDRWANPort]))
-	if v := strings.TrimSpace(p[paramDRWANPort]); v != "" {
-		n, err := strconv.ParseUint(v, 10, 16)
-		if err != nil || n <= 3000 {
-			log.Debug("parseDRParams: invalid WAN port", zap.String("wan_port", v))
-			return out, fmt.Errorf("invalid %s %q (want a port above 3000)", paramDRWANPort, v)
-		}
-		out.wanPort = uint32(n)
-	}
+		zap.String("egress", out.egress))
 	switch {
-	case out.node == "" && (out.endpoint != "" || out.egress != "" || out.wanPort != 0):
+	case out.node == "" && (out.endpoint != "" || out.egress != ""):
 		log.Debug("parseDRParams: DR settings without a DR node")
-		return out, fmt.Errorf("%s, %s and %s need %s", paramDREndpoint, paramDRWANPort, paramDREgressAddress, paramDRNode)
+		return out, fmt.Errorf("%s and %s need %s", paramDREndpoint, paramDREgressAddress, paramDRNode)
 	case out.node != "" && out.endpoint == "":
 		log.Debug("parseDRParams: DR node without endpoint", zap.String("dr_node", out.node))
 		return out, fmt.Errorf("%s needs %s: the DR site's address the primary site connects to, without a port", paramDRNode, paramDREndpoint)
 	case out.node != "" && net.ParseIP(out.endpoint) == nil && strings.ContainsAny(out.endpoint, ":/"):
 		log.Debug("parseDRParams: endpoint has a port or scheme", zap.String("dr_endpoint", out.endpoint))
-		return out, fmt.Errorf("%s %q: give an address or a host name, without a port or scheme (the port is %s)",
-			paramDREndpoint, out.endpoint, paramDRWANPort)
+		return out, fmt.Errorf("%s %q: give an address or a host name, without a port or scheme; each volume gets its own port",
+			paramDREndpoint, out.endpoint)
+	case out.egress != "" && net.ParseIP(out.egress) == nil:
+		log.Debug("parseDRParams: egress is not an IP address", zap.String("egress", out.egress))
+		return out, fmt.Errorf("%s %q is not an IP address", paramDREgressAddress, out.egress)
 	}
 	return out, nil
 }
@@ -124,7 +120,6 @@ func applyDR(req *haifypb.CreateResourceRequest, dr drParams) {
 	req.Wan = true
 	req.DrNode = dr.node
 	req.DrEndpoint = dr.endpoint
-	req.WanPort = dr.wanPort
 	req.WanEgressAddress = dr.egress
 }
 

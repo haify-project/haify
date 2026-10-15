@@ -18,9 +18,9 @@ func TestParseDRParams(t *testing.T) {
 	assert.Equal(t, drParams{}, dr, "no DR replica unless asked")
 
 	dr, err = parseDRParams(map[string]string{paramDRNode: "dr1", paramDREndpoint: "dr.example.com",
-		paramDRWANPort: "37901", paramDREgressAddress: "203.0.113.20"})
+		paramDREgressAddress: "203.0.113.20"})
 	require.NoError(t, err)
-	assert.Equal(t, drParams{node: "dr1", endpoint: "dr.example.com", wanPort: 37901, egress: "203.0.113.20"}, dr)
+	assert.Equal(t, drParams{node: "dr1", endpoint: "dr.example.com", egress: "203.0.113.20"}, dr)
 
 	dr, err = parseDRParams(map[string]string{paramDRNode: "dr1", paramDREndpoint: "2001:db8::1"})
 	require.NoError(t, err, "an IPv6 address is an address, not a host with a port")
@@ -31,8 +31,7 @@ func TestParseDRParams(t *testing.T) {
 		"endpoint without node": {paramDREndpoint: "dr.example.com"},
 		"endpoint with a port":  {paramDRNode: "dr1", paramDREndpoint: "dr.example.com:7000"},
 		"endpoint with scheme":  {paramDRNode: "dr1", paramDREndpoint: "tcp://dr.example.com"},
-		"common port":           {paramDRNode: "dr1", paramDREndpoint: "dr.example.com", paramDRWANPort: "443"},
-		"not a port":            {paramDRNode: "dr1", paramDREndpoint: "dr.example.com", paramDRWANPort: "x"},
+		"egress not an address": {paramDRNode: "dr1", paramDREndpoint: "dr.example.com", paramDREgressAddress: "eth1"},
 	} {
 		_, err := parseDRParams(p)
 		assert.Errorf(t, err, "%s should be refused", name)

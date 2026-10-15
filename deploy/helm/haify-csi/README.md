@@ -47,9 +47,10 @@ entry loses its name and every other field.
 | `controller.port` | `3374` | Its gRPC port |
 | `token.existingSecret` / `token.value` | | API token, when the controller requires one |
 | `image.repository`, `image.tag`, `image.pullPolicy` | `haify-csi`, `latest`, `IfNotPresent` | The plugin image |
-| `storageClasses` | one class `haify` on pool `vg0`, 2 replicas | `name`, `pool`, `replicas`, `default`, `reclaimPolicy`, `volumeBindingMode`, `allowVolumeExpansion`, and any other driver `parameters` |
+| `storageClasses` | one class `haify` on pool `vg0`, 2 replicas | `name`, `pool`, `replicas`, `default`, `reclaimPolicy`, `volumeBindingMode`, `allowVolumeExpansion`, and any other driver `parameters` (for example `drNode` and `drEndpoint` for a replica at a DR site; see "Cross-site disaster recovery" in `deploy/k8s/README.md`) |
 | `snapshotClass.enabled` | `true` | Created only when the cluster has the snapshot CRDs |
 | `snapshotClass.name`, `snapshotClass.default`, `snapshotClass.deletionPolicy` | `haify-snapshot`, `false`, `Delete` | The VolumeSnapshotClass's name, whether it is the default class, and whether deleting a `VolumeSnapshot` also deletes the snapshot |
+| `snapshotClass.parameters` | `{}` | `backupTarget: <Haify backup target>` also uploads every snapshot to that target, and `keepLocalSnapshot: "false"` deletes the local snapshot once uploaded. See "Snapshots that leave the cluster" in `deploy/k8s/README.md` |
 | `kubeletDir` | `/var/lib/kubelet` | Change for distributions that move it |
 | `operationTimeout` | `120s` | How long provisioning, resizing or a snapshot may take |
 | `controllerPlugin.replicas` | `1` | How many copies of the controller plugin run. Only one works at a time; with `2` or more, the others wait, and when the working one stops (its node goes down, it is evicted or restarted), another takes over within about half a minute. Each replica runs on a node of its own. With `1`, provisioning, resizing and snapshots wait until Kubernetes starts the pod again elsewhere |

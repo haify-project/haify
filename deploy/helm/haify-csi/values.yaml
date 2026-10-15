@@ -42,6 +42,15 @@ storageClasses:
     volumeBindingMode: WaitForFirstConsumer
     allowVolumeExpansion: true
     parameters: {}
+  # A class whose volumes also get an asynchronous replica on a Haify node at
+  # another site. drNode must host the pool; drEndpoint is the DR site's
+  # public address, without a port.
+  # - name: haify-dr
+  #   pool: vg0
+  #   replicas: 2
+  #   parameters:
+  #     drNode: dr1
+  #     drEndpoint: dr.example.com
 
 # A VolumeSnapshotClass, created only when the cluster has the snapshot CRDs
 # (kubernetes-csi/external-snapshotter); k3s and most distributions do not ship
@@ -51,6 +60,11 @@ snapshotClass:
   name: haify-snapshot
   default: false
   deletionPolicy: Delete
+  # backupTarget (a Haify backup target) also uploads every snapshot there;
+  # keepLocalSnapshot: "false" then deletes the local one once uploaded.
+  parameters: {}
+  #   backupTarget: offsite
+  #   keepLocalSnapshot: "true"
 
 controllerPlugin:
   replicas: 1
