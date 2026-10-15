@@ -54,6 +54,15 @@ storageClasses:
   #   parameters:
   #     encryption: "true"
   #     replicationTLS: "true"
+  # A class whose volumes also get an asynchronous replica on a Haify node at
+  # another site. drNode must host the pool; drEndpoint is the DR site's
+  # public address, without a port.
+  # - name: haify-dr
+  #   pool: vg0
+  #   replicas: 2
+  #   parameters:
+  #     drNode: dr1
+  #     drEndpoint: dr.example.com
 
 # VolumeAttributesClasses (Kubernetes 1.34+). Naming one in a PVC's
 # volumeAttributesClassName changes that volume in place. Parameters:
@@ -77,6 +86,11 @@ snapshotClass:
   name: haify-snapshot
   default: false
   deletionPolicy: Delete
+  # backupTarget (a Haify backup target) also uploads every snapshot there;
+  # keepLocalSnapshot: "false" then deletes the local one once uploaded.
+  parameters: {}
+  #   backupTarget: offsite
+  #   keepLocalSnapshot: "true"
 
 # Moves Pods off a node that has died without waiting the five minutes
 # Kubernetes takes: when the node drops out of a volume's DRBD resource and the

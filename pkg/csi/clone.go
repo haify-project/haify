@@ -26,6 +26,10 @@ type volumeSource struct {
 	// snapshot taken when cloning a live volume). Nil when there is nothing to
 	// undo.
 	cleanup func()
+	// backup, instead of snapshot, is a backup on a target to restore from
+	// (restore_backup.go). It is read through any replica, so node is empty
+	// and placement is free.
+	backup *haifypb.BackupInfo
 }
 
 // resolveVolumeSource turns a CSI VolumeContentSource into the snapshot to
@@ -46,11 +50,15 @@ func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.Volu
 	case *csi.VolumeContentSource_Snapshot:
 		id := src.Snapshot.GetSnapshotId()
 		s.log.Debug("controllerServer.resolveVolumeSource: restoring from snapshot", zap.String("snapshot_id", id))
-		resource, node, snapName, err := parseSnapshotID(id)
+		ref, err := parseSnapshotRef(id)
 		if err != nil {
 			s.log.Debug("controllerServer.resolveVolumeSource: malformed snapshot id", zap.String("snapshot_id", id), zap.Error(err))
 			return nil, status.Errorf(codes.NotFound, "snapshot %q: %v", id, err)
 		}
+		if ref.backedUp {
+			return s.resolveBackedSnapshot(ctx, ref, wantGiB)
+		}
+		resource, node, snapName := ref.resource, ref.node, ref.name
 		start := time.Now()
 		res, gerr := s.backend.GetResource(ctx, resource)
 		s.log.Debug("controllerServer.resolveVolumeSource: looked up snapshot's source volume", zap.String("resource", resource),
@@ -139,7 +147,49 @@ func oneNodeSnapshot(res *haifypb.ResourceInfo, snapName string) *haifypb.Popula
 
 // describeSource names a volume source in an error message.
 func describeSource(src *volumeSource) string {
+	if src.backup != nil {
+		return fmt.Sprintf("backup %s on target %s", src.backup.GetId(), src.backup.GetTarget())
+	}
 	return fmt.Sprintf("snapshot %s of %s on %s", src.snapshot.GetName(), src.snapshot.GetResource(), src.node)
+}
+
+// populate fills the freshly created volume name from its source before it is
+// ever handed out. A snapshot is copied here and now; on failure the
+// half-written resource is destroyed rather than returned, so a retry starts
+// from a clean, empty volume. A backup is restored in the background, and the
+// error returned says it is under way (restore_backup.go).
+//
+// (If the controller itself dies mid-copy from a snapshot, the resource
+// survives empty, and a retry would take the "already exists" path and return
+// it as ready. A restore from a backup is guarded by restoringLabel against
+// exactly that; the local copy, which takes seconds, is not.)
+func (s *controllerServer) populate(ctx context.Context, name string, source *volumeSource) error {
+	if source.backup != nil {
+		s.log.Debug("controllerServer.populate: restoring from a backup in the background", zap.String("resource", name),
+			zap.String("backup", source.backup.GetId()))
+		return s.startRestore(ctx, name, source.backup)
+	}
+	start := time.Now()
+	copied, perr := s.backend.PopulateVolumeFromSnapshot(ctx, name, 0, source.snapshot, source.node)
+	s.log.Debug("controllerServer.populate: populated from source", zap.String("resource", name),
+		zap.String("node", source.node), zap.Uint64("bytes", copied), zap.Duration("took", time.Since(start)), zap.Error(perr))
+	if perr != nil {
+		s.log.Debug("controllerServer.populate: rolling back the half-filled volume", zap.String("resource", name))
+		if derr := s.backend.DeleteResource(context.WithoutCancel(ctx), name); derr != nil {
+			s.log.Error("failed to roll back a volume whose restore failed; it may need manual cleanup",
+				zap.String("volume", name), zap.Error(derr))
+		}
+		return status.Errorf(codes.Internal, "populate %q from %s: %v", name, describeSource(source), perr)
+	}
+	return nil
+}
+
+// sourceLabels adds the labels a volume carries because of its source: a
+// volume restored from a backup is marked until the restore has finished.
+func sourceLabels(labels map[string]string, source *volumeSource) {
+	if source != nil && source.backup != nil {
+		labels[restoringLabel] = source.backup.GetId()
+	}
 }
 
 // contentSourceOf echoes the request's content source back in the response, as

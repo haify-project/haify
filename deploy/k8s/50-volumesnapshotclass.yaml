@@ -11,11 +11,26 @@
 #
 # NOTE: a snapshot is taken on ONE node's local backing volume — it is not
 # replicated by DRBD. It protects against logical faults (bad writes, accidental
-# deletion), not against losing that node. For off-cluster protection, ship the
-# snapshot somewhere else.
+# deletion), not against losing that node. For off-cluster protection, use a
+# class with backupTarget, like the commented one below.
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: haify-drbd-snapshot
 driver: haify.csi.liliang-cn.com
 deletionPolicy: Delete
+# Snapshots that are also uploaded to a Haify backup target (S3, SMB, WebDAV)
+# and survive losing the cluster. The target must exist in Haify first
+# (`haify backup target add`, `haify backup target list`). See "Snapshots that
+# leave the cluster" in deploy/k8s/README.md.
+#
+# ---
+# apiVersion: snapshot.storage.k8s.io/v1
+# kind: VolumeSnapshotClass
+# metadata:
+#   name: haify-drbd-snapshot-offsite
+# driver: haify.csi.liliang-cn.com
+# deletionPolicy: Delete
+# parameters:
+#   backupTarget: offsite
+#   keepLocalSnapshot: "true"   # "false" deletes the local snapshot once uploaded

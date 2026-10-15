@@ -163,7 +163,7 @@ func (sm *ScheduleManager) RunBackupSchedule(ctx context.Context, name string) (
 	}
 
 	log.Info("Running backup schedule", zap.String("schedule", name))
-	rec, runErr := sm.controller.backups.createBackup(ctx, s.Resource, s.Target, "", false, s.Name)
+	rec, runErr := sm.controller.backups.createBackup(ctx, s.Resource, s.Target, "", false, s.Name, "")
 	failedBefore := s.LastError != ""
 	s.LastRun = time.Now()
 	trace.Debug("ScheduleManager.RunBackupSchedule: backup run finished", zap.String("schedule", name),

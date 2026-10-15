@@ -8525,6 +8525,10 @@
         "full": {
           "type": "boolean",
           "description": "full skips the incremental path even when a base is available."
+        },
+        "snapshot": {
+          "type": "string",
+          "description": "snapshot reads the image from this existing snapshot of the resource's\nvolume on node (required with it) instead of taking a new one, so the\nbackup holds exactly that snapshot's point in time. The CSI driver uses it\nfor VolumeSnapshots that are also shipped off-cluster. Single-volume\nresources only. Such a backup is always full and keeps no base for an\nincremental, the snapshot is left in place, and its id is\n\"\u003cresource\u003e_\u003csnapshot\u003e\", so a caller can name it before it finishes."
         }
       }
     },

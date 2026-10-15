@@ -31,3 +31,22 @@ volumeBindingMode: WaitForFirstConsumer
 # reclaimPolicy: Delete
 # allowVolumeExpansion: true
 # volumeBindingMode: WaitForFirstConsumer
+
+# Volumes with an asynchronous DR replica on a Haify node at another site
+# (a WAN resource through haify-proxy). drNode must be a registered Haify node
+# that hosts the pool; drEndpoint is the DR site's public address, without a
+# port. See "Cross-site disaster recovery" in README.md.
+# ---
+# apiVersion: storage.k8s.io/v1
+# kind: StorageClass
+# metadata:
+#   name: haify-drbd-dr
+# provisioner: haify.csi.liliang-cn.com
+# parameters:
+#   pool: "vg0"
+#   replicas: "2"
+#   drNode: "dr1"
+#   drEndpoint: "dr.example.com"
+# reclaimPolicy: Delete
+# allowVolumeExpansion: true
+# volumeBindingMode: WaitForFirstConsumer

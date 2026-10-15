@@ -20,6 +20,9 @@ type controllerServer struct {
 	csi.UnimplementedGroupControllerServer
 	backend HaifyBackend
 	log     *zap.Logger
+	// ops tracks uploads to and restores from backup targets that outlast
+	// the call that started them (async_ops.go).
+	ops asyncOps
 }
 
 // NewControllerServer returns the CSI Controller service.
@@ -64,6 +67,9 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	s.log.Debug("controllerServer.CreateVolume: looked up existing resource", zap.String("resource", name),
 		zap.Bool("found", getErr == nil && existing != nil), zap.Duration("took", time.Since(start)), zap.Error(getErr))
 	if getErr == nil && existing != nil {
+		if err := s.checkRestore(ctx, existing); err != nil {
+			return nil, err
+		}
 		// If the caller specified an exact capacity range (RequiredBytes == LimitBytes),
 		// and it differs from what was provisioned, return AlreadyExists per CSI spec.
 		cr := req.GetCapacityRange()
@@ -81,12 +87,9 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		}
 		s.log.Debug("controllerServer.CreateVolume: already exists, returning it (idempotent)", zap.String("resource", name),
 			zap.Strings("nodes", existing.GetNodes()))
-		return &csi.CreateVolumeResponse{Volume: &csi.Volume{
-			VolumeId:           existing.GetName(),
-			CapacityBytes:      int64(sizeGB) * giB,
-			AccessibleTopology: accessibleTopology(existing.GetNodes()),
-			VolumeContext:      vc,
-		}}, nil
+		resp := existingVolumeResponse(req, existing, sizeGB)
+		resp.Volume.VolumeContext = vc
+		return resp, nil
 	}
 
 	// A PVC that names a VolumeAttributesClass from the start brings its
@@ -99,6 +102,11 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	params, err := ParseVolumeParams(scParams)
 	if err != nil {
 		s.log.Debug("controllerServer.CreateVolume: invalid parameters", zap.String("resource", name), zap.Error(err))
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	dr, err := parseDRParams(req.GetParameters())
+	if err != nil {
+		s.log.Debug("controllerServer.CreateVolume: invalid DR parameters", zap.String("resource", name), zap.Error(err))
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if params.ResourceProfile != "" {
@@ -182,7 +190,7 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	}
 	candidates := nodesWithPool(nodes, pools, params.Pool, params.FaultDomainLabel)
 	pinned := requisiteNodes(req.GetAccessibilityRequirements())
-	if source != nil {
+	if source != nil && source.node != "" {
 		// Put the source's node first so a replica lands there and the copy is
 		// local; without this the new volume could be placed entirely elsewhere.
 		pinned = append([]string{source.node}, pinned...)
@@ -200,6 +208,12 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	// failure, capacity or otherwise, has to surface under that code.
 	s.log.Debug("controllerServer.CreateVolume: placement inputs", zap.String("resource", name),
 		zap.Int("candidates", len(candidates)), zap.Strings("pinned", pinned))
+	if dr.node != "" {
+		if candidates, err = placeAwayFromDR(dr, nodes, candidates, pinned, params.Pool); err != nil {
+			s.log.Debug("controllerServer.CreateVolume: DR node unusable", zap.String("resource", name), zap.Error(err))
+			return nil, err
+		}
+	}
 	replicaNodes, err := selectReplicaNodes(candidates, pinned, params.Replicas, uint64(sizeGB)*giB)
 	if err != nil {
 		s.log.Debug("controllerServer.CreateVolume: placement failed", zap.String("resource", name),
@@ -207,7 +221,7 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		return nil, status.Errorf(codes.ResourceExhausted, "pool %q: %v", params.Pool, err)
 	}
 	s.log.Debug("controllerServer.CreateVolume: placement chosen", zap.String("resource", name), zap.Strings("nodes", replicaNodes))
-	if source != nil && !containsNode(replicaNodes, source.node) {
+	if source != nil && source.node != "" && !containsNode(replicaNodes, source.node) {
 		s.log.Debug("controllerServer.CreateVolume: source node not among replicas", zap.String("resource", name),
 			zap.String("node", source.node), zap.Strings("nodes", replicaNodes))
 		return nil, status.Errorf(codes.ResourceExhausted,
@@ -225,14 +239,15 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		// the generated pvc-<uid> name.
 		labels[pvcLabel] = params.PVC
 	}
+	sourceLabels(labels, source)
 	start = time.Now()
 	if backend, ok := s.backend.(interface {
 		CreateResourceRequest(context.Context, *haifypb.CreateResourceRequest) error
 	}); ok {
 		s.log.Debug("controllerServer.CreateVolume: creating resource (full request)", zap.String("resource", name),
 			zap.Strings("nodes", replicaNodes), zap.Uint32("size_gb", sizeGB), zap.String("pool", params.Pool),
-			zap.Int("labels", len(labels)))
-		err = backend.CreateResourceRequest(ctx, &haifypb.CreateResourceRequest{
+			zap.Int("labels", len(labels)), zap.String("dr_node", dr.node))
+		createReq := &haifypb.CreateResourceRequest{
 			Name:        name,
 			Nodes:       replicaNodes,
 			Protocol:    "C",
@@ -242,10 +257,12 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 			Profile:     params.ResourceProfile,
 			Labels:      labels,
 			Encrypt:     params.Encryption,
-		})
-	} else if params.ResourceProfile != "" || len(params.ResourceLabels) > 0 || params.Encryption {
-		s.log.Debug("controllerServer.CreateVolume: backend cannot take profile, labels or encryption", zap.String("resource", name))
-		return nil, status.Error(codes.Internal, "Haify backend does not support resource profiles, labels or encryption")
+		}
+		applyDR(createReq, dr)
+		err = backend.CreateResourceRequest(ctx, createReq)
+	} else if params.ResourceProfile != "" || len(params.ResourceLabels) > 0 || params.Encryption || dr.node != "" {
+		s.log.Debug("controllerServer.CreateVolume: backend cannot take profile, labels, encryption or DR", zap.String("resource", name))
+		return nil, status.Error(codes.Internal, "Haify backend does not support resource profiles, labels, encryption or DR replicas")
 	} else {
 		s.log.Debug("controllerServer.CreateVolume: creating resource (pool and type)", zap.String("resource", name),
 			zap.Strings("nodes", replicaNodes), zap.Uint32("size_gb", sizeGB), zap.String("pool", params.Pool))
@@ -271,25 +288,11 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		}
 	}
 
-	// Fill the new volume from its source. This must happen before the volume is
-	// ever handed out, so on failure the half-written resource is destroyed
-	// rather than returned: a retry then starts from a clean, empty volume.
-	//
-	// (If the controller itself dies mid-copy the resource survives empty, and a
-	// retry would take the "already exists" path above and return it as ready.
-	// That window is not closed here; it needs persisted provisioning state.)
+	// Fill the new volume from its source before it is ever handed out
+	// (clone.go).
 	if source != nil {
-		start = time.Now()
-		copied, perr := s.backend.PopulateVolumeFromSnapshot(ctx, name, 0, source.snapshot, source.node)
-		s.log.Debug("controllerServer.CreateVolume: populated from source", zap.String("resource", name),
-			zap.String("node", source.node), zap.Uint64("bytes", copied), zap.Duration("took", time.Since(start)), zap.Error(perr))
-		if perr != nil {
-			s.log.Debug("controllerServer.CreateVolume: rolling back the half-filled volume", zap.String("resource", name))
-			if derr := s.backend.DeleteResource(context.WithoutCancel(ctx), name); derr != nil {
-				s.log.Error("failed to roll back a volume whose restore failed; it may need manual cleanup",
-					zap.String("volume", name), zap.Error(derr))
-			}
-			return nil, status.Errorf(codes.Internal, "populate %q from %s: %v", name, describeSource(source), perr)
+		if err := s.populate(ctx, name, source); err != nil {
+			return nil, err
 		}
 	}
 

@@ -2725,6 +2725,14 @@ message CreateBackupRequest {
   string node = 3;
   // full skips the incremental path even when a base is available.
   bool full = 4;
+  // snapshot reads the image from this existing snapshot of the resource's
+  // volume on node (required with it) instead of taking a new one, so the
+  // backup holds exactly that snapshot's point in time. The CSI driver uses it
+  // for VolumeSnapshots that are also shipped off-cluster. Single-volume
+  // resources only. Such a backup is always full and keeps no base for an
+  // incremental, the snapshot is left in place, and its id is
+  // "<resource>_<snapshot>", so a caller can name it before it finishes.
+  string snapshot = 5;
 }
 
 message CreateBackupResponse {

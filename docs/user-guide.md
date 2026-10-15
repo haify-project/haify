@@ -1839,7 +1839,8 @@ haify resource create --name db --size 100G --port 7000 \
 `--dr-endpoint` is an address or host name, without a port: the WAN port is
 `--wan-port`, and 0 (the default) picks a random port above 3000.
 `--wan-egress-address` pins the outbound side to one interface when the primary
-has several.
+has several. A Kubernetes StorageClass with `drNode` and `drEndpoint` creates
+every volume it provisions this way ([Kubernetes](#18-kubernetes-and-virtual-machines)).
 
 A resource that is already running gets its DR replica in place, while it keeps
 serving:
@@ -2516,6 +2517,16 @@ degrades or recovers, the driver posts a `VolumeDegraded` or `VolumeRecovered`
 event on the PVC and on every Pod using it, so `kubectl describe pod` shows it.
 `deploy/k8s/README.md` covers both, including what group snapshots need
 installed in the cluster.
+
+**Off the cluster.** A VolumeSnapshotClass with `backupTarget: <target>` also
+uploads every snapshot to that backup target ([Backups](#9-backups--the-only-copy-that-survives-losing-the-cluster)), as a full backup
+of exactly that snapshot. A PVC restored from it is written from the backup
+when the local snapshot is gone, including in another cluster whose Haify has
+imported the target's backups. A StorageClass with `drNode` and `drEndpoint`
+gives every volume an asynchronous replica at another site
+([WAN DR](#13-cross-site-replication-wan-dr)). The steps for both, restoring
+in another cluster and failing over to the DR site and back, are in
+`deploy/k8s/README.md`.
 
 The manifests are in `deploy/k8s` (see its README); the CSI section of
 [deployment-guide.md](deployment-guide.md) covers installation.

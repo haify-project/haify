@@ -191,15 +191,17 @@ func (bm *BackupManager) ReconcileInterrupted(ctx context.Context) error {
 // node selects which replica to read. Empty picks one automatically, preferring
 // a Secondary so the workload's node is left alone.
 func (bm *BackupManager) CreateBackup(ctx context.Context, resource, targetName, node string, full bool) (*database.Backup, error) {
-	return bm.createBackup(ctx, resource, targetName, node, full, "")
+	return bm.createBackup(ctx, resource, targetName, node, full, "", "")
 }
 
 // createBackup is CreateBackup on behalf of schedule, which is recorded on the
 // backup so that schedule's retention can tell its own backups from others.
-func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName, node string, full bool, schedule string) (*database.Backup, error) {
+// from, when set, is an existing snapshot to read instead of taking one
+// (CreateBackupFromSnapshot).
+func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName, node string, full bool, schedule, from string) (*database.Backup, error) {
 	log := bm.controller.traceLogger()
 	log.Debug("BackupManager.createBackup: start", zap.String("resource", resource), zap.String("target", targetName),
-		zap.String("node", node), zap.Bool("full", full), zap.String("schedule", schedule))
+		zap.String("node", node), zap.Bool("full", full), zap.String("schedule", schedule), zap.String("from_snapshot", from))
 	if bm.controller.db == nil {
 		log.Debug("BackupManager.createBackup: no database")
 		return nil, fmt.Errorf("database not available")
@@ -254,6 +256,14 @@ func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName,
 			return nil, fmt.Errorf("resource %q volume %d has no known backing volume to snapshot", resource, v.VolumeID)
 		}
 	}
+	if from != "" {
+		if err := checkFromSnapshot(info, node, from); err != nil {
+			log.Debug("BackupManager.createBackup: snapshot source refused", zap.String("snapshot", from), zap.Error(err))
+			return nil, err
+		}
+		// Every backup of a snapshot is self-contained: see backup_from_snapshot.go.
+		full = true
+	}
 
 	// The node holding the last backup's base snapshot is the only one an
 	// incremental can be read on, so it wins when it is healthy.
@@ -289,10 +299,10 @@ func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName,
 	log.Debug("BackupManager.createBackup: preflight passed", zap.String("host", host), zap.Duration("took", time.Since(start)))
 
 	started := time.Now().UTC()
-	id := resource + "_" + started.Format(backupIDLayout)
-	if existing, err := bm.controller.db.GetBackup(ctx, id); err == nil && existing != nil {
-		log.Debug("BackupManager.createBackup: backup id already taken", zap.String("backup", id))
-		return nil, fmt.Errorf("a backup of %q with id %q already exists; retry in a second", resource, id)
+	id := backupID(resource, started, from)
+	if err := bm.assertBackupIDFree(ctx, resource, id, from); err != nil {
+		log.Debug("BackupManager.createBackup: backup id already taken", zap.String("backup", id), zap.Error(err))
+		return nil, err
 	}
 
 	// The size of each DRBD device — NOT of its backing volume. See the file
@@ -343,7 +353,16 @@ func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName,
 	// close to a single instant as the storage layer allows. Snapshots kept as
 	// the next incremental's base are left out of the cleanup.
 	keep := map[uint32]bool{}
-	snaps, err := bm.snapshotVolumes(ctx, host, info, started)
+	var snaps map[uint32]string
+	if from != "" {
+		// The caller's snapshot is the caller's: never removed here.
+		snaps, err = bm.useSnapshot(ctx, host, info, from)
+		for id := range snaps {
+			keep[id] = true
+		}
+	} else {
+		snaps, err = bm.snapshotVolumes(ctx, host, info, started)
+	}
 	defer func() {
 		drop := make(map[uint32]string, len(snaps))
 		for id, name := range snaps {
@@ -424,8 +443,10 @@ func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName,
 		return nil, err
 	}
 
-	keep = bm.keepBases(ctx, host, rec, snaps)
-	log.Debug("BackupManager.createBackup: snapshots kept as next base", zap.Int("count", len(keep)))
+	if from == "" {
+		keep = bm.keepBases(ctx, host, rec, snaps)
+		log.Debug("BackupManager.createBackup: snapshots kept as next base", zap.Int("count", len(keep)))
+	}
 	rec.State = database.BackupStateCompleted
 	rec.FinishedAt = time.Now()
 	start = time.Now()
@@ -435,7 +456,11 @@ func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName,
 		return nil, fmt.Errorf("record completed backup: %w", err)
 	}
 	// The new snapshots are the base now; the old ones would only hold space.
-	bm.releaseOlderBases(context.WithoutCancel(ctx), rec)
+	// A backup of a caller's snapshot keeps no base, so the base of the
+	// target's incremental chain stays where it is.
+	if from == "" {
+		bm.releaseOlderBases(context.WithoutCancel(ctx), rec)
+	}
 	bm.controller.logger.Info("Backup completed",
 		zap.String("backup", rec.ID), zap.String("resource", resource),
 		zap.String("target", targetName), zap.String("kind", rec.Kind), zap.Uint64("bytes", rec.TotalBytes))

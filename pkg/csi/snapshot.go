@@ -29,14 +29,14 @@ func makeSnapshotID(resource, node, snapshotName string) string {
 	return strings.Join([]string{resource, node, snapshotName}, snapshotIDSep)
 }
 
-// parseSnapshotID splits an ID produced by makeSnapshotID.
+// parseSnapshotID splits an ID produced by makeSnapshotID, or the ID of a
+// backed-up snapshot (snapshot_id.go), into the local snapshot's parts.
 func parseSnapshotID(id string) (resource, node, snapshotName string, err error) {
-	parts := strings.Split(id, snapshotIDSep)
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		zap.L().Debug("parseSnapshotID: malformed", zap.String("snapshot_id", id), zap.Int("parts", len(parts)))
-		return "", "", "", fmt.Errorf("malformed snapshot id %q (want <resource>/<node>/<snapshot>)", id)
+	ref, err := parseSnapshotRef(id)
+	if err != nil {
+		return "", "", "", err
 	}
-	return parts[0], parts[1], parts[2], nil
+	return ref.resource, ref.node, ref.name, nil
 }
 
 // snapshotSource locates the backing volume to snapshot for a resource: the
@@ -81,7 +81,8 @@ func snapshotSizeBytes(res *haifypb.ResourceInfo) int64 {
 //
 // The snapshot is local to one node — it is not replicated by DRBD — so it
 // protects against logical faults (bad writes, accidental deletion) rather than
-// loss of that node. Shipping snapshots off-cluster is a separate concern.
+// loss of that node. A VolumeSnapshotClass with backupTarget also ships it to a
+// Haify backup target (snapshot_backup.go).
 func (s *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
 	s.log.Debug("controllerServer.CreateSnapshot: start", zap.String("name", req.GetName()),
 		zap.String("source_resource", req.GetSourceVolumeId()), zap.Int("secrets", len(req.GetSecrets())))
@@ -103,9 +104,30 @@ func (s *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 		return nil, status.Errorf(codes.NotFound, "source volume %q not found", source)
 	}
 
+	bp, err := parseSnapshotBackupParams(req.GetParameters())
+	if err != nil {
+		s.log.Debug("controllerServer.CreateSnapshot: invalid parameters", zap.String("resource", source), zap.Error(err))
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if bp.target != "" {
+		s.log.Debug("controllerServer.CreateSnapshot: snapshot is also backed up", zap.String("resource", source),
+			zap.String("target", bp.target), zap.Bool("keep_local", bp.keepLocal))
+		return s.createBackedSnapshot(ctx, req, res, bp)
+	}
+	snapshot, err := s.takeLocalSnapshot(ctx, req, res)
+	if err != nil {
+		return nil, err
+	}
+	return &csi.CreateSnapshotResponse{Snapshot: snapshot}, nil
+}
+
+// takeLocalSnapshot takes the snapshot on the source's first diskful replica,
+// or returns the one an earlier call took.
+func (s *controllerServer) takeLocalSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest, res *haifypb.ResourceInfo) (*csi.Snapshot, error) {
+	source := res.GetName()
 	volumePath, node, err := snapshotSource(res)
 	if err != nil {
-		s.log.Debug("controllerServer.CreateSnapshot: source cannot be snapshotted", zap.String("resource", source), zap.Error(err))
+		s.log.Debug("controllerServer.takeLocalSnapshot: source cannot be snapshotted", zap.String("resource", source), zap.Error(err))
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 
@@ -125,17 +147,17 @@ func (s *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 	// Idempotency: an existing snapshot of the same name on the same source is
 	// the same snapshot, so report success rather than trying to create it twice
 	// (which lvcreate would reject).
-	start = time.Now()
+	start := time.Now()
 	existing, lerr := s.backend.ListSnapshots(ctx, volumePath, node)
-	s.log.Debug("controllerServer.CreateSnapshot: listed existing snapshots", zap.String("volume", volumePath),
+	s.log.Debug("controllerServer.takeLocalSnapshot: listed existing snapshots", zap.String("volume", volumePath),
 		zap.String("node", node), zap.Int("count", len(existing)), zap.Duration("took", time.Since(start)), zap.Error(lerr))
 	if lerr == nil {
 		for _, snap := range existing {
 			if snap.GetName() == snapName {
-				s.log.Debug("controllerServer.CreateSnapshot: already exists, returning it (idempotent)",
+				s.log.Debug("controllerServer.takeLocalSnapshot: already exists, returning it (idempotent)",
 					zap.String("snapshot", snapName), zap.String("node", node))
 				snapshot.CreationTime = snapshotCreationTime(snap.GetCreatedAt())
-				return &csi.CreateSnapshotResponse{Snapshot: snapshot}, nil
+				return snapshot, nil
 			}
 		}
 	}
@@ -146,7 +168,7 @@ func (s *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 	// costs one walk of the driver's volumes on the uncommon path — the
 	// idempotent retry above has already returned.
 	if other := s.snapshotNamedElsewhere(ctx, snapName, source); other != "" {
-		s.log.Debug("controllerServer.CreateSnapshot: name already used by another volume", zap.String("snapshot", snapName),
+		s.log.Debug("controllerServer.takeLocalSnapshot: name already used by another volume", zap.String("snapshot", snapName),
 			zap.String("other_resource", other))
 		return nil, status.Errorf(codes.AlreadyExists,
 			"snapshot name %q is already used by a snapshot of volume %q", req.GetName(), other)
@@ -154,7 +176,7 @@ func (s *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 
 	start = time.Now()
 	err = s.backend.CreateSnapshot(ctx, volumePath, snapName, node)
-	s.log.Debug("controllerServer.CreateSnapshot: create returned", zap.String("volume", volumePath),
+	s.log.Debug("controllerServer.takeLocalSnapshot: create returned", zap.String("volume", volumePath),
 		zap.String("snapshot", snapName), zap.String("node", node), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "create snapshot %q of %q: %v", snapName, volumePath, err)
@@ -166,7 +188,7 @@ func (s *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateSn
 		zap.String("volume", volumePath),
 		zap.String("node", node))
 
-	return &csi.CreateSnapshotResponse{Snapshot: snapshot}, nil
+	return snapshot, nil
 }
 
 // DeleteSnapshot removes a snapshot. It is idempotent: an unknown, malformed or
@@ -179,38 +201,54 @@ func (s *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteSn
 		return nil, status.Error(codes.InvalidArgument, "snapshot id is required")
 	}
 
-	resource, node, snapName, err := parseSnapshotID(req.GetSnapshotId())
+	ref, err := parseSnapshotRef(req.GetSnapshotId())
 	if err != nil {
 		// Not an ID this driver ever handed out, so there is nothing to delete.
 		s.log.Debug("controllerServer.DeleteSnapshot: malformed id, nothing to delete", zap.Error(err))
 		return &csi.DeleteSnapshotResponse{}, nil
 	}
 
+	// The backup goes first: while it is still uploading it reads the local
+	// snapshot, which therefore cannot be removed under it.
+	if ref.backedUp {
+		if err := s.deleteBackup(ctx, ref); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.deleteLocalSnapshot(ctx, ref.resource, ref.node, ref.name); err != nil {
+		return nil, err
+	}
+	return &csi.DeleteSnapshotResponse{}, nil
+}
+
+// deleteLocalSnapshot removes the local snapshot snapName of resource on node.
+// A snapshot that is already gone, with its source or on its own, is success.
+func (s *controllerServer) deleteLocalSnapshot(ctx context.Context, resource, node, snapName string) error {
 	start := time.Now()
 	res, gerr := s.backend.GetResource(ctx, resource)
-	s.log.Debug("controllerServer.DeleteSnapshot: got source resource", zap.String("resource", resource),
+	s.log.Debug("controllerServer.deleteLocalSnapshot: got source resource", zap.String("resource", resource),
 		zap.Bool("found", gerr == nil && res != nil), zap.Duration("took", time.Since(start)), zap.Error(gerr))
 	if gerr != nil || res == nil {
 		// The source volume is gone; its backing LV — and with it any snapshot
 		// of that LV — went away when the resource was deleted.
-		return &csi.DeleteSnapshotResponse{}, nil
+		return nil
 	}
 
 	volumePath, _, serr := snapshotSource(res)
 	if serr != nil {
-		s.log.Debug("controllerServer.DeleteSnapshot: no snapshot source, nothing to delete", zap.String("resource", resource),
+		s.log.Debug("controllerServer.deleteLocalSnapshot: no snapshot source, nothing to delete", zap.String("resource", resource),
 			zap.Error(serr))
-		return &csi.DeleteSnapshotResponse{}, nil
+		return nil
 	}
 
 	start = time.Now()
-	err = s.backend.DeleteSnapshot(ctx, volumePath, snapName, node)
-	s.log.Debug("controllerServer.DeleteSnapshot: delete returned", zap.String("volume", volumePath),
+	err := s.backend.DeleteSnapshot(ctx, volumePath, snapName, node)
+	s.log.Debug("controllerServer.deleteLocalSnapshot: delete returned", zap.String("volume", volumePath),
 		zap.String("snapshot", snapName), zap.String("node", node), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "delete snapshot %q: %v", snapName, err)
+		return status.Errorf(codes.Internal, "delete snapshot %q: %v", snapName, err)
 	}
-	return &csi.DeleteSnapshotResponse{}, nil
+	return nil
 }
 
 // snapshotCreationTime converts a backend timestamp into a protobuf timestamp.

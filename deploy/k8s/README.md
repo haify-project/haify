@@ -112,6 +112,9 @@ Then:
 | `readIOPS`, `writeIOPS` | none | Read and write operations per second limit for the Pod on this volume |
 | `encryption` | `false` | `true` encrypts the volume on the disks: each replica's backing volume is a LUKS2 container beneath DRBD. LVM pools only. See [Encrypted volumes](#encrypted-volumes) |
 | `replicationTLS` | `false` | `true` encrypts the DRBD connections between the volume's nodes with kernel TLS. The nodes must be prepared with `haify replication-tls setup`. See [Encrypted volumes](#encrypted-volumes) |
+| `drNode` | none | Haify node at another site that gets an asynchronous DR replica of every volume. See [Cross-site disaster recovery](#cross-site-disaster-recovery) |
+| `drEndpoint` | required with `drNode` | The DR site's public address or host name, without a port |
+| `drEgressAddress` | none | Source address the primary site's proxy uses to reach the DR site |
 
 The four limits are written into the Pod's cgroup `io.max` when the volume is
 published. They need cgroup v2 with the `io` controller enabled for pod
@@ -450,7 +453,8 @@ A snapshot is taken on one node's local backing volume, and DRBD does not
 copy it to other nodes. It protects against bad writes, accidental deletion or
 a failed migration, but not against losing that node. DRBD copies every write,
 including the destructive ones, so replication is not a backup either. To
-survive losing the whole cluster, ship snapshots off-site.
+survive losing the whole cluster, ship snapshots off-site: see
+[Snapshots that leave the cluster](#snapshots-that-leave-the-cluster).
 
 ### Restoring and cloning
 
@@ -561,6 +565,259 @@ spec:
 ```
 
 `kubectl get volumesnapshot` then lists one `VolumeSnapshot` per PVC.
+
+## Snapshots that leave the cluster
+
+A VolumeSnapshotClass with `backupTarget` also uploads every snapshot to a
+Haify backup target (S3, SMB or WebDAV; see `haify backup target add` in the
+user guide, section 9). The copy on the target survives losing the node, and
+the whole cluster.
+
+```yaml
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: haify-snapshot-offsite
+driver: haify.csi.liliang-cn.com
+deletionPolicy: Delete
+parameters:
+  backupTarget: offsite          # a name from `haify backup target list`
+  keepLocalSnapshot: "true"      # "false" deletes the local snapshot once uploaded
+```
+
+- The local snapshot is taken first, as with any snapshot, and that moment is
+  the snapshot's point in time. Haify then uploads that same snapshot, read on
+  the node that holds it, not a newer one. The `VolumeSnapshot` reports
+  `readyToUse: false` until the upload has finished.
+- Each upload is a full, compressed image of the volume. The images are not
+  chained as incrementals, so each one can be deleted on its own, in any order.
+- The backup appears in `haify backup list` with the id
+  `<volume>_<snapshot>`, for example
+  `pvc_3f2a..._haifysnap_snapshot_8c1d...`. The snapshot handle is
+  `<volume>/<node>/<snapshot>/backup`.
+- With `keepLocalSnapshot: "false"` the local snapshot is deleted once the
+  upload has finished and takes no pool space. A restore then reads the backup.
+- Deleting the `VolumeSnapshot` (with `deletionPolicy: Delete`) deletes the
+  backup and the local snapshot. An upload that is still running is stopped
+  first. A backup under S3 Object Lock cannot be deleted before its lock
+  expires: until then the delete fails, is retried, and the reason is in the
+  `VolumeSnapshotContent`'s events.
+- A failed upload shows as an error on the `VolumeSnapshotContent` and starts
+  again. So does an upload cut off by a restart of the controller plugin.
+- LVM-backed volumes only: Haify does not ship backups of ZFS-backed volumes.
+  `rclone` must be installed on the storage nodes, as for every backup.
+- Give these snapshots a target of their own. A backup of a snapshot keeps no
+  base for an incremental, so on a target that a `haify backup schedule` also
+  writes to, the scheduled backup after it is full.
+
+Restoring works through the same `dataSource` as any snapshot. When the local
+snapshot is still on its node, the new volume is copied from it. Otherwise the
+volume is created and written from the backup. That takes as long as reading
+the image from the target, so the provisioner is answered `Aborted` until it
+is done, and retries. The PVC stays `Pending` meanwhile, and its events say
+the volume is being restored. Until the restore has finished, the volume
+carries the Haify label `haify.csi/restoring-from=<backup id>`. If the
+controller plugin restarts during the restore, the half-written volume is
+deleted and the restore starts again.
+
+### Restoring in another Kubernetes cluster
+
+Another cluster can restore these snapshots once its Haify knows the backups.
+
+1. In the other cluster's Haify, add the same target (same bucket and
+   `--prefix`) and import its backups:
+
+   ```bash
+   haify backup target add --name offsite --kind s3 --bucket haify-backups \
+       --endpoint https://s3.example.com --user AKIAEXAMPLE
+   haify backup import --target offsite
+   haify backup list
+   ```
+
+2. Find the snapshot handle. In the first cluster it is
+   `kubectl get volumesnapshotcontent <name> -o jsonpath='{.status.snapshotHandle}'`.
+   Without that cluster, build it from `haify backup list`: a backup with id
+   `<volume>_<snapshot>` and node `<node>` has the handle
+   `<volume>/<node>/<snapshot>/backup`.
+
+3. Create a pre-provisioned `VolumeSnapshotContent` and a `VolumeSnapshot`
+   bound to it. Use `deletionPolicy: Retain`: the backup is on a target the
+   first cluster still uses, and `Delete` would remove it from there.
+
+   ```yaml
+   apiVersion: snapshot.storage.k8s.io/v1
+   kind: VolumeSnapshotContent
+   metadata:
+     name: data-snap-imported
+   spec:
+     driver: haify.csi.liliang-cn.com
+     deletionPolicy: Retain
+     source:
+       snapshotHandle: pvc_3f2a.../node1/haifysnap_snapshot_8c1d.../backup
+     sourceVolumeMode: Filesystem
+     volumeSnapshotRef:
+       name: data-snap
+       namespace: app
+   ---
+   apiVersion: snapshot.storage.k8s.io/v1
+   kind: VolumeSnapshot
+   metadata:
+     name: data-snap
+     namespace: app
+   spec:
+     source:
+       volumeSnapshotContentName: data-snap-imported
+   ```
+
+4. Create a PVC from it, at least as large as the snapshot's `restoreSize`:
+
+   ```yaml
+   apiVersion: v1
+   kind: PersistentVolumeClaim
+   metadata: {name: data, namespace: app}
+   spec:
+     storageClassName: haify-drbd
+     accessModes: [ReadWriteOnce]
+     resources: {requests: {storage: 10Gi}}
+     dataSource: {name: data-snap, kind: VolumeSnapshot, apiGroup: snapshot.storage.k8s.io}
+   ```
+
+The source volume and its node do not exist in that cluster, so the volume is
+written from the backup, as described above.
+
+### Velero
+
+- Velero's CSI snapshot data mover works with Haify as with any CSI driver
+  that supports snapshots: Velero takes a `VolumeSnapshot`, reads a volume
+  restored from it, and uploads the files to Velero's own storage. That is a
+  separate copy from the one `backupTarget` makes.
+- A Velero backup without the data mover keeps only the `VolumeSnapshot`
+  objects and leaves the data to the driver. With a `backupTarget` class the
+  data is on the Haify target, so such a backup can be restored in a cluster
+  whose Haify has imported that target's backups.
+
+## Cross-site disaster recovery
+
+A StorageClass with `drNode` gives every volume an asynchronous replica at
+another site. Each volume is a Haify WAN resource (user guide, section 13):
+replicas at this site as usual, plus one on `drNode`, reached through a
+`haify-proxy` pair over mTLS.
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: haify-dr
+provisioner: haify.csi.liliang-cn.com
+parameters:
+  pool: vg0
+  replicas: "2"
+  drNode: dr1                    # a Haify node at the other site
+  drEndpoint: dr.example.com     # the DR site's public address, no port
+  # drEgressAddress: 203.0.113.20
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+```
+
+- `drNode` must be a registered Haify node that hosts the pool. It never
+  holds one of the local replicas and is not in the volume's topology, so no
+  Pod of this cluster runs on it. A node that does not exist or lacks the pool
+  is refused with `InvalidArgument`. When the scheduler picks the DR node for
+  the Pod, provisioning fails with `ResourceExhausted` and the scheduler picks
+  another node.
+- Each volume gets its own WAN port, a random one above 3000. The DR site
+  must accept TCP from the primary site on those ports;
+  `haify resource status <volume>` shows a volume's port and whether it is
+  reachable.
+- Replication to the DR site is asynchronous (DRBD protocol A). The
+  application does not wait for the DR site, and the DR copy is behind by
+  whatever is still in flight or in the proxy's buffer: up to the buffer size
+  (4 GiB per connection by default, `haify wan tune`). While the link is down,
+  the primary keeps writing and the DR copy falls further behind, until the
+  link returns and DRBD resyncs. A failover loses everything that had not
+  reached the DR site. `haify resource status` shows how much is buffered, and
+  `haify wan sizing <volume>` says whether the link keeps up with the writes.
+
+### Failing over to the DR site
+
+Failover is manual, because the DR copy can be behind. The steps need a Haify
+controller that is reachable from the DR site and knows the volumes. A
+controller that ran only at the lost site is gone with it, so decide where the
+controller runs before you need it.
+
+1. Find the Haify name of each volume: the PV's `spec.csi.volumeHandle`. Keep
+   the list before you need it:
+
+   ```bash
+   kubectl get pv -o custom-columns=PV:.metadata.name,CLAIM:.spec.claimRef.name,NS:.spec.claimRef.namespace,VOLUME:.spec.csi.volumeHandle
+   ```
+
+   Haify also labels each volume `haify.csi/pvc=<namespace>/<name>`.
+
+2. Promote the DR replica of each volume:
+
+   ```bash
+   haify resource dr-failover pvc_3f2a...          # prints what it will do
+   haify resource dr-failover pvc_3f2a... --yes
+   ```
+
+3. In the DR site's Kubernetes cluster, install the Haify CSI driver pointing
+   at that controller. The DR node must be a Kubernetes node there, with the
+   same name as the Haify node. Then bind the volume with a static PV and a
+   PVC:
+
+   ```yaml
+   apiVersion: v1
+   kind: PersistentVolume
+   metadata:
+     name: data-dr
+   spec:
+     capacity: {storage: 10Gi}
+     accessModes: [ReadWriteOnce]
+     persistentVolumeReclaimPolicy: Retain   # deleting the PV must not delete the volume
+     storageClassName: ""
+     volumeMode: Filesystem                  # Block for a raw block volume
+     csi:
+       driver: haify.csi.liliang-cn.com
+       volumeHandle: pvc_3f2a...             # the Haify volume name
+       fsType: ext4
+     nodeAffinity:
+       required:
+         nodeSelectorTerms:
+         - matchExpressions:
+           - {key: haify.csi.liliang-cn.com/node, operator: In, values: [dr1]}
+   ---
+   apiVersion: v1
+   kind: PersistentVolumeClaim
+   metadata: {name: data, namespace: app}
+   spec:
+     storageClassName: ""
+     volumeName: data-dr
+     accessModes: [ReadWriteOnce]
+     resources: {requests: {storage: 10Gi}}
+   ```
+
+4. Start the workload. The node plugin on the DR node mounts the filesystem
+   that is already there.
+
+### Failing back
+
+When the primary site is back:
+
+1. Keep the workload at the primary site stopped: its nodes must not have the
+   volume mounted.
+2. Run `haify resource dr-failback <volume> --wait 30m` while the workload at
+   the DR site keeps running. It reconnects the primary-site nodes,
+   **discarding what they wrote after they were cut off**, and resyncs them
+   from the DR replica. Run it again until it reports done. Its last step needs
+   the DR node to let go of the volume: before that, stop the workload at the
+   DR site (scale it to 0), so the node plugin unmounts and demotes the volume.
+3. `dr-failback` leaves a primary-site node Primary (`--node`, default the
+   first). Demote it, so the node plugin can promote the volume wherever the
+   Pod starts: `haify resource secondary <volume> <node>`.
+4. Start the workload at the primary site, and delete the static PV and PVC
+   in the DR cluster (`Retain` keeps the volume).
 
 ## When a node dies
 

@@ -94,8 +94,14 @@ func (s *Server) DeleteBackupTarget(ctx context.Context, req *haifypb.DeleteBack
 func (s *Server) CreateBackup(ctx context.Context, req *haifypb.CreateBackupRequest) (*haifypb.CreateBackupResponse, error) {
 	log := s.serverLog()
 	log.Debug("CreateBackup: backing up", zap.String("resource", req.Resource), zap.String("target", req.Target),
-		zap.String("node", req.Node), zap.Bool("full", req.Full))
-	rec, err := s.ctrl.backups.CreateBackup(ctx, req.Resource, req.Target, req.Node, req.Full)
+		zap.String("node", req.Node), zap.Bool("full", req.Full), zap.String("snapshot", req.Snapshot))
+	var rec *database.Backup
+	var err error
+	if req.Snapshot != "" {
+		rec, err = s.ctrl.backups.CreateBackupFromSnapshot(ctx, req.Resource, req.Target, req.Node, req.Snapshot)
+	} else {
+		rec, err = s.ctrl.backups.CreateBackup(ctx, req.Resource, req.Target, req.Node, req.Full)
+	}
 	if err != nil {
 		log.Debug("CreateBackup: failed", zap.String("resource", req.Resource), zap.Error(err))
 		return &haifypb.CreateBackupResponse{Success: false, Message: err.Error()}, nil

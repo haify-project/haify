@@ -1,6 +1,7 @@
 {{- if and .Values.snapshotClass.enabled (.Capabilities.APIVersions.Has "snapshot.storage.k8s.io/v1/VolumeSnapshotClass") }}
 # A snapshot lives on one node's backing volume and is not replicated: it
 # protects against bad writes and deletions, not against losing that node.
+# With parameters.backupTarget it is also uploaded to that Haify backup target.
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
@@ -12,4 +13,10 @@ metadata:
   {{- end }}
 driver: {{ include "haify-csi.driver" . }}
 deletionPolicy: {{ .Values.snapshotClass.deletionPolicy }}
+{{- with .Values.snapshotClass.parameters }}
+parameters:
+  {{- range $k, $v := . }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- end }}
 {{- end }}
