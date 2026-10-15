@@ -867,6 +867,13 @@ If the dead node is the first replica the Haify controller asks for a volume's
 status, each check also waits for that SSH connection to time out. The new pod
 then starts like any other, and promoting its replica takes about 10 seconds.
 
+The HA controller runs in the controller plugin's pod. If that pod was on the
+dead node too, another replica of it takes over first, once the dead one's
+Lease runs out after 15 seconds. That is why `20-controller.yaml` and the
+chart run two replicas, each on its own node, and let the pod leave a dead
+node after 10 seconds. With a single replica, a failure of its node delays
+everything above until Kubernetes moves the pod, five minutes by default.
+
 **When it does nothing.**
 
 - The surviving replicas do not have quorum, or none of them is `UpToDate`.

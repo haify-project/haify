@@ -6,7 +6,9 @@ metadata:
 spec:
   # The sidecars and the plugin's health reporter and HA controller run with leader election, so
   # more replicas are safe: one does the work, the others stand by.
-  replicas: 1
+  # Two, so the HA failover controller in this pod survives the node it runs
+  # on; on a single-node cluster set 1.
+  replicas: 2
   selector: { matchLabels: { app: haify-csi-controller } }
   # A replica needs a node to itself (see affinity), so an update replaces
   # them one at a time rather than starting a new one beside the old.
@@ -31,6 +33,10 @@ spec:
           requiredDuringSchedulingIgnoredDuringExecution:
             - labelSelector: { matchLabels: { app: haify-csi-controller } }
               topologyKey: kubernetes.io/hostname
+      # Leave a dead node after 10s rather than Kubernetes' default 300s.
+      tolerations:
+        - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 10 }
+        - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 10 }
       containers:
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0

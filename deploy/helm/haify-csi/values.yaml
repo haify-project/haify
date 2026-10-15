@@ -120,9 +120,17 @@ groupSnapshots:
   deletionPolicy: Delete
 
 controllerPlugin:
-  replicas: 1
+  # Two, so a node failure that takes one replica down leaves the other to take
+  # over its Leases: the HA failover controller runs in this pod, and with a
+  # single replica on the node that died it would wait out Kubernetes' five
+  # minutes like any other pod. Each replica needs a node of its own; on a
+  # single-node cluster set 1.
+  replicas: 2
   nodeSelector: {}
-  tolerations: []
+  # Leave a dead node after 10s rather than Kubernetes' default 300s.
+  tolerations:
+    - { key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 10 }
+    - { key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 10 }
   resources: {}
 
 nodePlugin:
