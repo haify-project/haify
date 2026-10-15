@@ -143,7 +143,8 @@ func (rm *ResourceManager) AddVolume(ctx context.Context, resource, volume, pool
 	// device-minor". Collect minors across every resource file instead.
 	// (The previous in-file scan was additionally broken — it required 4
 	// fields on a 3-field line and always allocated minor 0.)
-	newMinor, err := rm.nextGlobalMinor(ctx, allHosts)
+	newMinor, err := rm.reserveMinors(ctx, allHosts, 1, resource)
+	defer rm.releaseAlloc(resource)
 	if err != nil {
 		log.Debug("AddVolume: minor allocation failed", zap.String("resource", resource), zap.Error(err))
 		return fmt.Errorf("failed to allocate device minor: %w", err)

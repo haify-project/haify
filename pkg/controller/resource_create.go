@@ -187,8 +187,10 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	log.Debug("CreateResourceWithVolumesMetadata: resolved hosts", zap.String("resource", name),
 		zap.Strings("hosts", nodeIPs), zap.Strings("diskless_hosts", disklessIPs))
 
+	// Ports and minors reserved below are held until this create returns.
+	defer rm.releaseAlloc(name)
 	if port == 0 {
-		p, err := rm.nextGlobalPort(ctx, nodeIPs[0])
+		p, err := rm.reservePort(ctx, nodeIPs[0], name)
 		if err != nil {
 			log.Debug("CreateResourceWithVolumesMetadata: port allocation failed", zap.String("resource", name), zap.Error(err))
 			return fmt.Errorf("allocate port: %w", err)
@@ -281,7 +283,7 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 	// Allocate node-global device minors: minors are shared across every DRBD
 	// resource on a node. nextGlobalMinor returns (max existing minor)+1, so a
 	// run of len(resolved) consecutive minors from that base is collision-free.
-	baseMinor, err := rm.nextGlobalMinor(ctx, allIPs)
+	baseMinor, err := rm.reserveMinors(ctx, allIPs, len(resolved), name)
 	if err != nil {
 		log.Debug("CreateResourceWithVolumesMetadata: minor allocation failed", zap.String("resource", name), zap.Error(err))
 		return fmt.Errorf("failed to allocate device minor: %w", err)

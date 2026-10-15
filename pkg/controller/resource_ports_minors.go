@@ -258,21 +258,20 @@ func lowestFreePort(used []uint32, base uint32) uint32 {
 	}
 }
 
-// nextGlobalPort scans existing .res files on host and returns the lowest free
-// DRBD port at or above 7000.
-func (rm *ResourceManager) nextGlobalPort(ctx context.Context, host string) (uint32, error) {
+// usedPorts returns the DRBD ports the .res files on host claim.
+func (rm *ResourceManager) usedPorts(ctx context.Context, host string) ([]uint32, error) {
 	start := time.Now()
 	result, err := rm.deployment.Exec(ctx, []string{host}, "cat /etc/drbd.d/*.res 2>/dev/null || true")
-	rm.resourcesLog().Debug("nextGlobalPort: read configs", zap.String("host", host),
+	rm.resourcesLog().Debug("usedPorts: read configs", zap.String("host", host),
 		zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	text := ""
 	for _, hr := range result.Hosts {
 		text += hr.Output
 	}
-	return lowestFreePort(parsePortsFromResConfigs(text), 7000), nil
+	return parsePortsFromResConfigs(text), nil
 }
 
 // parseDevNodeMinor extracts N from a DRBD device node path like

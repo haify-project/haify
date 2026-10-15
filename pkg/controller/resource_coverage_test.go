@@ -58,9 +58,10 @@ func TestResourceMinorPortAndBackingHelpers(t *testing.T) {
 	}}
 	ctrl := newBasicTestController(dep)
 	ctx := context.Background()
-	port, err := ctrl.resources.nextGlobalPort(ctx, "n1")
+	port, err := ctrl.resources.reservePort(ctx, "n1", "r")
 	require.NoError(t, err)
 	assert.Equal(t, uint32(7001), port)
+	ctrl.resources.releaseAlloc("r")
 
 	require.Error(t, ctrl.resources.deleteBackingVolume(ctx, []string{"n1"}, &database.Volume{}))
 	require.NoError(t, ctrl.resources.deleteBackingVolume(ctx, []string{"n1"}, &database.Volume{ResourceName: "r", Pool: "vg", VolumeName: "data", Device: "/dev/vg/data"}))

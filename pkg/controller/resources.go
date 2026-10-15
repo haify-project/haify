@@ -137,6 +137,9 @@ type ResourceManager struct {
 	// primaryHosts remembers, per resource, the address of the node last seen
 	// Primary, so its status is read first; see drbdStatusFromAnyHost.
 	primaryHosts sync.Map
+	// alloc holds the ports and minors of creates still in progress; see
+	// allocReservations.
+	alloc allocReservations
 }
 
 // NewResourceManager creates a new resource manager
