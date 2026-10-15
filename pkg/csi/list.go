@@ -245,11 +245,18 @@ func (s *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnaps
 	switch {
 	case req.GetSnapshotId() != "":
 		s.log.Debug("controllerServer.ListSnapshots: filtering by snapshot id", zap.String("snapshot_id", req.GetSnapshotId()))
-		resource, node, name, err := parseSnapshotID(req.GetSnapshotId())
+		ref, err := parseSnapshotRef(req.GetSnapshotId())
 		if err != nil {
 			s.log.Debug("controllerServer.ListSnapshots: malformed snapshot id, matches nothing", zap.Error(err))
 			return &csi.ListSnapshotsResponse{}, nil // an ID nobody could have issued matches nothing
 		}
+		if ref.backedUp {
+			if e := s.backedSnapshotEntry(ctx, ref); e != nil {
+				entries = append(entries, e)
+			}
+			break
+		}
+		resource, node, name := ref.resource, ref.node, ref.name
 		start := time.Now()
 		r, err := s.backend.GetResource(ctx, resource)
 		s.log.Debug("controllerServer.ListSnapshots: got source resource", zap.String("resource", resource),
@@ -272,7 +279,7 @@ func (s *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnaps
 		if err != nil || r == nil {
 			return &csi.ListSnapshotsResponse{}, nil
 		}
-		entries = s.snapshotsOf(ctx, r)
+		entries = s.withBackups(ctx, s.snapshotsOf(ctx, r), r.GetName())
 
 	default:
 		s.log.Debug("controllerServer.ListSnapshots: no filter, walking every CSI volume")
@@ -288,6 +295,7 @@ func (s *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnaps
 				entries = append(entries, s.snapshotsOf(ctx, r)...)
 			}
 		}
+		entries = s.withBackups(ctx, entries, "")
 	}
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].GetSnapshotId() < entries[j].GetSnapshotId() })

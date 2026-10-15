@@ -87,6 +87,29 @@ func (c *HaifyClient) CreateBackup(ctx context.Context, resource, target, node s
 	return resp.Backup, nil
 }
 
+// CreateBackupFromSnapshot ships the existing snapshot `snapshot` of a
+// single-volume resource, held on node, to a target: a full image of exactly
+// that point in time. The backup's id is "<resource>_<snapshot>". The call
+// returns when the upload has finished.
+func (c *HaifyClient) CreateBackupFromSnapshot(ctx context.Context, resource, target, node, snapshot string) (*haifypb.BackupInfo, error) {
+	log := zap.L()
+	log.Debug("HaifyClient.CreateBackupFromSnapshot: sending request", zap.String("resource", resource), zap.String("target", target),
+		zap.String("node", node), zap.String("snapshot", snapshot))
+	resp, err := c.client.CreateBackup(ctx, &haifypb.CreateBackupRequest{
+		Resource: resource, Target: target, Node: node, Snapshot: snapshot,
+	})
+	if err != nil {
+		log.Debug("HaifyClient.CreateBackupFromSnapshot: CreateBackup failed", zap.Error(err))
+		return nil, err
+	}
+	if !resp.Success {
+		log.Debug("HaifyClient.CreateBackupFromSnapshot: controller reported failure", zap.String("message", resp.Message))
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	log.Debug("HaifyClient.CreateBackupFromSnapshot: done", zap.String("backup_id", resp.Backup.GetId()))
+	return resp.Backup, nil
+}
+
 // ListBackups returns backup records, newest first. Empty filters match all.
 func (c *HaifyClient) ListBackups(ctx context.Context, resource, target string) ([]*haifypb.BackupInfo, error) {
 	log := zap.L()

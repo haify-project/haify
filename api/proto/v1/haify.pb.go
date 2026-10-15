@@ -14936,7 +14936,15 @@ type CreateBackupRequest struct {
 	// an UpToDate Secondary.
 	Node string `protobuf:"bytes,3,opt,name=node,proto3" json:"node,omitempty"`
 	// full skips the incremental path even when a base is available.
-	Full          bool `protobuf:"varint,4,opt,name=full,proto3" json:"full,omitempty"`
+	Full bool `protobuf:"varint,4,opt,name=full,proto3" json:"full,omitempty"`
+	// snapshot reads the image from this existing snapshot of the resource's
+	// volume on node (required with it) instead of taking a new one, so the
+	// backup holds exactly that snapshot's point in time. The CSI driver uses it
+	// for VolumeSnapshots that are also shipped off-cluster. Single-volume
+	// resources only. Such a backup is always full and keeps no base for an
+	// incremental, the snapshot is left in place, and its id is
+	// "<resource>_<snapshot>", so a caller can name it before it finishes.
+	Snapshot      string `protobuf:"bytes,5,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -14997,6 +15005,13 @@ func (x *CreateBackupRequest) GetFull() bool {
 		return x.Full
 	}
 	return false
+}
+
+func (x *CreateBackupRequest) GetSnapshot() string {
+	if x != nil {
+		return x.Snapshot
+	}
+	return ""
 }
 
 type CreateBackupResponse struct {
@@ -28936,12 +28951,13 @@ const file_api_proto_v1_haify_proto_rawDesc = "" +
 	"\bschedule\x18\x0f \x01(\tR\bschedule\x12\x1b\n" +
 	"\tlock_mode\x18\x10 \x01(\tR\blockMode\x12!\n" +
 	"\fretain_until\x18\x11 \x01(\tR\vretainUntil\x12\x17\n" +
-	"\aread_at\x18\x12 \x01(\tR\x06readAt\"q\n" +
+	"\aread_at\x18\x12 \x01(\tR\x06readAt\"\x8d\x01\n" +
 	"\x13CreateBackupRequest\x12\x1a\n" +
 	"\bresource\x18\x01 \x01(\tR\bresource\x12\x16\n" +
 	"\x06target\x18\x02 \x01(\tR\x06target\x12\x12\n" +
 	"\x04node\x18\x03 \x01(\tR\x04node\x12\x12\n" +
-	"\x04full\x18\x04 \x01(\bR\x04full\"r\n" +
+	"\x04full\x18\x04 \x01(\bR\x04full\x12\x1a\n" +
+	"\bsnapshot\x18\x05 \x01(\tR\bsnapshot\"r\n" +
 	"\x14CreateBackupResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12&\n" +
