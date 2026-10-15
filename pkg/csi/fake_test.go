@@ -125,6 +125,7 @@ func (f *fakeBackend) CreateResourceRequest(ctx context.Context, req *haifypb.Cr
 	// The controller persists the request's labels and returns them from
 	// Get/ListResources; ListVolumes depends on that to recognise its volumes.
 	f.resources[req.Name].Labels = req.Labels
+	f.resources[req.Name].Encrypted = req.Encrypt
 	return nil
 }
 

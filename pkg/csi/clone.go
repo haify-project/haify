@@ -40,8 +40,8 @@ type volumeSource struct {
 // by the caller because this is the last point before the first side effect: a
 // clone takes a snapshot of its source, and a request that can only end in a
 // failed copy should not have created one.
-func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.VolumeContentSource, wantGiB uint32) (*volumeSource, error) {
-	s.log.Debug("controllerServer.resolveVolumeSource: start", zap.Uint32("want_gb", wantGiB))
+func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.VolumeContentSource, wantGiB uint32, encrypt bool) (*volumeSource, error) {
+	s.log.Debug("controllerServer.resolveVolumeSource: start", zap.Uint32("want_gb", wantGiB), zap.Bool("encrypt", encrypt))
 	switch src := cs.GetType().(type) {
 	case *csi.VolumeContentSource_Snapshot:
 		id := src.Snapshot.GetSnapshotId()
@@ -67,6 +67,10 @@ func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.Volu
 			s.log.Debug("controllerServer.resolveVolumeSource: source larger than request", zap.String("resource", resource), zap.Error(err))
 			return nil, err
 		}
+		if err := checkSourceEncryption(res, encrypt); err != nil {
+			s.log.Debug("controllerServer.resolveVolumeSource: plaintext restore of encrypted source refused", zap.String("resource", resource))
+			return nil, err
+		}
 		s.log.Debug("controllerServer.resolveVolumeSource: snapshot source ready", zap.String("resource", resource),
 			zap.String("node", node), zap.String("snapshot", snapName))
 		return &volumeSource{snapshot: oneNodeSnapshot(res, snapName), node: node}, nil
@@ -90,6 +94,10 @@ func (s *controllerServer) resolveVolumeSource(ctx context.Context, cs *csi.Volu
 
 		if err := checkSourceFits(res, wantGiB); err != nil {
 			s.log.Debug("controllerServer.resolveVolumeSource: source larger than request", zap.String("resource", srcID), zap.Error(err))
+			return nil, err
+		}
+		if err := checkSourceEncryption(res, encrypt); err != nil {
+			s.log.Debug("controllerServer.resolveVolumeSource: plaintext clone of encrypted source refused", zap.String("resource", srcID))
 			return nil, err
 		}
 

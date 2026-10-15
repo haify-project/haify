@@ -2041,6 +2041,11 @@ What it does and does not cover:
   `add-dr`, and a copy rebuilt by `pool convert-thin` each get a container and
   key of their own, made on that node. A node without `cryptsetup` and dm-crypt
   is refused before anything is created on it.
+- **Copies stay encrypted.** Filling a new volume from a snapshot of an
+  encrypted one (a Kubernetes restore or clone, or the `PopulateVolume` API)
+  reads the snapshot through a temporary read-only LUKS mapping on the node
+  that holds it, with that node's key, and is refused when the new volume is
+  not encrypted.
 - LVM pools only.
 - **Backups are plaintext.** `haify backup` reads each snapshot through a
   temporary read-only LUKS mapping on the node it backs up from, so the image
@@ -2471,6 +2476,17 @@ Other parameters: `storageType` (`lvm`, the default, or `zfs`),
 may then be omitted), `resourceLabels` (`key=value,...`), `faultDomainLabel`
 (default `host`), and `allowRemoteVolumeAccess: "true"`, which opts a volume
 into diskless attachment so a pod can run on a node that holds no replica.
+
+**Encryption.** `encryption: "true"` creates each volume as
+`--encrypt` does ([Encryption](#15-encryption)): LUKS2 beneath DRBD, a key
+made and kept on each node, LVM pools only. `replicationTLS: "true"` switches
+the new volume's DRBD connections to TLS right after it is created, as
+`haify resource tls <resource> on` does; the nodes must be prepared with
+`haify replication-tls setup`, and replicas are placed only on nodes that are.
+Both are recorded in the PV's `volumeAttributes`. A restore or clone of an
+encrypted volume must use a class with `encryption: "true"`; any other is
+refused. Nothing about the keys is stored in Kubernetes. The details are in
+`deploy/k8s/README.md`, "Encrypted volumes".
 
 **I/O limits.** `readBytesPerSecond`, `writeBytesPerSecond` (sizes such as
 `200Mi`), `readIOPS` and `writeIOPS` cap a pod's I/O to its volume. When the

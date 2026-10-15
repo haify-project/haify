@@ -57,6 +57,16 @@ entry loses its name and every other field.
 | `openshift.enabled` | `false` | Lets the plugins' service accounts use the `privileged` SCC. Detected by itself on OpenShift and MicroShift; set it only for an offline `helm template` |
 | `sidecars.*` | the registry.k8s.io sig-storage images | Images of the provisioner, resizer, snapshotter, liveness probe and node driver registrar |
 
+## Encrypted volumes
+
+A StorageClass with `encryption: "true"` in its `parameters` encrypts its
+volumes on the disks (LUKS2 beneath DRBD, LVM pools only); one with
+`replicationTLS: "true"` encrypts the DRBD connections between nodes (run
+`haify replication-tls setup` first). Each node makes and keeps its own keys;
+the chart creates no Secret for them. `values.yaml` has a commented example,
+and `deploy/k8s/README.md` explains both, where the keys are and what losing a
+node's root disk means.
+
 ## Changing a StorageClass
 
 Kubernetes does not allow changing a StorageClass's parameters. To change one,

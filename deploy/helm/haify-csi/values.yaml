@@ -42,6 +42,16 @@ storageClasses:
     volumeBindingMode: WaitForFirstConsumer
     allowVolumeExpansion: true
     parameters: {}
+  # Encrypted volumes: LUKS2 beneath DRBD on every replica (encryption: LVM
+  # pools only), and kernel TLS on the DRBD connections (replicationTLS: run
+  # `haify replication-tls setup` first). Each node keeps its own keys; nothing
+  # is stored in Kubernetes. See deploy/k8s/README.md, "Encrypted volumes".
+  # - name: haify-encrypted
+  #   pool: vg0
+  #   replicas: 2
+  #   parameters:
+  #     encryption: "true"
+  #     replicationTLS: "true"
 
 # A VolumeSnapshotClass, created only when the cluster has the snapshot CRDs
 # (kubernetes-csi/external-snapshotter); k3s and most distributions do not ship

@@ -10,3 +10,24 @@ parameters:
 reclaimPolicy: Delete
 allowVolumeExpansion: true
 volumeBindingMode: WaitForFirstConsumer
+
+# Encrypted volumes: LUKS2 beneath DRBD on every replica (encryption), and
+# kernel TLS on the DRBD connections (replicationTLS). Each node keeps its own
+# keys; nothing is stored in Kubernetes. Run `haify replication-tls setup` on
+# the Haify side before using replicationTLS. See README.md, "Encrypted
+# volumes".
+# ---
+# apiVersion: storage.k8s.io/v1
+# kind: StorageClass
+# metadata:
+#   name: haify-encrypted
+# provisioner: haify.csi.liliang-cn.com
+# parameters:
+#   pool: "vg0"
+#   replicas: "2"
+#   storageType: "lvm"
+#   encryption: "true"
+#   replicationTLS: "true"
+# reclaimPolicy: Delete
+# allowVolumeExpansion: true
+# volumeBindingMode: WaitForFirstConsumer

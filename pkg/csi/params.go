@@ -41,6 +41,11 @@ type VolumeParams struct {
 	// PVC is the claim the volume is for, as namespace/name; empty when the
 	// provisioner does not pass it.
 	PVC string
+	// Encryption puts a LUKS2 container beneath DRBD on every replica
+	// (encryption at rest); ReplicationTLS switches the DRBD connections to
+	// kernel TLS (encryption on the wire). See encryption.go.
+	Encryption     bool
+	ReplicationTLS bool
 }
 
 // ParseVolumeParams validates and defaults the StorageClass parameters.
@@ -99,6 +104,12 @@ func ParseVolumeParams(p map[string]string) (VolumeParams, error) {
 	if name, ns := p[paramPVCName], p[paramPVCNamespace]; name != "" && ns != "" {
 		out.PVC = ns + "/" + name
 	}
+	encrypt, tls, err := parseSecurityParams(p)
+	if err != nil {
+		log.Debug("ParseVolumeParams: invalid encryption parameters", zap.Error(err))
+		return out, err
+	}
+	out.Encryption, out.ReplicationTLS = encrypt, tls
 	qos, err := parseQoS(p)
 	if err != nil {
 		log.Debug("ParseVolumeParams: invalid I/O limits", zap.Error(err))
@@ -107,6 +118,7 @@ func ParseVolumeParams(p map[string]string) (VolumeParams, error) {
 	out.QoS = qos
 	log.Debug("ParseVolumeParams: parsed", zap.String("pool", out.Pool), zap.Int("replicas", out.Replicas),
 		zap.String("storage_type", out.StorageType), zap.Bool("allow_remote", out.AllowRemoteVolumeAccess),
-		zap.Int("labels", len(out.ResourceLabels)), zap.Int("qos", len(out.QoS)), zap.String("pvc", out.PVC))
+		zap.Int("labels", len(out.ResourceLabels)), zap.Int("qos", len(out.QoS)), zap.String("pvc", out.PVC),
+		zap.Bool("encryption", out.Encryption), zap.Bool("replication_tls", out.ReplicationTLS))
 	return out, nil
 }

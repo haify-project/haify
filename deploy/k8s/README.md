@@ -106,6 +106,8 @@ Then:
 | `resourceLabels` | none | Labels put on the Haify resource, written `key=value,key=value`. The driver always adds `haify.csi/managed-by=csi`, and `haify.csi/pvc=<namespace>/<name>` to name the claim (external-provisioner passes the claim with `--extra-create-metadata`, which `20-controller.yaml` sets) |
 | `readBytesPerSecond`, `writeBytesPerSecond` | none | Read and write bandwidth limit for the Pod on this volume, as a size per second (`200Mi`, `1G`) |
 | `readIOPS`, `writeIOPS` | none | Read and write operations per second limit for the Pod on this volume |
+| `encryption` | `false` | `true` encrypts the volume on the disks: each replica's backing volume is a LUKS2 container beneath DRBD. LVM pools only. See [Encrypted volumes](#encrypted-volumes) |
+| `replicationTLS` | `false` | `true` encrypts the DRBD connections between the volume's nodes with kernel TLS. The nodes must be prepared with `haify replication-tls setup`. See [Encrypted volumes](#encrypted-volumes) |
 
 The four limits are written into the Pod's cgroup `io.max` when the volume is
 published. They need cgroup v2 with the `io` controller enabled for pod
@@ -121,6 +123,112 @@ node for the Pod.
 
 The filesystem is `ext4` unless the StorageClass sets
 `csi.storage.k8s.io/fstype` (the image ships `e2fsprogs` and `xfsprogs`).
+
+## Encrypted volumes
+
+Two StorageClass parameters cover two different things:
+
+- `encryption: "true"` encrypts the volume **on the disks**. Each replica's
+  backing volume is a LUKS2 container, and DRBD runs on top of it (DRBD → LUKS
+  → LVM), so the pool disks hold only ciphertext. DRBD sits above the
+  encryption, so what it sends between nodes is not encrypted by this.
+- `replicationTLS: "true"` encrypts the DRBD connections **between nodes**
+  with kernel TLS. It does not encrypt the disks.
+
+Set both to have both:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: haify-encrypted
+provisioner: haify.csi.liliang-cn.com
+parameters:
+  pool: "vg0"
+  replicas: "2"
+  encryption: "true"
+  replicationTLS: "true"
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+```
+
+`40-storageclass.yaml` has the same class, commented out. The PV records what
+the volume was created with: `kubectl get pv <name> -o yaml` shows
+`encryption: "true"` and `replicationTLS: "true"` under
+`spec.csi.volumeAttributes`. On the Haify side, `haify resource status
+<resource>` shows the resource as encrypted and each connection with `tls`.
+
+### Where the keys are
+
+Each node makes the key for its own replica, from `/dev/urandom` on the node,
+and keeps it in `/etc/haify/luks`, readable by root only. The key is never sent
+anywhere: not to the Haify controller, and not to Kubernetes. There is no
+Kubernetes Secret to create and none to protect.
+
+This is deliberate. The controller reaches the nodes only through SSH, where a
+command line can be read in the node's process list and in the controller's
+debug log. A passphrase kept in a Secret would have to travel that way to
+every node. A key made on the node that never leaves it cannot leak in
+transit.
+
+What that means in practice:
+
+- Encryption protects disks that leave the server: sent back for repair,
+  decommissioned or stolen. It does not protect against someone who has the
+  running server, because the key is on the same machine.
+- There is no central copy of the keys. If a node loses its root disk, it
+  loses its keys, and its replicas can no longer be read. The other replicas
+  hold the same data under their own keys: remove the lost replica
+  (`haify resource remove-replica`) and add a new one (`haify resource
+  add-replica`), which gets a new key on its node and is copied back from the
+  others. A volume with `replicas: "1"` whose node loses its root disk is
+  lost.
+- Deleting the volume overwrites and removes each node's key before the
+  backing volume is removed.
+- Encryption is fixed when the volume is created. A volume cannot be encrypted
+  or decrypted later; copy it into a volume of another StorageClass instead.
+
+### Requirements
+
+- `encryption`: an LVM pool (ZFS has its own encryption) that is not VDO-backed.
+  Every node the volume is placed on needs `cryptsetup` and the dm-crypt kernel
+  module; a node without them is refused before anything is created. Each
+  replica's logical volume is 32 MiB larger than the volume, for the LUKS
+  header. A StorageClass that asks for encryption on a ZFS or VDO pool fails
+  provisioning with `InvalidArgument`, and the PVC's events say why.
+- `replicationTLS`: DRBD 9.2 or later, the kernel `tls` module and `tlshd`
+  (package `ktls-utils`) on every node, prepared once with
+  `haify replication-tls setup`. `haify replication-tls status` shows which
+  nodes are ready and what the others lack.
+  - Replicas are placed only on ready nodes. If fewer ready nodes have the pool
+    than `replicas` asks for, provisioning fails with `FailedPrecondition`, and
+    the PVC's events name each node that is not ready and why.
+  - If the node the scheduler picked for the Pod is not ready, provisioning
+    fails with `ResourceExhausted` and the scheduler picks another node.
+  - The connections are switched to TLS right after the volume is created, one
+    link at a time, before any data is copied into it. This is part of
+    provisioning, so it counts against the provisioner's `--timeout`. If the
+    switch fails, for example because the quorum tiebreaker Haify adds to a
+    two-replica volume is on a node that is not prepared, the volume is
+    deleted again and the PVC's events carry the error.
+  - With `allowRemoteVolumeAccess: "true"`, a diskless client on a node that
+    is not ready is refused when the volume is staged.
+
+### Snapshots, restores and clones
+
+- A snapshot of an encrypted volume is a snapshot of its ciphertext, on the
+  node that took it.
+- Restoring or cloning an encrypted volume needs a StorageClass with
+  `encryption: "true"`. Any other class fails provisioning with
+  `InvalidArgument`, so a plaintext copy of an encrypted volume is never made.
+  The node holding the source opens the snapshot through a temporary read-only
+  LUKS mapping with its own key, and the data is written into the new volume,
+  which encrypts it under its own nodes' keys.
+- A volume that is not encrypted can be restored or cloned into an encrypted
+  class.
+- `haify backup` of an encrypted volume stores plaintext on the backup target;
+  protect the target with its own encryption and access policy.
 
 ## Live migration of virtual machines (KubeVirt, OpenShift Virtualization)
 
@@ -268,6 +376,8 @@ the new volume. If it cannot hold one, provisioning fails with
 - Both work on LVM and ZFS pools. A ZFS snapshot has no block device of its
   own, so the controller reads it through a temporary read-only clone,
   `<pool>/haify-populate-<new volume>-0`, and destroys the clone after the copy.
+- A copy of an encrypted volume has to be encrypted too; see
+  [Encrypted volumes](#snapshots-restores-and-clones).
 - `CreateVolume` waits until the copy is done. The shipped provisioner
   `--timeout` is `120s`; raise it for large volumes. If the copy fails, the
   half-written volume is deleted, so a retry starts clean. Only a controller

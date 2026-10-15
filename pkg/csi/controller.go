@@ -73,12 +73,17 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 				return nil, status.Errorf(codes.AlreadyExists, "volume %q already exists with different capacity", name)
 			}
 		}
+		vc, err := s.reconcileExisting(ctx, existing, req.GetParameters())
+		if err != nil {
+			return nil, err
+		}
 		s.log.Debug("controllerServer.CreateVolume: already exists, returning it (idempotent)", zap.String("resource", name),
 			zap.Strings("nodes", existing.GetNodes()))
 		return &csi.CreateVolumeResponse{Volume: &csi.Volume{
 			VolumeId:           existing.GetName(),
 			CapacityBytes:      int64(sizeGB) * giB,
 			AccessibleTopology: accessibleTopology(existing.GetNodes()),
+			VolumeContext:      vc,
 		}}, nil
 	}
 
@@ -124,7 +129,8 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	s.log.Debug("controllerServer.CreateVolume: parameters", zap.String("resource", name), zap.String("pool", params.Pool),
 		zap.Int("replicas", params.Replicas), zap.String("storage_type", params.StorageType),
 		zap.Bool("allow_remote", params.AllowRemoteVolumeAccess), zap.String("fault_domain_label", params.FaultDomainLabel),
-		zap.Int("labels", len(params.ResourceLabels)), zap.Int("qos", len(params.QoS)), zap.String("pvc", params.PVC))
+		zap.Int("labels", len(params.ResourceLabels)), zap.Int("qos", len(params.QoS)), zap.String("pvc", params.PVC),
+		zap.Bool("encryption", params.Encryption), zap.Bool("replication_tls", params.ReplicationTLS))
 
 	// A volume restored from a snapshot, or cloned from another volume, must be
 	// filled before first use. Resolve where the data comes from first: the copy
@@ -132,7 +138,7 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	// volume's replicas.
 	var source *volumeSource
 	if cs := req.GetVolumeContentSource(); cs != nil {
-		source, err = s.resolveVolumeSource(ctx, cs, sizeGB)
+		source, err = s.resolveVolumeSource(ctx, cs, sizeGB, params.Encryption)
 		if err != nil {
 			s.log.Debug("controllerServer.CreateVolume: content source unusable", zap.String("resource", name), zap.Error(err))
 			return nil, err
@@ -161,12 +167,22 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	}
 	// Only consider nodes that actually host the requested pool: replicas
 	// placed on a node without the backing pool fail at LV-creation time.
+	if err := checkEncryptable(params, pools); err != nil {
+		s.log.Debug("controllerServer.CreateVolume: cannot be encrypted", zap.String("resource", name), zap.Error(err))
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 	candidates := nodesWithPool(nodes, pools, params.Pool, params.FaultDomainLabel)
 	pinned := requisiteNodes(req.GetAccessibilityRequirements())
 	if source != nil {
 		// Put the source's node first so a replica lands there and the copy is
 		// local; without this the new volume could be placed entirely elsewhere.
 		pinned = append([]string{source.node}, pinned...)
+	}
+	if params.ReplicationTLS {
+		if candidates, err = s.tlsReadyCandidates(ctx, candidates, pinned, params.Replicas); err != nil {
+			s.log.Debug("controllerServer.CreateVolume: replication TLS not possible", zap.String("resource", name), zap.Error(err))
+			return nil, err
+		}
 	}
 	// The free space of the pool decides the rest, so a PVC lands where
 	// `haify resource create` would: on the emptiest nodes. ResourceExhausted
@@ -215,10 +231,11 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 			StorageType: params.StorageType,
 			Profile:     params.ResourceProfile,
 			Labels:      labels,
+			Encrypt:     params.Encryption,
 		})
-	} else if params.ResourceProfile != "" || len(params.ResourceLabels) > 0 {
-		s.log.Debug("controllerServer.CreateVolume: backend cannot take profile or labels", zap.String("resource", name))
-		return nil, status.Error(codes.Internal, "Haify backend does not support resource profiles or labels")
+	} else if params.ResourceProfile != "" || len(params.ResourceLabels) > 0 || params.Encryption {
+		s.log.Debug("controllerServer.CreateVolume: backend cannot take profile, labels or encryption", zap.String("resource", name))
+		return nil, status.Error(codes.Internal, "Haify backend does not support resource profiles, labels or encryption")
 	} else {
 		s.log.Debug("controllerServer.CreateVolume: creating resource (pool and type)", zap.String("resource", name),
 			zap.Strings("nodes", replicaNodes), zap.Uint32("size_gb", sizeGB), zap.String("pool", params.Pool))
@@ -228,6 +245,20 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "create resource: %v", err)
+	}
+
+	// Encrypt the links before the copy below, so a clone's data never crosses
+	// the network in the clear. A volume that asked for TLS and did not get it
+	// is removed again rather than handed out replicating in plaintext.
+	if params.ReplicationTLS {
+		if terr := s.enableReplicationTLS(ctx, name); terr != nil {
+			s.log.Debug("controllerServer.CreateVolume: rolling back, TLS switch failed", zap.String("resource", name), zap.Error(terr))
+			if derr := s.backend.DeleteResource(context.WithoutCancel(ctx), name); derr != nil {
+				s.log.Error("failed to roll back a volume whose replication TLS switch failed; it may need manual cleanup",
+					zap.String("volume", name), zap.Error(derr))
+			}
+			return nil, status.Error(codes.Internal, terr.Error())
+		}
 	}
 
 	// Fill the new volume from its source. This must happen before the volume is
@@ -258,7 +289,7 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		VolumeId:           name,
 		CapacityBytes:      int64(sizeGB) * giB,
 		AccessibleTopology: topologyFor(replicaNodes, params.AllowRemoteVolumeAccess),
-		VolumeContext:      volumeContextFor(params.AllowRemoteVolumeAccess, params.QoS),
+		VolumeContext:      securityContext(volumeContextFor(params.AllowRemoteVolumeAccess, params.QoS), params.Encryption, params.ReplicationTLS),
 		ContentSource:      contentSourceOf(req.GetVolumeContentSource()),
 	}}, nil
 }
