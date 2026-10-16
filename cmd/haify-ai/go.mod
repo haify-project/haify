@@ -2,12 +2,9 @@ module github.com/haify-project/haify/cmd/haify-ai
 
 go 1.26.0
 
-require github.com/liliang-cn/steward v0.51.1
+require github.com/liliang-cn/steward v0.53.2
 
 require (
-	github.com/0x51-dev/rdf v0.1.0 // indirect
-	github.com/0x51-dev/rids v0.1.0 // indirect
-	github.com/0x51-dev/upeg v0.1.0 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2 // indirect
@@ -71,10 +68,10 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/liliang-cn/agent-go/v3 v3.33.0 // indirect
+	github.com/liliang-cn/agent-go/v3 v3.65.0 // indirect
 	github.com/liliang-cn/agentexec v0.5.0 // indirect
 	github.com/liliang-cn/alchemy v0.7.7 // indirect
-	github.com/liliang-cn/cortexdb/v2 v2.113.0 // indirect
+	github.com/liliang-cn/cortexdb/v2 v2.130.0 // indirect
 	github.com/liliang-cn/mcp-swagger-server v1.3.0 // indirect
 	github.com/liliang-cn/pipeit v0.1.1 // indirect
 	github.com/liliang-cn/skills-go v1.9.0 // indirect

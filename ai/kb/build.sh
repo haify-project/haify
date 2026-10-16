@@ -27,11 +27,19 @@
 # database and the record and carries on where the last run stopped; without
 # it the build starts from nothing.
 #
+# HAIFY_KB_FROM=<previous haify-kb.db> starts from a previous build instead:
+# everything Haify's own (its docs, runbooks, code graph, source, CLI and API)
+# is dropped and rebuilt, and the DRBD documentation, which does not change
+# with Haify, is kept, so a release does not spend hours re-extracting the
+# LINBIT knowledge base. The previous build must have been made with the same
+# embedder; the manifest beside it says which.
+#
 # Environment:
 #   STEWARD_EMB_BASE_URL / _API_KEY / _MODEL, HAIFY_KB_EMB_DIM   embedder
 #   STEWARD_LLM_BASE_URL / _API_KEY / _MODEL                   entity extraction
 #   HAIFY_KB_CORPUS     dir holding linbit-blog-kb/, linbit-documentation/, ai-assistants/
 #   SERVICE_IP_REPO   service-ip checkout (optional)
+#   HAIFY_KB_FROM     a previous haify-kb.db to start from (optional, see above)
 #   STEWARD           steward binary (default: installed at the pinned version)
 set -euo pipefail
 
@@ -41,7 +49,7 @@ corpus=${HAIFY_KB_CORPUS:?set HAIFY_KB_CORPUS to the dir with linbit-blog-kb/, l
 : "${STEWARD_EMB_API_KEY:?}" "${STEWARD_EMB_MODEL:?}" "${STEWARD_EMB_BASE_URL:?}"
 : "${STEWARD_LLM_API_KEY:?}" "${STEWARD_LLM_MODEL:?}" "${STEWARD_LLM_BASE_URL:?}"
 export STEWARD_EMB_DIM=${HAIFY_KB_EMB_DIM:-768}
-steward_version=v0.51.1 # keep in step with cmd/haify-ai/go.mod
+steward_version=v0.53.2 # keep in step with cmd/haify-ai/go.mod
 od=${STEWARD:-}
 if [ -z "$od" ]; then
 	od=$(mktemp -d)/steward
@@ -61,6 +69,16 @@ fi
 touch "$progress"
 export STEWARD_KNOWLEDGE_DB_PATH=$db
 export STEWARD_DOMAIN_FILE=$root/ai/domain.toml
+
+if [ -n "${HAIFY_KB_FROM:-}" ] && [ ! -s "$db" ]; then
+	printf '\n==> starting from %s\n' "$HAIFY_KB_FROM"
+	sqlite3 "$HAIFY_KB_FROM" ".backup '$db'"
+	# Every source Haify itself produced, under its current and its former
+	# (sds-) names; what remains is the DRBD documentation.
+	for p in haify-docs__ haify-runbooks__ sds-docs__ sds-runbooks__ ua: haify- sds- api: corpus/ sdssrc/; do
+		"$od" purge --prefix "$p"
+	done
+fi
 
 # flatten <src-dir> <prefix> <find-args...>: copies matching files into one
 # staging dir as *.md, naming each after its path so document ids stay unique
@@ -98,10 +116,19 @@ once() {
 }
 
 # ingest_one <file>: ingests one document on its own, so a failure costs that
-# document rather than the directory it came from.
+# document rather than the directory it came from. A document a previous build
+# (HAIFY_KB_FROM) already holds is kept as it is.
 ingest_one() {
-	local f=$1 one
-	one=$stage/one/$(basename "$f" .md)
+	local f=$1 one id held
+	id=$(basename "$f" .md)
+	# Waits out the other jobs' writes: a locked database answered nothing,
+	# nothing was not 0, and two documents were taken as held and never built.
+	held=$(sqlite3 -cmd '.timeout 60000' "$db" "SELECT count(*) FROM embeddings WHERE json_extract(metadata,'\$.document_id') = '$id' LIMIT 1" 2>/dev/null || true)
+	if [ -n "${HAIFY_KB_FROM:-}" ] && [ "${held:-0}" -gt 0 ] 2>/dev/null; then
+		grep -qxF "doc:$(basename "$f")" "$progress" || echo "doc:$(basename "$f")" >>"$progress"
+		return 0
+	fi
+	one=$stage/one/$id
 	mkdir -p "$one"
 	cp "$f" "$one/"
 	once "doc:$(basename "$f")" "$od" ingest "$one"
@@ -141,18 +168,45 @@ ingest_each "$docs"
 step "Haify runbooks"
 ingest_each "$(flatten "$root/pkg/mcpserver/runbooks" haify-runbooks -name '*.md')"
 
+code_graph=0
 if [ -f "$root/.understand-anything/knowledge-graph.json" ]; then
 	step "Haify code graph"
-	once step:haify-code-graph "$od" import-graph "$root/.understand-anything/knowledge-graph.json"
+	once step:haify-code-graph "$od" import-graph --repo haify "$root/.understand-anything/knowledge-graph.json"
+	code_graph=1
 fi
 
+# The strings an operator sees in a log, mined from the Go source so an error
+# line leads back to the code that printed it. Only the source is staged: given
+# the checkout, ingest-repo found the code graph, imported it a second time and
+# stopped there, and no string was ever mined. The strings are found by their
+# vectors and words; no entities are extracted from them (the code graph holds
+# the code's), which would cost one model call per file, one after another.
 step "Haify source"
-once step:haify-source "$od" ingest-repo "$root"
+src=$stage/src/haify
+mkdir -p "$src"
+(cd "$root" && git ls-files '*.go' | grep -vE '_test\.go$|\.pb(\.gw)?\.go$' | while read -r f; do
+	mkdir -p "$src/$(dirname "$f")"
+	cp "$f" "$src/$f"
+done)
+once step:haify-source env STEWARD_LLM_API_KEY= "$od" ingest-repo "$src"
 
+# The command line as a reference and a graph: each command linked to the
+# function in cmd/cli that handles it, when the code graph is there.
 step "haify reference (built from this commit)"
 cli=$stage/haify
 (cd "$root" && go build -o "$cli" ./cmd/cli)
-once step:haify "$od" ingest-cli "$cli"
+link_cli=()
+[ $code_graph = 1 ] && link_cli=(--repo haify --code-path cmd/cli/)
+once step:haify "$od" ingest-cli ${link_cli[@]+"${link_cli[@]}"} "$cli"
+
+# The REST API: every operation, what it takes and returns, the controller
+# method serving it and the command that calls it. The gRPC methods are in
+# pkg/controller/server*.go, and the names recur in the package's other files,
+# so that prefix is tried before the package.
+step "Haify REST API"
+link_api=(--cli haify --name haify)
+[ $code_graph = 1 ] && link_api+=(--repo haify --code-path pkg/controller/server,pkg/controller/)
+once step:haify-api "$od" ingest-api "${link_api[@]}" "$root/haify.swagger.json"
 
 if [ -n "${SERVICE_IP_REPO:-}" ] && [ -f "$SERVICE_IP_REPO/.understand-anything/knowledge-graph.json" ]; then
 	step "service-ip code graph"
