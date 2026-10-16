@@ -596,9 +596,26 @@ from the next `haify ha evict haify-meta`; restarting haify-ai is a failover).
   switch to an embedder with a different dimension, rebuild the knowledge base.
   If you don't, searches return nothing and report no error.
   `GET /ai/kb/list` shows the dimension stored in the index.
-- Shared knowledge base: `make kb` (see `ai/kb/build.sh`) builds
-  `dist/kb/haify-kb.db` and its manifest `haify-kb.json`. Install both at
-  `/opt/haify/share/` on every node and set
+- Shared knowledge base: every GitHub release carries one built from the
+  release's own code, `haify-kb.tar.zst`. It holds the documentation, the
+  runbooks, the code graph, the strings in the source, the CLI and REST API
+  reference linked to the code that implements them, and the DRBD 9 user's
+  guide. Its manifest says it was built with the `embeddinggemma:latest`
+  embedder at 768 dimensions, so haify-ai must embed with that model too.
+  Unpack it on every node:
+
+  ```bash
+  mkdir -p /opt/haify/share
+  curl -fsSL https://github.com/haify-project/haify/releases/latest/download/haify-kb.tar.zst \
+    | tar --zstd -xf - -C /opt/haify/share
+  ```
+
+  The release also carries the code graph alone, as
+  `haify-code-graph.json.gz`, which Understand-Anything's dashboard opens.
+  `make kb` (see `ai/kb/build.sh`) builds the base yourself, and adds the
+  LINBIT knowledge-base articles, which the published one leaves out. It writes
+  `dist/kb/haify-kb.db` and its manifest `haify-kb.json`; install both at
+  `/opt/haify/share/` on every node instead. Either way, set
   `HAIFY_AI_SHARED_KNOWLEDGE_DB=/opt/haify/share/haify-kb.db`; it is searched
   read-only next to `HAIFY_AI_KNOWLEDGE_DB`. haify-ai refuses to start if the
   manifest is missing, if the cluster's embedder dimension differs from the

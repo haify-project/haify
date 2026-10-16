@@ -1,0 +1,13 @@
+Haify shared knowledge base, public edition
+
+Most of it is built from the Haify repository,
+https://github.com/haify-project/haify, under the Apache License 2.0: the
+documentation, the operations runbooks, the code graph, the strings mined
+from the source and the command-line and REST API reference.
+
+It also holds the DRBD 9 User's Guide by LINBIT, from
+https://github.com/LINBIT/linbit-documentation (UG9, English), licensed under
+the Creative Commons Attribution-ShareAlike 3.0 License,
+https://creativecommons.org/licenses/by-sa/3.0/legalcode. Here the guide is
+split into passages, embedded and has its entities extracted. That adaptation
+is shared under the same license.

@@ -16,6 +16,9 @@
 #   - DRBD 9 documentation: the LINBIT knowledge base, the DRBD 9 user's guide
 #     (English) and the AI-assistant notes
 #
+# Writes <out-dir>/haify-kb.{db,json}, and the public edition, which leaves out
+# what may not be redistributed, in <out-dir>/public/ with its NOTICE.
+#
 # Every cluster must query it with the embedder it was built with; the model
 # and dimension are recorded in the manifest next to the database.
 #
@@ -219,17 +222,50 @@ ingest_each "$(flatten "$corpus/linbit-blog-kb" linbit-kb -name '*.md')"
 ingest_each "$(flatten "$corpus/linbit-documentation/UG9/en" drbd9-guide -name '*.adoc')"
 ingest_each "$(flatten "$corpus/ai-assistants" drbd-ai-notes -name '*.md')"
 
-step "manifest"
-sqlite3 "$db" 'PRAGMA wal_checkpoint(TRUNCATE); VACUUM;'
-sha=$(shasum -a 256 "$db" | cut -d' ' -f1)
-cat >"$out/haify-kb.json" <<EOF
+# manifest <db> <edition>: the manifest that goes next to db.
+manifest() {
+	cat <<EOF
 {
   "version": "$version",
+  "edition": "$2",
   "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "sha256": "$sha",
+  "sha256": "$(shasum -a 256 "$1" | cut -d' ' -f1)",
   "embedder": {"model": "$STEWARD_EMB_MODEL", "dim": $STEWARD_EMB_DIM},
   "extractor": {"model": "$STEWARD_LLM_MODEL"},
   "steward": "$steward_version"
 }
 EOF
+}
+
+step "manifest"
+sqlite3 "$db" 'PRAGMA wal_checkpoint(TRUNCATE); VACUUM;'
+manifest "$db" full >"$out/haify-kb.json"
 cat "$out/haify-kb.json"
+
+# The public edition, published with every GitHub release: the same base
+# without what may not be passed on, the LINBIT blog and knowledge-base
+# articles and the notes from LINBIT's internal ai-assistants repository. The
+# DRBD 9 user's guide stays; it is CC BY-SA 3.0, credited in NOTICE.
+step "public edition"
+pub=$out/public
+rm -rf "$pub"
+mkdir -p "$pub"
+sqlite3 "$db" ".backup '$pub/haify-kb.db'"
+for p in linbit-kb__ drbd-ai-notes__; do
+	STEWARD_KNOWLEDGE_DB_PATH=$pub/haify-kb.db "$od" purge --prefix "$p"
+done
+left=$(sqlite3 "$pub/haify-kb.db" "SELECT count(*) FROM embeddings WHERE json_extract(metadata,'\$.document_id') LIKE 'linbit-kb\_\_%' ESCAPE '\\' OR json_extract(metadata,'\$.document_id') LIKE 'drbd-ai-notes\_\_%' ESCAPE '\\'")
+if [ "$left" != 0 ]; then
+	echo "public edition still holds $left passages it may not" >&2
+	exit 1
+fi
+# The change history still holds every node and edge the purge removed, and
+# nothing that reads the base uses it. The vector index snapshot is dropped
+# with it; it is rebuilt from the vectors when it is missing.
+sqlite3 "$pub/haify-kb.db" "DELETE FROM change_log; DELETE FROM graph_node_history; DELETE FROM graph_edge_history;
+	DELETE FROM index_snapshots;
+	INSERT INTO chunks_fts(chunks_fts) VALUES('optimize'); INSERT INTO chunks_fts_cjk(chunks_fts_cjk) VALUES('optimize');
+	PRAGMA wal_checkpoint(TRUNCATE); VACUUM;"
+manifest "$pub/haify-kb.db" public >"$pub/haify-kb.json"
+cp "$root/ai/kb/NOTICE" "$pub/"
+cat "$pub/haify-kb.json"
