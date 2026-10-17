@@ -42,17 +42,41 @@ URL per cluster, so a node added to or removed from Haify is scraped or
 dropped by itself. The dashboard's Nodes row shows memory used, CPU busy, I/O
 on the DRBD devices, network, load per CPU and the root filesystem.
 
-The Haify web UI reads the same nodes from this Prometheus for the Stats
-section of its dashboard (CPU, memory, disk write latency, network and the
-slowest disks) once `controller.toml` names it:
+## Prometheus that fails over with the controller
 
-```toml
-[metrics]
-prometheus_url = "http://<prometheus host>:39417"
+The web UI's dashboard reads the nodes' CPU, memory, disk write latency and
+network from a Prometheus named in `controller.toml`
+(`[metrics] prometheus_url`); without one its Stats section shows only what
+the controller measures itself. Under Self-HA that Prometheus can run with
+the controller:
+
+```bash
+scripts/install-node-exporter.sh node1,node2,node3
+scripts/install-prometheus.sh node1,node2,node3     # every node that can run the controller
 ```
 
-Without it the section shows only what the controller measures itself: data
-out of sync and its own API traffic.
+`install-prometheus.sh` installs the distribution's `prometheus` package
+(its own service is masked), `haify-prometheus.service` and
+`/etc/haify/prometheus.yml`, and sets `prometheus_url =
+"http://127.0.0.1:39417"` and `haify-prometheus.service` in `[self_ha]
+extra_services` in each node's `controller.toml`. drbd-reactor then starts
+it after the controller on the active node, its data is on the haify-meta
+volume under `/var/lib/haify/prometheus`, and it scrapes the controller and,
+through the controller's discovery, every node's node_exporter, so nothing
+in its config changes on failover. It is reached at `<controller VIP>:39417`.
+The haify-meta volume is small: data is kept 30 days or 300MB, whichever
+comes first (`--retention-size` to change it), and only the node metrics the
+UI and the alert rules here read are stored.
+
+On a cluster where Self-HA is enabled after the install, the promoter
+includes it. On one that already runs Self-HA, add
+`"haify-prometheus.service"` to the end of the `start` list in
+`/etc/drbd-reactor.d/haify-ha-haify-meta.toml` in this order, so the running
+controller is not stopped by a reload: on each standby, then
+`systemctl reload drbd-reactor` there; then
+`drbd-reactorctl evict haify-ha-haify-meta` on the active node, which moves
+the controller to a standby that starts it with Prometheus; then on the
+former active node.
 
 | | Host port | Notes |
 | --- | --- | --- |

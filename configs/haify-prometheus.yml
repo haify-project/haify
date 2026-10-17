@@ -1,0 +1,23 @@
+# Prometheus for one Haify cluster, run by the controller's Self-HA promoter
+# on whichever node runs the controller (scripts/install-prometheus.sh).
+# Everything is scraped through that node's own controller, so the file is
+# the same on every node and nothing in it moves on failover.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+scrape_configs:
+  # The controller's own series: resource, replication and pool state.
+  - job_name: haify
+    static_configs:
+      - targets: ["127.0.0.1:9433"]
+  # node_exporter on every registered node, listed by the controller.
+  - job_name: node
+    http_sd_configs:
+      - url: http://127.0.0.1:9433/discovery/node-exporter
+    # Only what the web UI's Stats and the shipped alert rules read. The
+    # data lives on the small haify-meta volume, and node_exporter's full
+    # output is twenty times this.
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: "node_(cpu_seconds_total|memory_(MemAvailable|MemTotal)_bytes|disk_(write_time_seconds|writes_completed|read_time_seconds|reads_completed|read_bytes|written_bytes)_total|network_(transmit|receive)_bytes_total|load1|load5|load15|filesystem_(avail|size)_bytes)"
+        action: keep

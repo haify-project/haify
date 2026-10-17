@@ -24,11 +24,13 @@ done
 
 remote_script=$(cat <<SCRIPT
 set -e
+# Judged by the unit, not the package manager's exit status: a node with
+# some other package half-configured fails every install, this one included.
 if command -v apt-get >/dev/null; then
-    NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq prometheus-node-exporter >/dev/null 2>&1
+    NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq prometheus-node-exporter >/dev/null 2>&1 || true
     unit=prometheus-node-exporter
 elif command -v dnf >/dev/null; then
-    dnf install -y -q node_exporter >/dev/null 2>&1 || dnf install -y -q golang-github-prometheus-node-exporter >/dev/null
+    dnf install -y -q node_exporter >/dev/null 2>&1 || dnf install -y -q golang-github-prometheus-node-exporter >/dev/null || true
     unit=node_exporter
 else
     echo "no apt-get or dnf on this node" >&2; exit 1

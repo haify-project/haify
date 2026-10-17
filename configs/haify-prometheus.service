@@ -1,0 +1,23 @@
+[Unit]
+Description=Haify Prometheus (rides the controller Self-HA promoter)
+After=network-online.target var-lib-haify.mount
+Wants=network-online.target
+
+# Started and stopped by drbd-reactor with the controller, never at boot: the
+# data is on the haify-meta DRBD mount, which only the active node has.
+[Service]
+Type=simple
+User=prometheus
+# The prometheus user's id differs from node to node, and the data moves
+# between them with the volume, so ownership is set on every start.
+ExecStartPre=+/bin/sh -c 'mkdir -p /var/lib/haify/prometheus && chown -R prometheus: /var/lib/haify/prometheus'
+ExecStart=/usr/bin/prometheus \
+    --config.file=/etc/haify/prometheus.yml \
+    --storage.tsdb.path=/var/lib/haify/prometheus \
+    --storage.tsdb.retention.time=30d \
+    --storage.tsdb.retention.size=300MB \
+    --web.listen-address=:39417
+Restart=on-failure
+RestartSec=5
+# Prometheus writes its head block on SIGTERM; the volume is unmounted next.
+TimeoutStopSec=90
