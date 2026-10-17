@@ -2,7 +2,7 @@ module github.com/haify-project/haify/cmd/haify-ai
 
 go 1.26.0
 
-require github.com/liliang-cn/steward v0.53.2
+require github.com/liliang-cn/steward v0.54.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect

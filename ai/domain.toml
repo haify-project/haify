@@ -165,7 +165,13 @@ error_patterns = [
   'fprintf\s*\(\s*stderr\s*,\s*"([^"]{8,})"',
   '\blog_(?:err|error|warn|warning|crit)\s*\([^"]*"([^"]{8,})"',
   '\bperror\s*\(\s*"([^"]{6,})"',
-  '(?:zap\.\w+|logger\.\w+|fmt\.Errorf)\s*\(\s*"([^"]{8,})"',
+  # Go: what Haify writes at info level and above, through any logger
+  # (m.logger.Warn, zap.L().Error, log.Info), and the errors it returns. Not
+  # zap.String("key", ...) and its kin: their first argument is a field name.
+  # Not Debug: those traces begin with their function's name already and are
+  # not what an operator sees at the default level.
+  '\.(?:Info|Warn|Error|Fatal|Panic|DPanic)\s*\(\s*"([^"]{8,})"',
+  '\b(?:fmt\.Errorf|errors\.New)\s*\(\s*"([^"]{8,})"',
 ]
 
 # The knowledge base is built by ai/kb/build.sh; no repos are ingested from here.

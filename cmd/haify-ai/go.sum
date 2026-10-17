@@ -172,8 +172,8 @@ github.com/liliang-cn/pipeit v0.1.1 h1:O9PKw+MrMraLp8ISmKKTbwb2ovlXtC1jWPdqeFFNh
 github.com/liliang-cn/pipeit v0.1.1/go.mod h1:ghxqa1CKTztR5me4vl8srIYQhfv89tc37SnocoXv4/E=
 github.com/liliang-cn/skills-go v1.9.0 h1:f734/1BM4edgTeMlhkcUnXYenxeXEdgVm9/MDbkwE3Y=
 github.com/liliang-cn/skills-go v1.9.0/go.mod h1:9uDod4rl/qZmh2vu6jcmbMMf0bjms7QNpBePg3zXxUo=
-github.com/liliang-cn/steward v0.53.2 h1:98rc8sLaQIZULrrXFn9Dm3Fc9RIlrzsy9gCLKoIlogo=
-github.com/liliang-cn/steward v0.53.2/go.mod h1:TtOJiQL6riEbgI4GYl+k6Ys6A/rSvI8UTUTheQMJ2OI=
+github.com/liliang-cn/steward v0.54.0 h1:ln8+ZLhci3q0E6o4NjhldnzfLhEttRCY/5Pd3NIxlus=
+github.com/liliang-cn/steward v0.54.0/go.mod h1:TtOJiQL6riEbgI4GYl+k6Ys6A/rSvI8UTUTheQMJ2OI=
 github.com/mark3labs/mcp-go v1.0.0 h1:CZqCzXwUiTOstkIdW1MyOZGuM+LaKMEJSu+ZYluN4DU=
 github.com/mark3labs/mcp-go v1.0.0/go.mod h1:r2fW4o3wsoJ7IMsx1Wuq5xeP8PRGXPDfNveoGAYbb/s=
 github.com/mattn/go-isatty v0.0.24 h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=

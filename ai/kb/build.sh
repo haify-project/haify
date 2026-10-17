@@ -52,7 +52,7 @@ corpus=${HAIFY_KB_CORPUS:?set HAIFY_KB_CORPUS to the dir with linbit-blog-kb/, l
 : "${STEWARD_EMB_API_KEY:?}" "${STEWARD_EMB_MODEL:?}" "${STEWARD_EMB_BASE_URL:?}"
 : "${STEWARD_LLM_API_KEY:?}" "${STEWARD_LLM_MODEL:?}" "${STEWARD_LLM_BASE_URL:?}"
 export STEWARD_EMB_DIM=${HAIFY_KB_EMB_DIM:-768}
-steward_version=v0.53.2 # keep in step with cmd/haify-ai/go.mod
+steward_version=v0.54.0 # keep in step with cmd/haify-ai/go.mod
 od=${STEWARD:-}
 if [ -z "$od" ]; then
 	od=$(mktemp -d)/steward
