@@ -674,6 +674,23 @@ service HaifyController {
     option (google.api.http) = { get: "/v1/events"; };
   }
 
+  // The cluster in numbers, for the dashboard: every count is computed by the
+  // controller from its last health poll and its own records, so a client
+  // never pulls thousands of resources to count them.
+  rpc GetClusterSummary(GetClusterSummaryRequest) returns (GetClusterSummaryResponse) {
+    option (google.api.http) = { get: "/v1/cluster/summary"; };
+  }
+  // Cluster totals over time, sampled by the controller on every health poll:
+  // throughput, out-of-sync data, capacity and API traffic.
+  rpc GetClusterHistory(GetClusterHistoryRequest) returns (GetClusterHistoryResponse) {
+    option (google.api.http) = { get: "/v1/cluster/history"; };
+  }
+  // Node statistics (CPU, memory, disk latency, network) from the Prometheus
+  // server named by [metrics] prometheus_url. available is false without one.
+  rpc GetClusterStats(GetClusterStatsRequest) returns (GetClusterStatsResponse) {
+    option (google.api.http) = { get: "/v1/cluster/stats"; };
+  }
+
   // Notification channels: where alerts are delivered. These live in the
   // controller database rather than in controller.toml so they can be changed
   // from the UI while the controller runs — reconfiguring alerting by editing a
@@ -1404,12 +1421,34 @@ message GetResourceResponse {
 message ListResourcesRequest {
   // profile, when set, lists only that profile's members.
   string profile = 1;
+  // query matches the name, the owner (PVC, VM) and label values.
+  string query = 2;
+  // state is "healthy", "resyncing", "degraded", "no_quorum", "unknown",
+  // "attention" (everything but healthy) or "offsite"; empty for all.
+  string state = 3;
+  // used_by is "pvc", "proxmox", "openstack", "kvm", "gateway", "ha",
+  // "app" or "none"; empty for all.
+  string used_by = 4;
+  // node and pool keep resources with a replica on that node or in that pool.
+  string node = 5;
+  string pool = 6;
+  // sort is "attention" (problems first, the default), "name", "size" or
+  // "writes".
+  string sort = 7;
+  // offset and limit page the result; limit 0 returns everything.
+  int32 offset = 8;
+  int32 limit = 9;
 }
 
 message ListResourcesResponse {
   bool success = 1;
   string message = 2;
   repeated ResourceInfo resources = 3;
+  // total is how many resources matched before paging.
+  int32 total = 4;
+  // counts is how many of the profile's resources (ignoring every other
+  // filter) are in each state, keyed like ListResourcesRequest.state.
+  map<string, int32> counts = 5;
 }
 
 message ResourceProfile {
@@ -2227,6 +2266,37 @@ message ResourceInfo {
   // fault_domain_risk names the labelled fault domain(s), e.g. "host=dell",
   // whose loss would take every copy of the data or the quorum majority.
   string fault_domain_risk = 16;
+  // health is the resource as the last health poll saw it; unset before the
+  // first poll and when health checks are off.
+  ResourceHealth health = 17;
+  // owner is what the resource is to the system that created it, such as
+  // "PVC db/data-postgres-0"; used_by is that system ("pvc", "proxmox", ...).
+  string owner = 18;
+  string used_by = 19;
+}
+
+// ResourceHealth is one resource's state from the controller's last health
+// poll.
+message ResourceHealth {
+  // state is "healthy", "resyncing", "degraded", "no_quorum" or "unknown".
+  string state = 1;
+  // summary says where the problem is ("n31 Outdated", "n12 63%") or, when
+  // there is none, which node is Primary ("primary n04").
+  string summary = 2;
+  repeated ReplicaHealth replicas = 3;
+  uint64 out_of_sync_bytes = 4;
+  // write_bytes_per_sec is the application write rate over the last poll
+  // interval; unset when it could not be measured.
+  optional double write_bytes_per_sec = 5;
+  int64 observed_unix = 6;
+}
+
+// ReplicaHealth is one member of a resource in ResourceHealth.
+message ReplicaHealth {
+  string node = 1;
+  // state is "ok", "resyncing", "bad" or "tiebreaker".
+  string state = 2;
+  string role = 3;
 }
 
 message ResourceStatus {
@@ -4236,4 +4306,182 @@ message ListStorageJobsResponse {
   bool success = 1;
   string message = 2;
   repeated StorageJobInfo jobs = 3;
+}
+
+// ==================== Cluster summary ====================
+
+message GetClusterSummaryRequest {}
+
+message GetClusterSummaryResponse {
+  bool success = 1;
+  string message = 2;
+  // observed_unix is when the health poll the counts come from finished; 0
+  // when none has.
+  int64 observed_unix = 3;
+  ResourceCounts resources = 4;
+  NodeCounts nodes = 5;
+  CapacityCounts capacity = 6;
+  GatewayCounts gateways = 7;
+  ReplicationCounts replication = 8;
+  ProtectionCounts protection = 9;
+  TodayCounts today = 10;
+  // attention is what is firing now, one entry per kind of problem, worst
+  // first.
+  repeated AttentionItem attention = 11;
+  // events_by_hour is today's events in local hours 0..23 of the controller.
+  repeated HourEvents events_by_hour = 12;
+  // pool_fullness counts pools in ten buckets of how full they are: 0-10%
+  // ... 90-100%.
+  repeated int32 pool_fullness = 13;
+  // control_plane is the node running this controller.
+  string control_plane = 14;
+}
+
+message ResourceCounts {
+  int32 total = 1;
+  int32 healthy = 2;
+  int32 resyncing = 3;
+  int32 degraded = 4;
+  int32 no_quorum = 5;
+  int32 unknown = 6;
+  int32 volumes = 7;
+}
+
+message NodeCounts {
+  int32 total = 1;
+  int32 online = 2;
+  int32 offline = 3;
+  int32 draining = 4;
+}
+
+message CapacityCounts {
+  uint64 total_bytes = 1;
+  uint64 used_bytes = 2;
+  int32 pools = 3;
+  int32 pools_above_90 = 4;
+  int32 pools_80_to_90 = 5;
+}
+
+message GatewayCounts {
+  int32 total = 1;
+  int32 serving = 2;
+}
+
+message ReplicationCounts {
+  int32 replicas = 1;
+  int32 diskless_clients = 2;
+  int32 tiebreakers = 3;
+  int32 offsite = 4;
+  int32 encrypted_links = 5;
+  optional double write_bytes_per_sec = 6;
+  optional double read_bytes_per_sec = 7;
+  uint64 out_of_sync_bytes = 8;
+}
+
+message ProtectionCounts {
+  int32 snapshot_schedules = 1;
+  // covered is how many resources a snapshot or backup schedule covers.
+  int32 covered = 2;
+  int32 schedules_run_today = 3;
+  int32 backups_today = 4;
+  int32 backups_failed_today = 5;
+}
+
+message TodayCounts {
+  int32 events = 1;
+  int32 critical = 2;
+  int32 warning = 3;
+  int32 failovers = 4;
+  int32 nodes_lost = 5;
+  int32 replicas_moved = 6;
+  int32 pools_extended = 7;
+  // The newest inspection, when one has run: checks passed and in total.
+  int32 inspection_passed = 8;
+  int32 inspection_total = 9;
+}
+
+message AttentionItem {
+  // type is the event type ("resource.degraded"); severity its severity.
+  string type = 1;
+  string severity = 2;
+  int32 count = 3;
+  // subjects names a few of what it concerns, resources or nodes.
+  repeated string subjects = 4;
+}
+
+message HourEvents {
+  int32 critical = 1;
+  int32 warning = 2;
+  int32 info = 3;
+}
+
+// ==================== Cluster history ====================
+
+message GetClusterHistoryRequest {
+  // range is "1h", "6h", "24h", "7d", "30d" or "90d"; "24h" when empty.
+  string range = 1;
+}
+
+message GetClusterHistoryResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ClusterSample samples = 3;
+}
+
+// ClusterSample is the cluster's totals at one moment; rates are averages over
+// the interval the sample stands for.
+message ClusterSample {
+  int64 unix = 1;
+  double write_bytes_per_sec = 2;
+  double read_bytes_per_sec = 3;
+  uint64 out_of_sync_bytes = 4;
+  uint64 capacity_used_bytes = 5;
+  uint64 capacity_total_bytes = 6;
+  double api_requests_per_sec = 7;
+  double api_errors_per_sec = 8;
+}
+
+// ==================== Cluster stats (Prometheus) ====================
+
+message GetClusterStatsRequest {
+  // range is "1h", "6h", "24h", "7d" or "30d"; "24h" when empty.
+  string range = 1;
+}
+
+message GetClusterStatsResponse {
+  bool success = 1;
+  string message = 2;
+  // available is false when no Prometheus server is configured; the other
+  // fields are then empty.
+  bool available = 3;
+  // nodes is how many nodes reported.
+  int32 nodes = 4;
+  StatSeries cpu = 5;
+  StatSeries memory = 6;
+  StatSeries disk_write_latency = 7;
+  StatSeries network = 8;
+  // slowest_disks is the nodes with the highest disk write latency now,
+  // slowest first.
+  repeated NodeStat slowest_disks = 9;
+}
+
+// StatSeries is one statistic over time across all nodes: the average, the
+// lowest and the highest node at each step, and the busiest node now. Units
+// are those of the statistic: a 0..1 fraction for cpu and memory, seconds for
+// latency, bytes per second for network.
+message StatSeries {
+  repeated int64 unix = 1;
+  repeated double avg = 2;
+  repeated double min = 3;
+  repeated double max = 4;
+  double now_avg = 5;
+  NodeStat busiest = 6;
+  // sum is all nodes added together, for network; now_sum its latest value.
+  repeated double sum = 7;
+  double now_sum = 8;
+}
+
+message NodeStat {
+  string node = 1;
+  double value = 2;
 }

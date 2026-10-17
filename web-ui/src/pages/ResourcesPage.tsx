@@ -1,414 +1,285 @@
-import { useState } from 'react';
-import { useQueries, useQuery } from '@tanstack/react-query';
-import { api, Resource, ResourceStatus } from '../services/api';
-import { PageHeader } from '@/components/PageHeader';
-import { StatusTickHead } from '@/components/StatusTick';
-import { SegmentedFilter } from '@/components/SegmentedFilter';
-import { RecordCard, RecordCards } from '@/components/RecordCard';
-import { ResourceProfilesPage } from './ResourceProfilesPage';
+import { Fragment, useCallback, useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
+import { Plus, Boxes } from 'lucide-react';
+import { api, type ResourceListItem } from '@/services/api';
+import { PageHeader } from '@/components/PageHeader';
+import { StatFilterStrip } from '@/components/list/StatFilterStrip';
+import { FilterSelect, ListToolbar, SearchBox } from '@/components/list/ListToolbar';
+import { Pager } from '@/components/list/Pager';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Table,
-  TableBody,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Plus, Boxes, Search } from 'lucide-react';
-import {
-  syncPollInterval,
-  type Replication,
-  replicationSummary,
-  UNKNOWN_REPLICATION,
-  totalGbOf,
-} from './resources/replication';
-import { type FilterKey, type RowDialog } from './resources/types';
-import {
-  nodeChips,
-  NodeChips,
-  ResourceChips,
-  ReplicationCell,
-  ResourceRow,
-} from './resources/ResourceRow';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useDescribePage } from '@/lib/pageContext';
+import { ResourceProfilesPage } from './ResourceProfilesPage';
+import { type RowDialog } from './resources/types';
+import { ResourceListRow } from './resources/ResourceListRow';
+import { ResourceListCard } from './resources/ResourceListCard';
 import { ResourceDialogs } from './resources/ResourceDialogs';
-import { ResourceDetail } from './resources/ResourceDetail';
-import { ResourceActionsMenu } from './resources/ResourceActionsMenu';
 import { CreateResourceDialog } from './resources/CreateResourceDialog';
+import { STATES, USED_BY } from './resources/listModel';
+
+// Resources a page at a time. The controller filters, sorts and pages them
+// with each one's health from its last poll, so the page asks for fifty rows
+// and the counts however many thousand resources there are, and nothing about
+// a resource is fetched on its own until its row is opened.
+
+const PAGE = 50;
+
+const STATE_FILTERS = ['', 'healthy', 'resyncing', 'degraded', 'no_quorum', 'offsite'] as const;
 
 export function ResourcesPage() {
-  const { data: resources, isLoading } = useQuery({
-    queryKey: ['resources'],
-    queryFn: () => api.getResources(),
-  });
-
-  const { data: pools } = useQuery({
-    queryKey: ['pools'],
-    queryFn: () => api.getPools(),
-  });
-
-  const { data: nodes } = useQuery({
-    queryKey: ['nodes'],
-    queryFn: () => api.getNodes(),
-  });
-
-  const { data: profiles } = useQuery({
-    queryKey: ['resource-profiles'],
-    queryFn: () => api.getResourceProfiles(),
-  });
-
-  const list = resources?.resources ?? [];
-
-  // One live-status query per resource, held here rather than in each row: the
-  // segmented filter has to count healthy and syncing resources, and those
-  // words exist nowhere in the list response. The rows and the expanded panels
-  // read the same query keys, so they are served from this cache rather than
-  // fetching again, and the adaptive interval still stops polling the moment a
-  // resource settles.
-  const statusQueries = useQueries({
-    queries: list.map((r) => ({
-      queryKey: ['resource-status', r.name],
-      queryFn: () => api.resourceStatus(r.name),
-      refetchInterval: syncPollInterval,
-    })),
-  });
-
-  // Derived once for both shapes of a row: the table at `md` and up and the
-  // cards below it read these two maps, never a query of their own, so the two
-  // views cannot describe the same resource differently.
-  const statusOf = new Map<string, ResourceStatus | undefined>(
-    list.map((r, i) => [r.name, statusQueries[i]?.data?.status]),
-  );
-  const replication = new Map<string, Replication>(
-    list.map((r) => [r.name, replicationSummary(statusOf.get(r.name))]),
-  );
-
   const [params, setParams] = useSearchParams();
-  // Profiles live here rather than in their own nav entry: they are templates
-  // for resources and do nothing on their own, so they belong beside the things
-  // they create. It also matches the CLI, where the command has always been
-  // `haify resource profile`.
   const tab = params.get('tab') === 'profiles' ? 'profiles' : 'resources';
+  const q = params.get('q') ?? '';
+  const state = params.get('state') ?? '';
+  const usedBy = params.get('used_by') ?? '';
+  const node = params.get('node') ?? '';
+  const pool = params.get('pool') ?? '';
+  const sort = params.get('sort') ?? 'attention';
+  const offset = Number(params.get('offset') ?? 0) || 0;
 
-  // ?q=<name> opens the page filtered to a resource with it expanded: the
-  // link other consoles (Horizon, Proxmox VE) use to point at one resource.
-  const linked = params.get('q') ?? '';
-  const [query, setQuery] = useState(linked);
-  const [filter, setFilter] = useState<FilterKey>('all');
-  const [createOpen, setCreateOpen] = useState(false);
-
-  // Expansion and the row dialogs live on the page rather than inside the row:
-  // below `md` a resource is a card and above it a table row, and state held in
-  // either would be a second copy that disagrees with the other. Several may be
-  // open at once, which is the whole point of an inline panel over a modal.
-  const [expanded, setExpanded] = useState<string[]>(linked ? [linked] : []);
-  const [dialog, setDialog] = useState<{ resource: string; kind: RowDialog } | null>(
-    null,
+  // Every change of filter starts again from the first page.
+  const update = useCallback(
+    (patch: Record<string, string>) =>
+      setParams(
+        (cur) => {
+          const next = new URLSearchParams(cur);
+          for (const [k, v] of Object.entries(patch)) {
+            if (v) next.set(k, v);
+            else next.delete(k);
+          }
+          if (!('offset' in patch)) next.delete('offset');
+          return next;
+        },
+        { replace: true },
+      ),
+    [setParams],
   );
-  const toggleExpanded = (name: string) =>
-    setExpanded((cur) =>
-      cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name],
-    );
+  const setQuery = useCallback((v: string) => update({ q: v }), [update]);
 
-  const matchesFilter = (r: Resource, key: FilterKey) => {
-    if (key === 'all') return true;
-    if (key === 'offsite') return Boolean(r.wanMode);
-    const tone = replication.get(r.name)?.tone;
-    return key === 'healthy' ? tone === 'ok' : tone === 'warn';
-  };
-
-  const counts = {
-    all: list.length,
-    healthy: list.filter((r) => matchesFilter(r, 'healthy')).length,
-    syncing: list.filter((r) => matchesFilter(r, 'syncing')).length,
-    offsite: list.filter((r) => matchesFilter(r, 'offsite')).length,
-  };
-
-  // Name, node names and labels: the three things an operator actually types
-  // when hunting for one resource among many.
-  const needle = query.trim().toLowerCase();
-  const visible = list.filter((r) => {
-    if (!matchesFilter(r, filter)) return false;
-    if (!needle) return true;
-    const haystack = [
-      r.name,
-      ...r.nodes,
-      ...(r.disklessNodes ?? []),
-      ...(r.disklessClients ?? []),
-      r.profile ?? '',
-      ...Object.entries(r.labels ?? {}).map(([k, v]) => `${k}=${v}`),
-    ]
-      .join(' ')
-      .toLowerCase();
-    return haystack.includes(needle);
+  const page = useQuery({
+    queryKey: ['resource-page', { q, state, usedBy, node, pool, sort, offset }],
+    queryFn: () => api.getResourcePage({ query: q, state, usedBy, node, pool, sort, offset, limit: PAGE }),
+    placeholderData: keepPreviousData,
+    refetchInterval: 15_000,
+    meta: { live: true },
+    enabled: tab === 'resources',
   });
+  const { data: pools } = useQuery({ queryKey: ['pools'], queryFn: () => api.getPools() });
+  const { data: nodes } = useQuery({ queryKey: ['nodes'], queryFn: () => api.getNodes() });
+  const { data: profiles } = useQuery({ queryKey: ['resource-profiles'], queryFn: () => api.getResourceProfiles() });
 
-  const volumeCount = list.reduce((n, r) => n + r.volumes.length, 0);
-  const offsiteCount = counts.offsite;
+  const rows = page.data?.resources ?? [];
+  const counts = page.data?.counts ?? {};
+  const total = page.data?.total ?? 0;
+  const [expanded, setExpanded] = useState<string[]>(q ? [q] : []);
+  const [dialog, setDialog] = useState<{ resource: string; kind: RowDialog } | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const toggle = (name: string) =>
+    setExpanded((cur) => (cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name]));
+
+  useDescribePage(
+    tab === 'profiles'
+      ? 'Resource profiles'
+      : ['Resources', state && (STATES[state]?.label ?? 'off-site').toLowerCase(), q && `matching "${q}"`]
+          .filter(Boolean)
+          .join(', '),
+  );
+
+  // With problems first and no state chosen, the list falls into two groups,
+  // headed where each begins on this page.
+  const grouped = sort === 'attention' && !state;
+  const attention = counts.attention ?? 0;
+  const groupBefore = (r: ResourceListItem, i: number): string | null => {
+    if (!grouped) return null;
+    const bad = (r.health?.state ?? 'unknown') !== 'healthy';
+    const prevBad = i > 0 ? (rows[i - 1].health?.state ?? 'unknown') !== 'healthy' : null;
+    if (i === 0 || bad !== prevBad) {
+      return bad ? `Needs attention · ${attention.toLocaleString('en-US')}` : `Healthy · ${(counts.healthy ?? 0).toLocaleString('en-US')}`;
+    }
+    return null;
+  };
+
+  const header = (
+    <PageHeader
+      title={tab === 'profiles' ? 'Resource profiles' : 'Resources'}
+      actions={
+        tab === 'profiles' ? (
+          <Button variant="outline" onClick={() => setParams({}, { replace: true })}>
+            Resources
+          </Button>
+        ) : (
+          <>
+            <Button variant="outline" onClick={() => setParams({ tab: 'profiles' }, { replace: true })}>
+              Profiles
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus />
+              Create resource
+            </Button>
+          </>
+        )
+      }
+    />
+  );
+
+  if (tab === 'profiles') {
+    return (
+      <div className="@container mx-auto max-w-[1600px]">
+        {header}
+        <ResourceProfilesPage />
+      </div>
+    );
+  }
 
   return (
-    // A container, so the table-or-cards switch below follows the width this
-    // page actually has: the sidebar and a docked Copilot take theirs from the
-    // viewport, and a viewport breakpoint cannot see either.
-    <div className="@container">
-      <PageHeader
-        className="mb-5"
-        title="Resources"
-        description={
-          tab === 'profiles' ? (
-            <>
-              <span className="font-mono tabular-nums text-foreground">
-                {profiles?.profiles?.length ?? 0}
-              </span>{' '}
-              resource profiles
-            </>
-          ) : (
-            <>
-              <span className="font-mono tabular-nums text-foreground">{list.length}</span>{' '}
-              DRBD resources ·{' '}
-              <span className="font-mono tabular-nums text-foreground">{volumeCount}</span>{' '}
-              volumes
-              {offsiteCount > 0 ? (
-                <>
-                  {' '}
-                  ·{' '}
-                  <span className="font-mono tabular-nums text-foreground">
-                    {offsiteCount}
-                  </span>{' '}
-                  replicated off-site
-                </>
-              ) : null}
-            </>
-          )
-        }
-        actions={
-          tab === 'resources' ? (
-            <>
-              <div className="relative w-full sm:w-[210px]">
-                <Search className="pointer-events-none absolute top-1/2 left-2.5 h-[15px] w-[15px] -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Filter resources"
-                  aria-label="Filter resources by name, node or label"
-                  className="h-[34px] pl-8 text-[13px]"
-                />
-              </div>
-              <Button onClick={() => setCreateOpen(true)}>
+    <div className="@container mx-auto max-w-[1600px]">
+      {header}
+      <StatFilterStrip
+        aria-label="Show resources in one state"
+        loading={page.isLoading}
+        value={state as (typeof STATE_FILTERS)[number]}
+        onChange={(v) => update({ state: v })}
+        options={STATE_FILTERS.map((v) => ({
+          value: v,
+          label: v === '' ? 'All' : v === 'offsite' ? 'Off-site' : STATES[v].label,
+          color: v && v !== 'offsite' ? STATES[v].color : undefined,
+          count: counts[v === '' ? 'all' : v] ?? 0,
+        }))}
+      />
+
+      <div className="mt-4">
+        <ListToolbar
+          end={
+            <FilterSelect
+              label="Sort"
+              value={sort}
+              anyLabel={null}
+              onChange={(v) => update({ sort: v === 'attention' ? '' : v })}
+              options={[
+                { value: 'attention', label: 'Problems first' },
+                { value: 'name', label: 'Name' },
+                { value: 'size', label: 'Size' },
+                { value: 'writes', label: 'Writes' },
+              ]}
+            />
+          }
+        >
+          <SearchBox value={q} onChange={setQuery} placeholder="Name, PVC, VM or label" aria-label="Search resources" />
+          <FilterSelect
+            label="Used by"
+            value={usedBy}
+            onChange={(v) => update({ used_by: v })}
+            options={[...Object.entries(USED_BY).map(([value, label]) => ({ value, label })), { value: 'none', label: 'Nothing' }]}
+          />
+          <FilterSelect
+            label="Node"
+            value={node}
+            onChange={(v) => update({ node: v })}
+            options={(nodes?.nodes ?? []).map((n) => ({ value: n.name, label: n.name }))}
+          />
+          <FilterSelect
+            label="Pool"
+            value={pool}
+            onChange={(v) => update({ pool: v })}
+            options={[...new Set((pools?.pools ?? []).map((p) => p.name))].map((p) => ({ value: p, label: p }))}
+          />
+        </ListToolbar>
+      </div>
+
+      <div className="tile mt-3 overflow-hidden">
+        {page.isLoading ? (
+          <div className="space-y-3 p-5">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
+        ) : rows.length === 0 ? (
+          (counts.all ?? 0) === 0 ? (
+            <div className="flex flex-col items-center gap-3 px-5 py-16 text-center">
+              <Boxes className="size-8 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">No resources yet.</p>
+              <Button variant="outline" onClick={() => setCreateOpen(true)}>
                 <Plus />
                 Create resource
               </Button>
-            </>
-          ) : null
-        }
-      />
-
-      <Tabs
-        value={tab}
-        onValueChange={(v) =>
-          setParams(v === 'profiles' ? { tab: 'profiles' } : {}, { replace: true })
-        }
-        className="space-y-4"
-      >
-        {/* The strip is an inline row that never wraps; it scrolls in its own
-            lane so a longer label cannot widen the page. */}
-        <div className="overflow-x-auto">
-          <TabsList>
-            <TabsTrigger value="resources">Resources</TabsTrigger>
-            <TabsTrigger value="profiles">Profiles</TabsTrigger>
-          </TabsList>
-        </div>
-
-        <TabsContent value="profiles">
-          <ResourceProfilesPage />
-        </TabsContent>
-
-        <TabsContent value="resources" className="space-y-3.5">
-          {/* Four chips with counts are wider than 375px the moment a count
-              reaches two digits. They scroll here rather than widening the page. */}
-          <div className="overflow-x-auto">
-            <SegmentedFilter
-              aria-label="Filter resources by state"
-              value={filter}
-              onChange={setFilter}
-              options={[
-                { value: 'all', label: 'All', count: counts.all },
-                { value: 'healthy', label: 'Healthy', count: counts.healthy },
-                { value: 'syncing', label: 'Syncing', count: counts.syncing },
-                { value: 'offsite', label: 'Off-site', count: counts.offsite },
-              ]}
-            />
-          </div>
-
-          {isLoading || !visible.length ? (
-            <Card className="overflow-hidden">
-              <CardContent className="p-0">
-                {isLoading ? (
-                  <div className="space-y-3 p-5">
-                    {[0, 1, 2].map((i) => (
-                      <Skeleton key={i} className="h-9 w-full" />
-                    ))}
-                  </div>
-                ) : !list.length ? (
-                  <div className="flex flex-col items-center justify-center gap-3 px-5 py-16 text-center">
-                    <Boxes className="h-8 w-8 text-muted-foreground" />
-                    <p className="text-sm text-balance text-muted-foreground">
-                      No resources found. Create your first resource to get started.
-                    </p>
-                    <Button variant="outline" onClick={() => setCreateOpen(true)}>
-                      <Plus />
-                      Create resource
-                    </Button>
-                  </div>
-                ) : (
-                  <p className="px-5 py-16 text-center text-sm text-muted-foreground">
-                    No resource matches this filter.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+            </div>
           ) : (
-            <>
-              {/* Below 840px of content the table puts volumes and replication
-                  past the right edge, so each row is a card built from the same
-                  derived values the row below uses. The switch is on the
-                  page's own width; `md:flex` undoes RecordCards' viewport-based
-                  hiding. */}
-              <div className="@min-[840px]:hidden">
-                <RecordCards className="md:flex">
-                  {visible.map((resource) => {
-                    const rep = replication.get(resource.name) ?? UNKNOWN_REPLICATION;
-                    const isOpen = expanded.includes(resource.name);
-                    return (
-                      <RecordCard
-                        key={resource.name}
-                        tone={rep.tone}
-                        open={isOpen}
-                        onToggle={() => toggleExpanded(resource.name)}
-                        detailId={`resource-card-${resource.name}`}
-                        title={
-                          <>
-                            <span className="font-mono text-[14px] font-semibold break-all">
-                              {resource.name}
-                            </span>
-                            <ResourceChips resource={resource} />
-                          </>
-                        }
-                        subtitle={
-                          <span className="font-mono tabular-nums">
-                            port {resource.port} · protocol {resource.protocol}
-                          </span>
-                        }
-                        actions={
-                          <ResourceActionsMenu
-                            resource={resource}
-                            onSelect={(kind) =>
-                              setDialog({ resource: resource.name, kind })
-                            }
-                          />
-                        }
-                        facts={[
-                          {
-                            label: 'Nodes',
-                            value: (
-                              <NodeChips
-                                chips={nodeChips(resource, statusOf.get(resource.name))}
-                                wrap
-                              />
-                            ),
-                          },
-                          {
-                            label: 'Volumes',
-                            value: (
-                              <span className="font-mono tabular-nums">
-                                {resource.volumes.length} · {totalGbOf(resource)} GB
-                              </span>
-                            ),
-                          },
-                          { label: 'Replication', value: <ReplicationCell replication={rep} /> },
-                        ]}
-                      >
-                        <ResourceDetail
-                          resource={resource}
-                          onOpenDialog={(kind) =>
-                            setDialog({ resource: resource.name, kind })
-                          }
-                        />
-                      </RecordCard>
-                    );
-                  })}
-                </RecordCards>
-              </div>
+            <p className="px-5 py-16 text-center text-sm text-muted-foreground">No resource matches these filters.</p>
+          )
+        ) : (
+          <>
+            <div className="@min-[720px]:hidden">
+              {rows.map((r, i) => (
+                <Fragment key={r.name}>
+                  {groupBefore(r, i) && (
+                    <div className="border-b border-border bg-muted/50 px-4 py-1.5 text-[12px] text-muted-foreground">{groupBefore(r, i)}</div>
+                  )}
+                  <ResourceListCard
+                    resource={r}
+                    expanded={expanded.includes(r.name)}
+                    onToggle={() => toggle(r.name)}
+                    onOpenDialog={(kind) => setDialog({ resource: r.name, kind })}
+                  />
+                </Fragment>
+              ))}
+            </div>
+            <Table className="hidden @min-[720px]:table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Resource</TableHead>
+                  <TableHead className="hidden @min-[860px]:table-cell">Used by</TableHead>
+                  <TableHead>State</TableHead>
+                  <TableHead>Replicas</TableHead>
+                  <TableHead className="text-right">Size</TableHead>
+                  <TableHead className="hidden text-right @min-[1000px]:table-cell">Out of sync</TableHead>
+                  <TableHead className="text-right">Writes</TableHead>
+                  <TableHead className="w-10" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r, i) => {
+                  const g = groupBefore(r, i);
+                  return (
+                    <Fragment key={r.name}>
+                      {g && (
+                        <TableRow className="hover:bg-transparent">
+                          <TableCell colSpan={8} className="h-auto bg-muted/50 py-1.5 text-[12px] text-muted-foreground">
+                            {g}
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      <ResourceListRow
+                        resource={r}
+                        expanded={expanded.includes(r.name)}
+                        onToggle={() => toggle(r.name)}
+                        onOpenDialog={(kind) => setDialog({ resource: r.name, kind })}
+                      />
+                    </Fragment>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </>
+        )}
+        {!page.isLoading && total > 0 && (
+          <Pager offset={offset} limit={PAGE} total={total} onOffset={(o) => update({ offset: o ? String(o) : '' })} />
+        )}
+      </div>
 
-              <Card className="hidden overflow-hidden @min-[840px]:block">
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <StatusTickHead />
-                        <TableHead>Resource</TableHead>
-                        {/* Under 1000px port and protocol move beneath the
-                            name rather than holding two columns of their own. */}
-                        <TableHead className="hidden @min-[1000px]:table-cell">Port</TableHead>
-                        <TableHead className="hidden @min-[1000px]:table-cell">Protocol</TableHead>
-                        <TableHead>Nodes</TableHead>
-                        <TableHead>Volumes</TableHead>
-                        <TableHead className="w-[200px]">Replication</TableHead>
-                        <TableHead className="pr-5 text-right">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {visible.map((resource) => (
-                        <ResourceRow
-                          key={resource.name}
-                          resource={resource}
-                          replication={
-                            replication.get(resource.name) ?? UNKNOWN_REPLICATION
-                          }
-                          status={statusOf.get(resource.name)}
-                          expanded={expanded.includes(resource.name)}
-                          onToggle={() => toggleExpanded(resource.name)}
-                          onOpenDialog={(kind) =>
-                            setDialog({ resource: resource.name, kind })
-                          }
-                        />
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </>
-          )}
-
-          {list.length > 0 && (
-            <p className="text-xs text-muted-foreground">
-              Showing{' '}
-              <span className="font-mono tabular-nums">{visible.length}</span> of{' '}
-              <span className="font-mono tabular-nums">{list.length}</span> resources
-            </p>
-          )}
-
-          {/* One set of dialogs per resource, mounted here rather than inside a
-              row: the card and the row are two renderings of one resource, and
-              a dialog owned by either would exist twice. */}
-          {visible.map((resource) => (
-            <ResourceDialogs
-              key={resource.name}
-              resource={resource}
-              kind={dialog?.resource === resource.name ? dialog.kind : null}
-              onSelect={(kind) =>
-                setDialog(kind ? { resource: resource.name, kind } : null)
-              }
-              pools={pools?.pools ?? []}
-              nodes={nodes?.nodes ?? []}
-            />
-          ))}
-        </TabsContent>
-      </Tabs>
+      {/* Dialogs for the rows on this page only, mounted here rather than in a
+          row so the card and the table row share one. */}
+      {rows.map((r) => (
+        <ResourceDialogs
+          key={r.name}
+          resource={r}
+          kind={dialog?.resource === r.name ? dialog.kind : null}
+          onSelect={(kind) => setDialog(kind ? { resource: r.name, kind } : null)}
+          pools={pools?.pools ?? []}
+          nodes={nodes?.nodes ?? []}
+        />
+      ))}
 
       <CreateResourceDialog
         open={createOpen}

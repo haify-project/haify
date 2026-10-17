@@ -30,6 +30,7 @@ import { libvirtDomainOf } from '@/pages/guests/libvirt';
 import { UserMenu } from '@/components/UserMenu';
 import { NotificationBell } from '@/components/NotificationBell';
 import { HaifyMark } from '@/components/HaifyMark';
+import { useNamePage } from '@/lib/pageContext';
 
 // Collapsing the sidebar is a per-workstation preference, so it is remembered
 // across reloads. Storage can throw (private mode, disabled cookies); the
@@ -88,7 +89,8 @@ type NavItem = {
 // Nine flat rows made the operator read the whole list every time.
 const navGroups: { label: string; items: NavItem[] }[] = [
   {
-    label: 'Cluster',
+    // The cluster's own pages come first and need no heading.
+    label: '',
     items: [
       { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
       { name: 'Live map', href: '/live', icon: Activity },
@@ -161,16 +163,7 @@ function SidebarContent({
         )}
       >
         <HaifyMark />
-        {!collapsed && (
-          <div className="leading-tight">
-            <h1 className="text-[13.5px] font-semibold tracking-tight">
-              Haify
-            </h1>
-            <p className="text-[11px] text-muted-foreground">
-              Software Defined Storage
-            </p>
-          </div>
-        )}
+        {!collapsed && <span className="text-[15px] font-semibold tracking-tight">Haify</span>}
       </div>
 
       {!collapsed && <SidebarSearch onNavigate={onNavigate} />}
@@ -183,7 +176,7 @@ function SidebarContent({
           <div key={group.label}>
             {/* The label is the point of the grouping; collapsed there is no
                 room for it and the gap between blocks carries it instead. */}
-            {!collapsed && (
+            {!collapsed && group.label && (
               <div className="eyebrow px-2.5 pb-2">{group.label}</div>
             )}
             <div className="flex flex-col gap-0.5">
@@ -239,7 +232,12 @@ function SidebarContent({
                 )}
               >
                 <Sparkles className={cn('size-[17px] shrink-0', aiOpen && 'text-primary')} />
-                {!collapsed && 'Ask Copilot'}
+                {!collapsed && (
+                  <>
+                    Ask Copilot
+                    <kbd className="ml-auto rounded border border-sidebar-border px-1 font-sans text-[10.5px] text-muted-foreground">⌘J</kbd>
+                  </>
+                )}
               </button>
               <Link
                 to={settingsItem.href}
@@ -382,6 +380,20 @@ export function MainLayout() {
     (n) =>
       location.pathname === n.href || location.pathname.startsWith(n.href + '/'),
   );
+  useNamePage(current?.name ?? 'Dashboard');
+
+  // ⌘J (Ctrl+J) opens and closes the Copilot from anywhere.
+  useEffect(() => {
+    if (!AI_ENABLED) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        setAiOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   return (
     <div className="flex h-screen bg-background">
@@ -426,7 +438,7 @@ export function MainLayout() {
 
       {/* Main content */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 items-center justify-between border-b border-border px-4 sm:px-6">
+        <header className="flex h-14 shrink-0 items-center justify-between px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -448,9 +460,6 @@ export function MainLayout() {
             >
               <PanelLeft className="h-5 w-5" />
             </button>
-            <h2 className="text-[13.5px] font-semibold tracking-tight">
-              {current?.name ?? 'Dashboard'}
-            </h2>
             {isFetching > 0 && (
               <span
                 className="flex items-center gap-1 text-xs text-muted-foreground"
@@ -462,29 +471,31 @@ export function MainLayout() {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             {AI_ENABLED && (
             <button
               type="button"
               onClick={() => setAiOpen((v) => !v)}
               aria-pressed={aiOpen}
               aria-label="Copilot"
+              title="Copilot (⌘J)"
               className={cn(
-                'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
+                'flex h-9 items-center gap-2 rounded-[10px] border px-3 text-[13px] font-medium transition-colors',
                 aiOpen
-                  ? 'bg-accent text-accent-foreground'
-                  : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
+                  ? 'border-[color-mix(in_oklch,var(--status-ok)_30%,var(--border))] bg-status-ok-soft text-foreground'
+                  : 'border-border bg-card text-foreground/80 hover:text-foreground',
               )}
             >
-              <Sparkles className="h-4 w-4" />
+              <Sparkles className="size-4" />
               Copilot
+              <kbd className="hidden rounded border border-border px-1 font-sans text-[10.5px] text-muted-foreground sm:inline">⌘J</kbd>
             </button>
             )}
             <NotificationBell />
             <UserMenu />
           </div>
         </header>
-        <main className="app-canvas flex-1 overflow-auto p-6 lg:px-8 lg:py-6">
+        <main className="app-canvas flex-1 overflow-auto px-4 pt-1 pb-8 sm:px-6 lg:px-8">
           <Suspense fallback={<PageFallback />}>
             <Outlet />
           </Suspense>

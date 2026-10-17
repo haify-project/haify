@@ -132,11 +132,7 @@ func (s *Server) ListResources(ctx context.Context, req *haifypb.ListResourcesRe
 	}
 
 	log.Debug("ListResources: listed", zap.Int("count", len(pbResources)), zap.Int("total", len(resources)))
-	return &haifypb.ListResourcesResponse{
-		Success:   true,
-		Message:   "Resources listed successfully",
-		Resources: pbResources,
-	}, nil
+	return s.ctrl.pageResources(ctx, req, pbResources), nil
 }
 
 func (s *Server) ResourceStatus(ctx context.Context, req *haifypb.ResourceStatusRequest) (*haifypb.ResourceStatusResponse, error) {

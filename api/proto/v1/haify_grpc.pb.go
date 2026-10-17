@@ -183,6 +183,9 @@ const (
 	HaifyController_ListControllerLogs_FullMethodName        = "/v1.HaifyController/ListControllerLogs"
 	HaifyController_CollectNodeDiagnostics_FullMethodName    = "/v1.HaifyController/CollectNodeDiagnostics"
 	HaifyController_ListEvents_FullMethodName                = "/v1.HaifyController/ListEvents"
+	HaifyController_GetClusterSummary_FullMethodName         = "/v1.HaifyController/GetClusterSummary"
+	HaifyController_GetClusterHistory_FullMethodName         = "/v1.HaifyController/GetClusterHistory"
+	HaifyController_GetClusterStats_FullMethodName           = "/v1.HaifyController/GetClusterStats"
 	HaifyController_ListNotifyChannels_FullMethodName        = "/v1.HaifyController/ListNotifyChannels"
 	HaifyController_SaveNotifyChannel_FullMethodName         = "/v1.HaifyController/SaveNotifyChannel"
 	HaifyController_DeleteNotifyChannel_FullMethodName       = "/v1.HaifyController/DeleteNotifyChannel"
@@ -505,6 +508,16 @@ type HaifyControllerClient interface {
 	// in-memory history — enough to see what just happened, not an archive. The
 	// durable record of who did what is ListAuditEvents.
 	ListEvents(ctx context.Context, in *ListEventsRequest, opts ...grpc.CallOption) (*ListEventsResponse, error)
+	// The cluster in numbers, for the dashboard: every count is computed by the
+	// controller from its last health poll and its own records, so a client
+	// never pulls thousands of resources to count them.
+	GetClusterSummary(ctx context.Context, in *GetClusterSummaryRequest, opts ...grpc.CallOption) (*GetClusterSummaryResponse, error)
+	// Cluster totals over time, sampled by the controller on every health poll:
+	// throughput, out-of-sync data, capacity and API traffic.
+	GetClusterHistory(ctx context.Context, in *GetClusterHistoryRequest, opts ...grpc.CallOption) (*GetClusterHistoryResponse, error)
+	// Node statistics (CPU, memory, disk latency, network) from the Prometheus
+	// server named by [metrics] prometheus_url. available is false without one.
+	GetClusterStats(ctx context.Context, in *GetClusterStatsRequest, opts ...grpc.CallOption) (*GetClusterStatsResponse, error)
 	// Notification channels: where alerts are delivered. These live in the
 	// controller database rather than in controller.toml so they can be changed
 	// from the UI while the controller runs — reconfiguring alerting by editing a
@@ -2241,6 +2254,36 @@ func (c *haifyControllerClient) ListEvents(ctx context.Context, in *ListEventsRe
 	return out, nil
 }
 
+func (c *haifyControllerClient) GetClusterSummary(ctx context.Context, in *GetClusterSummaryRequest, opts ...grpc.CallOption) (*GetClusterSummaryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetClusterSummaryResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetClusterSummary_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) GetClusterHistory(ctx context.Context, in *GetClusterHistoryRequest, opts ...grpc.CallOption) (*GetClusterHistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetClusterHistoryResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetClusterHistory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) GetClusterStats(ctx context.Context, in *GetClusterStatsRequest, opts ...grpc.CallOption) (*GetClusterStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetClusterStatsResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetClusterStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *haifyControllerClient) ListNotifyChannels(ctx context.Context, in *ListNotifyChannelsRequest, opts ...grpc.CallOption) (*ListNotifyChannelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListNotifyChannelsResponse)
@@ -2822,6 +2865,16 @@ type HaifyControllerServer interface {
 	// in-memory history — enough to see what just happened, not an archive. The
 	// durable record of who did what is ListAuditEvents.
 	ListEvents(context.Context, *ListEventsRequest) (*ListEventsResponse, error)
+	// The cluster in numbers, for the dashboard: every count is computed by the
+	// controller from its last health poll and its own records, so a client
+	// never pulls thousands of resources to count them.
+	GetClusterSummary(context.Context, *GetClusterSummaryRequest) (*GetClusterSummaryResponse, error)
+	// Cluster totals over time, sampled by the controller on every health poll:
+	// throughput, out-of-sync data, capacity and API traffic.
+	GetClusterHistory(context.Context, *GetClusterHistoryRequest) (*GetClusterHistoryResponse, error)
+	// Node statistics (CPU, memory, disk latency, network) from the Prometheus
+	// server named by [metrics] prometheus_url. available is false without one.
+	GetClusterStats(context.Context, *GetClusterStatsRequest) (*GetClusterStatsResponse, error)
 	// Notification channels: where alerts are delivered. These live in the
 	// controller database rather than in controller.toml so they can be changed
 	// from the UI while the controller runs — reconfiguring alerting by editing a
@@ -3409,6 +3462,15 @@ func (UnimplementedHaifyControllerServer) CollectNodeDiagnostics(context.Context
 }
 func (UnimplementedHaifyControllerServer) ListEvents(context.Context, *ListEventsRequest) (*ListEventsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListEvents not implemented")
+}
+func (UnimplementedHaifyControllerServer) GetClusterSummary(context.Context, *GetClusterSummaryRequest) (*GetClusterSummaryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetClusterSummary not implemented")
+}
+func (UnimplementedHaifyControllerServer) GetClusterHistory(context.Context, *GetClusterHistoryRequest) (*GetClusterHistoryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetClusterHistory not implemented")
+}
+func (UnimplementedHaifyControllerServer) GetClusterStats(context.Context, *GetClusterStatsRequest) (*GetClusterStatsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetClusterStats not implemented")
 }
 func (UnimplementedHaifyControllerServer) ListNotifyChannels(context.Context, *ListNotifyChannelsRequest) (*ListNotifyChannelsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListNotifyChannels not implemented")
@@ -6467,6 +6529,60 @@ func _HaifyController_ListEvents_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HaifyController_GetClusterSummary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetClusterSummaryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetClusterSummary(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetClusterSummary_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetClusterSummary(ctx, req.(*GetClusterSummaryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_GetClusterHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetClusterHistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetClusterHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetClusterHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetClusterHistory(ctx, req.(*GetClusterHistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_GetClusterStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetClusterStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetClusterStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetClusterStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetClusterStats(ctx, req.(*GetClusterStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _HaifyController_ListNotifyChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListNotifyChannelsRequest)
 	if err := dec(in); err != nil {
@@ -7626,6 +7742,18 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListEvents",
 			Handler:    _HaifyController_ListEvents_Handler,
+		},
+		{
+			MethodName: "GetClusterSummary",
+			Handler:    _HaifyController_GetClusterSummary_Handler,
+		},
+		{
+			MethodName: "GetClusterHistory",
+			Handler:    _HaifyController_GetClusterHistory_Handler,
+		},
+		{
+			MethodName: "GetClusterStats",
+			Handler:    _HaifyController_GetClusterStats_Handler,
 		},
 		{
 			MethodName: "ListNotifyChannels",

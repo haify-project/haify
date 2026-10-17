@@ -134,6 +134,10 @@ port = 9433
 # node_exporter's port on every node (scripts/install-node-exporter.sh); the
 # metrics listener serves /discovery/node-exporter for Prometheus with it
 node_exporter_port = 39117
+# The Prometheus server that scrapes those node_exporters. The dashboard reads
+# the nodes' CPU, memory, disk latency and network from it; empty leaves that
+# section out.
+prometheus_url = ""
 
 [ui]
 enabled = true

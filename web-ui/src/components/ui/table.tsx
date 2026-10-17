@@ -71,10 +71,9 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        // Column headings are labels, not data: uppercase 11px muted (`eyebrow`),
-        // sitting on the baseline of the first row rather than in a band of
-        // their own, so the eye starts at the data.
-        "eyebrow h-auto px-4 pt-0 pb-2.5 text-left align-bottom whitespace-nowrap [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+        // Column headings are labels, not data: small, muted and in sentence
+        // case, as on the dashboard, so the eye starts at the data.
+        "h-auto px-4 pt-3 pb-2.5 text-left align-bottom text-[12px] font-medium whitespace-nowrap text-muted-foreground [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}

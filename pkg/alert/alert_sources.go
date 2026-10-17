@@ -59,6 +59,9 @@ type NodeStateInfo struct {
 	// resource came up there, or nil when not reported (peers, text parse).
 	// Carried for Observer: it is what the write-anomaly detector reads.
 	WrittenKiB *uint64
+	// ReadKiB is the same node's read counter. Carried for Observer: the
+	// dashboard charts reads beside writes.
+	ReadKiB *uint64
 }
 
 // connected reports whether this replica's link is usable, which is the
@@ -236,6 +239,10 @@ type Observation struct {
 type FiringCondition struct {
 	Type     string
 	Severity string
+	// Resource and Node are what the condition is about, as its events name
+	// them; either may be empty.
+	Resource string
+	Node     string
 }
 
 // Observer is handed each poll's Observation after the events for it have been

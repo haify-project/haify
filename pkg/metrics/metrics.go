@@ -14,6 +14,7 @@ package metrics
 import (
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -67,6 +68,9 @@ type Metrics struct {
 
 	// gRPC requests counter
 	grpcRequestsTotal *prometheus.CounterVec
+	// apiRequests and apiErrors are the same count kept as plain totals, for
+	// the controller's own history (GRPCTotals); errors are any status but OK.
+	apiRequests, apiErrors atomic.Uint64
 
 	// gRPC request duration histogram
 	grpcRequestDuration *prometheus.HistogramVec
@@ -437,6 +441,12 @@ func (m *Metrics) SetGatewayCounts(counts []GatewayCount) {
 		zap.Int("series", len(m.gateways.live)))
 }
 
+// GRPCTotals is how many gRPC requests were served since start, and how many
+// of them failed.
+func (m *Metrics) GRPCTotals() (requests, errors uint64) {
+	return m.apiRequests.Load(), m.apiErrors.Load()
+}
+
 // RecordGRPCRequest records a gRPC request with method, status, and duration
 func (m *Metrics) RecordGRPCRequest(method, status string, duration float64) {
 	m.mu.Lock()
@@ -444,6 +454,10 @@ func (m *Metrics) RecordGRPCRequest(method, status string, duration float64) {
 
 	m.grpcRequestsTotal.WithLabelValues(method, status).Inc()
 	m.grpcRequestDuration.WithLabelValues(method).Observe(duration)
+	m.apiRequests.Add(1)
+	if status != "OK" {
+		m.apiErrors.Add(1)
+	}
 	m.log().Debug("Metrics.RecordGRPCRequest: request recorded",
 		zap.String("method", method),
 		zap.String("status", status),

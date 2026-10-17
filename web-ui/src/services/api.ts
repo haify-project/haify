@@ -11,7 +11,7 @@ import { selfHaApi } from './api/selfHa';
 import { rbacApi } from './api/rbac';
 import { notifyApi } from './api/notify';
 import { storageApi } from './api/storage';
-import { inspectApi } from './api/inspect';
+import { clusterApi } from './api/cluster';
 
 export { getApiToken, setApiToken, setAuthPromptHandler } from './api/client';
 export type { ApiResponse } from './api/client';
@@ -77,7 +77,22 @@ export type { SelfHaStatus } from './api/selfHa';
 export type { RbacWhoami, RbacPolicy, RbacUserRole, RbacPolicies } from './api/rbac';
 export type { NotifyChannel, NotifyChannelInput } from './api/notify';
 export type { PoolDisk, NodeDisk, TrimResult, StorageJob, StorageJobResponse } from './api/storage';
-export type { InspectionCheck, InspectionReport, InspectionResponse } from './api/inspect';
+export type {
+  AttentionItem,
+  ClusterSummary,
+  ClusterSample,
+  ClusterHistory,
+  ClusterStats,
+  StatSeries,
+  NodeStat,
+  ReplicaHealth,
+  ResourceHealth,
+  ResourceListItem,
+  ResourcePageQuery,
+  ResourcePage,
+  HistoryRange,
+} from './api/cluster';
+export { num } from './api/cluster';
 
 const request = createRequest();
 
@@ -94,5 +109,5 @@ export const api = {
   ...rbacApi(request),
   ...notifyApi(request),
   ...storageApi(request),
-  ...inspectApi(request),
+  ...clusterApi(request),
 };

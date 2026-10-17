@@ -235,6 +235,20 @@ func withCORS(origin string, next http.Handler) http.Handler {
 type chatBody struct {
 	Message   string `json:"message"`
 	SessionID string `json:"session_id"`
+	// Page is what the user has open in the web UI ("Resources", "Resources,
+	// filtered to degraded"), so "these two" and "this pool" have a referent.
+	Page string `json:"page"`
+}
+
+// withPage puts the page the question was asked from in front of it. The page
+// is the UI's own short label; anything longer or multi-line is not one and
+// is left out rather than passed to the model.
+func withPage(page, message string) string {
+	page = strings.TrimSpace(page)
+	if page == "" || len(page) > 160 || strings.ContainsAny(page, "\r\n") {
+		return message
+	}
+	return "(Asked from the web UI's " + page + " page.)\n\n" + message
 }
 
 // streamHandler runs one turn of the agent and streams NDJSON frames matching the
@@ -278,7 +292,7 @@ func streamHandler(ag *steward.Agent) http.HandlerFunc {
 		// dropped — so every turn of the sidebar started from nothing and
 		// "so how do I fix it" had no idea what "it" was. An empty id still
 		// runs stateless, which is what a scripted one-shot caller wants.
-		_, _, err := ag.Stream(r.Context(), body.SessionID, body.Message, func(ev steward.Event) {
+		_, _, err := ag.Stream(r.Context(), body.SessionID, withPage(body.Page, body.Message), func(ev steward.Event) {
 			switch ev.Kind {
 			case steward.EventText:
 				if ev.Text != "" {

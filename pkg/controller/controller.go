@@ -73,6 +73,11 @@ type Controller struct {
 	// writeHistory keeps each resource's write rates for WAN sizing
 	// (write_history.go); fed by the health poll.
 	writeHistory *writeHistory
+	// view is the cluster as the last health poll saw it, and history its
+	// totals over time (cluster_view.go, cluster_history.go); both feed the
+	// dashboard and the resource list.
+	view    *clusterView
+	history *clusterHistory
 }
 
 // SetLogRing attaches the buffer the log view reads from. The ring has to exist
@@ -372,6 +377,11 @@ func (c *Controller) Stop() {
 	// their own once c.cancel above propagates.
 	if c.alertMonitor != nil {
 		c.alertMonitor.Stop()
+	}
+	// The history is saved every few minutes; what came since goes now, so a
+	// restart or a move to another node does not leave a gap in the charts.
+	if c.history != nil {
+		c.history.flush()
 	}
 
 	// Stop metrics server

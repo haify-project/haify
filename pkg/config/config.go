@@ -260,6 +260,10 @@ type MetricsConfig struct {
 	// as scripts/install-node-exporter.sh sets it up; the listener's
 	// /discovery/node-exporter hands Prometheus one such target per node.
 	NodeExporterPort int `mapstructure:"node_exporter_port"`
+	// PrometheusURL is the Prometheus server that scrapes the nodes'
+	// node_exporter, e.g. http://prometheus:9090. The dashboard's node
+	// statistics are read from it; empty leaves them out.
+	PrometheusURL string `mapstructure:"prometheus_url"`
 }
 
 // UIConfig controls the embedded web UI server. It was documented and written

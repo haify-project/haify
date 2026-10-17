@@ -159,6 +159,7 @@ export async function streamChat(
   sessionId: string | undefined,
   onEvent: (e: AIEvent) => void,
   signal?: AbortSignal,
+  page?: string,
 ): Promise<StreamChatResult> {
   // The same token the REST calls use. haify-ai requires it whenever one is
   // configured; without this the Copilot was the one part of the UI that
@@ -171,7 +172,7 @@ export async function streamChat(
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ message, session_id: sessionId ?? '' }),
+    body: JSON.stringify({ message, session_id: sessionId ?? '', page: page ?? '' }),
     signal,
   });
   if (!res.ok || !res.body) {

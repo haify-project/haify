@@ -42,6 +42,18 @@ URL per cluster, so a node added to or removed from Haify is scraped or
 dropped by itself. The dashboard's Nodes row shows memory used, CPU busy, I/O
 on the DRBD devices, network, load per CPU and the root filesystem.
 
+The Haify web UI reads the same nodes from this Prometheus for the Stats
+section of its dashboard (CPU, memory, disk write latency, network and the
+slowest disks) once `controller.toml` names it:
+
+```toml
+[metrics]
+prometheus_url = "http://<prometheus host>:39417"
+```
+
+Without it the section shows only what the controller measures itself: data
+out of sync and its own API traffic.
+
 | | Host port | Notes |
 | --- | --- | --- |
 | Prometheus | 39417 | Keeps 90 days of data. `--web.enable-lifecycle` is on, so `POST /-/reload` reloads the config |

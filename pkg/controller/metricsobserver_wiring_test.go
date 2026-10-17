@@ -29,25 +29,38 @@ func TestAlertOptionsCarryTheMetricsObserver(t *testing.T) {
 	require.NotNil(t, opts.Observer, "a controller with metrics must feed them from the health poll")
 	obs, ok := opts.Observer.(observers)
 	require.True(t, ok)
-	require.Len(t, obs, 1)
-	_, ok = obs[0].(*metricsObserver)
+	// The dashboard's view of the poll and its history come first, the
+	// history after the view it reads.
+	require.Len(t, obs, 3)
+	_, ok = obs[0].(*clusterView)
+	assert.True(t, ok)
+	_, ok = obs[1].(*clusterHistory)
+	assert.True(t, ok)
+	_, ok = obs[2].(*metricsObserver)
 	assert.True(t, ok, "the observer attached must be the metrics adapter")
 
 	// The write-anomaly detector reads the same poll.
 	c.config.Alert.WriteAnomaly.Enabled = true
 	obs = c.alertOptions().Observer.(observers)
-	require.Len(t, obs, 2)
-	_, ok = obs[1].(*writeAnomalyDetector)
+	require.Len(t, obs, 4)
+	_, ok = obs[3].(*writeAnomalyDetector)
 	assert.True(t, ok)
 }
 
-// Metrics are optional, and a controller without them must not invent an
-// observer that would dereference a nil *Metrics on the first poll.
-func TestAlertOptionsHaveNoObserverWithoutMetrics(t *testing.T) {
+// Metrics are optional, and a controller without them must not invent a
+// metrics observer that would dereference a nil *Metrics on the first poll.
+// The dashboard's own view is kept either way.
+func TestAlertOptionsHaveNoMetricsObserverWithoutMetrics(t *testing.T) {
 	c := &Controller{logger: zap.NewNop(), config: &config.Config{}}
 	c.config.Alert.CheckIntervalSec = 30
 
-	assert.Nil(t, c.alertOptions().Observer)
+	obs, ok := c.alertOptions().Observer.(observers)
+	require.True(t, ok)
+	require.Len(t, obs, 2)
+	for _, o := range obs {
+		_, isMetrics := o.(*metricsObserver)
+		assert.False(t, isMetrics)
+	}
 }
 
 // The observer only ever sees what the detector was told to gather, so the

@@ -7,10 +7,10 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card"
       className={cn(
-        // Flat: one hairline border and no shadow. Cards here group data, they
-        // are not lifted surfaces, and a hover that darkens the border implies
-        // a click the card mostly does not accept.
-        "flex flex-col gap-6 rounded-lg border border-border bg-card py-6 text-card-foreground",
+        // The dashboard's tile: one hairline border and the faintest lift, so
+        // every page's cards are the same object. No hover: a card mostly does
+        // not accept a click.
+        "flex flex-col gap-6 rounded-[18px] border border-border bg-card py-6 text-card-foreground shadow-[0_1px_2px_var(--tile-shadow),0_8px_24px_-16px_var(--tile-shadow)]",
         className
       )}
       {...props}

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Streamdown } from 'streamdown';
-import { Sparkles, Send, X, Wrench, Check, Loader2, AlertTriangle } from 'lucide-react';
+import { Sparkles, ArrowRight, X, Check, Loader2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { usePageContext } from '@/lib/pageContext';
 import {
   streamChat,
   type AIApproval,
@@ -87,6 +87,7 @@ export function AICopilot({
    *  tell whether docking would leave the page enough room. */
   reservedWidth: number;
 }) {
+  const page = usePageContext();
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -243,7 +244,7 @@ export function AICopilot({
     };
 
     try {
-      const { sessionId } = await streamChat(q, sessionRef.current, onEvent);
+      const { sessionId } = await streamChat(q, sessionRef.current, onEvent, undefined, page);
       if (sessionId) {
         sessionRef.current = sessionId;
         localStorage.setItem('haify.ai_session', sessionId);
@@ -277,7 +278,7 @@ export function AICopilot({
         // Never wider than the window, whatever width was dragged to before.
         style={isDesktop ? { width: Math.min(width, viewport) } : undefined}
         className={cn(
-          'flex shrink-0 flex-col border-l border-border bg-background',
+          'flex shrink-0 flex-col border-l border-border bg-card',
           docked
             ? 'relative'
             : // Over the page: full screen on a phone, a sheet from the right
@@ -296,9 +297,11 @@ export function AICopilot({
           className="absolute -left-1 top-0 z-10 hidden h-full w-2 cursor-col-resize hover:bg-primary/30 md:block"
         />
         <header className="flex h-14 items-center justify-between border-b border-border px-4">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <span className="text-sm font-semibold tracking-tight">Haify Copilot</span>
+          <div className="flex items-center gap-2.5">
+            <span className="flex size-[26px] items-center justify-center rounded-lg bg-gradient-to-br from-[var(--tile-mint)] to-[var(--tile-sky)]">
+              <Sparkles className="size-3.5 text-foreground" />
+            </span>
+            <span className="text-[14px] font-semibold tracking-tight">Copilot</span>
           </div>
           <Button
             variant="ghost"
@@ -313,10 +316,15 @@ export function AICopilot({
         </header>
 
         <div ref={scrollRef} className="flex-1 space-y-4 overflow-auto p-4">
+          {page && (
+            <span className="inline-block rounded-md bg-secondary px-2 py-0.5 text-[11.5px] text-foreground/75">
+              Looking at {page}
+            </span>
+          )}
           {messages.length === 0 && (
             <div className="mt-8 flex flex-col items-center gap-4">
-              <p className="text-center text-sm text-muted-foreground">
-                Ask about the cluster, diagnose an issue, or request a guarded action.
+              <p className="text-center text-[13px] text-muted-foreground">
+                Changes it proposes wait for your approval.
               </p>
               <div className="flex w-full max-w-xs flex-col gap-1.5">
                 {EXAMPLE_QUESTIONS.map((q) => (
@@ -334,26 +342,25 @@ export function AICopilot({
             </div>
           )}
           {messages.map((m) => (
-            <div key={m.id} className={cn('text-sm', m.role === 'user' ? 'text-right' : '')}>
+            <div key={m.id} className={cn('text-[13px] leading-relaxed', m.role === 'user' ? 'text-right' : '')}>
               {m.role === 'user' ? (
-                <div className="inline-block rounded-lg bg-primary px-3 py-2 text-primary-foreground">
+                <div className="inline-block max-w-[85%] rounded-2xl rounded-br-md bg-foreground px-3 py-2 text-left text-background">
                   {m.text}
                 </div>
               ) : (
                 <div className="space-y-2">
                   {m.tools.length > 0 && (
-                    <div className="space-y-1 rounded-md border border-border bg-muted/30 p-2">
+                    <div className="space-y-1 border-l-2 border-border pl-2.5">
                       {m.tools.map((t, i) => {
                         const summary = argSummary(t.args);
                         return (
                           <div key={i} className="flex items-start gap-1.5 text-xs">
                             {t.done ? (
-                              <Check className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
+                              <Check className="mt-0.5 h-3 w-3 shrink-0 text-status-ok" />
                             ) : (
                               <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
                             )}
-                            <Wrench className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-                            <span className="font-mono text-foreground">{t.name}</span>
+                            <span className="font-mono text-foreground/80">{t.name}</span>
                             {summary && (
                               <span className="truncate font-mono text-muted-foreground" title={summary}>
                                 {summary}
@@ -389,21 +396,29 @@ export function AICopilot({
 
         <footer className="border-t border-border p-3">
           <form
-            className="flex items-center gap-2"
+            className="flex items-center gap-2 rounded-xl border border-border bg-card py-1.5 pr-1.5 pl-3 focus-within:border-ring/50"
             onSubmit={(e) => {
               e.preventDefault();
               send();
             }}
           >
-            <Input
+            <input
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask the Haify Copilot…"
+              placeholder="Ask about the cluster"
+              aria-label="Ask the Copilot"
               disabled={busy}
+              className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
             />
-            <Button type="submit" size="icon" disabled={busy || !input.trim()}>
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            <Button
+              type="submit"
+              size="icon"
+              aria-label="Send"
+              className="size-7 rounded-lg"
+              disabled={busy || !input.trim()}
+            >
+              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowRight className="size-3.5" />}
             </Button>
           </form>
         </footer>

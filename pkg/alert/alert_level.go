@@ -163,7 +163,8 @@ func (m *Monitor) level(tmpl event.Event, sc *pollScope, src source, active bool
 	case active && !was:
 		m.firing[key] = true
 		m.owners[key] = src
-		m.raised[key] = FiringCondition{Type: string(tmpl.Type), Severity: string(tmpl.Severity)}
+		m.raised[key] = FiringCondition{Type: string(tmpl.Type), Severity: string(tmpl.Severity),
+			Resource: tmpl.Resource, Node: tmpl.Node}
 		m.log.Debug("Monitor.level: condition started, raising",
 			zap.String("key", key), zap.String("severity", string(tmpl.Severity)), zap.Int("source", int(src)))
 	case !active && was:

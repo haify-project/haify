@@ -92,7 +92,7 @@ export function SuggestionCard({ suggestion }: { suggestion: AISuggestion }) {
   };
 
   return (
-    <div className={cn('mt-2 rounded-md border border-l-2 border-border bg-card p-3 text-xs', severityBorder(suggestion.severity))}>
+    <div className={cn('mt-2 rounded-xl border border-l-2 border-border bg-secondary/40 p-3.5 text-[12.5px]', severityBorder(suggestion.severity))}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <Sparkles className="h-3.5 w-3.5 text-primary" />
@@ -103,7 +103,7 @@ export function SuggestionCard({ suggestion }: { suggestion: AISuggestion }) {
         </Badge>
       </div>
 
-      <div className="mt-1.5 font-mono font-medium">{suggestion.action}</div>
+      <div className="mt-1.5 font-mono text-[12.5px] font-medium">{suggestion.action}</div>
       <ArgChips args={suggestion.params} />
       {suggestion.reason && <p className="mt-1.5 text-muted-foreground">{suggestion.reason}</p>}
 
@@ -137,7 +137,7 @@ export function SuggestionCard({ suggestion }: { suggestion: AISuggestion }) {
         <div className="mt-2 flex gap-2">
           <Button
             size="sm"
-            className="h-7 px-2 text-xs"
+            className="h-[30px] px-3 text-[12.5px]"
             disabled={blocked || state === 'running'}
             onClick={approve}
           >
@@ -145,8 +145,8 @@ export function SuggestionCard({ suggestion }: { suggestion: AISuggestion }) {
           </Button>
           <Button
             size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-xs"
+            variant="outline"
+            className="h-[30px] px-3 text-[12.5px]"
             disabled={state === 'running'}
             onClick={() => setState('dismissed')}
           >
@@ -163,7 +163,7 @@ function ArgChips({ args }: { args: Record<string, unknown> }) {
   return (
     <div className="mt-1.5 flex flex-wrap gap-1">
       {Object.entries(args).map(([k, v]) => (
-        <span key={k} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.65rem]">
+        <span key={k} className="rounded-md bg-card px-1.5 py-0.5 font-mono text-[11.5px] break-all">
           {k}=<span className="text-foreground">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
         </span>
       ))}
@@ -192,12 +192,12 @@ export function ApprovalCard({ approval }: { approval: AIApproval }) {
   };
 
   return (
-    <div className="mt-2 rounded-md border border-l-2 border-border border-l-amber-500 bg-card p-3 text-xs">
-      <div className="flex items-center gap-1.5">
-        <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
-        <span className="text-[0.7rem] font-medium text-muted-foreground">Approval required</span>
+    <div className="mt-2 rounded-xl border border-border bg-secondary/40 p-3.5 text-[12.5px]">
+      <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+        <span className="size-[7px] rounded-full bg-status-warn" />
+        Needs your approval
       </div>
-      <div className="mt-1.5 font-mono font-medium">{approval.name}</div>
+      <div className="mt-1.5 font-mono text-[12.5px] font-medium break-all">{approval.name}</div>
       <ArgChips args={approval.args} />
 
       {state === 'approved' || state === 'rejected' || state === 'gone' ? (
@@ -214,7 +214,7 @@ export function ApprovalCard({ approval }: { approval: AIApproval }) {
         <div className="mt-2 flex gap-2">
           <Button
             size="sm"
-            className="h-7 px-2 text-xs"
+            className="h-[30px] px-3 text-[12.5px]"
             disabled={state === 'sending'}
             onClick={() => decide(true)}
           >
@@ -222,8 +222,8 @@ export function ApprovalCard({ approval }: { approval: AIApproval }) {
           </Button>
           <Button
             size="sm"
-            variant="ghost"
-            className="h-7 px-2 text-xs"
+            variant="outline"
+            className="h-[30px] px-3 text-[12.5px]"
             disabled={state === 'sending'}
             onClick={() => decide(false)}
           >

@@ -42,6 +42,13 @@ func (c *Controller) alertOptions() alert.Options {
 	// disagree about the same instant — the disagreement an operator notices
 	// first and trusts least.
 	var obs observers
+	// The dashboard's view of the last poll, then its history, which reads
+	// that view: the order matters.
+	if c.view == nil {
+		c.view = newClusterView(c.traceLogger())
+		c.history = newClusterHistory(c, c.view)
+	}
+	obs = append(obs, c.view, c.history)
 	if c.metrics != nil {
 		obs = append(obs, newMetricsObserver(c))
 	}

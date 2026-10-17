@@ -785,6 +785,93 @@
         ]
       }
     },
+    "/v1/cluster/history": {
+      "get": {
+        "summary": "Cluster totals over time, sampled by the controller on every health poll:\nthroughput, out-of-sync data, capacity and API traffic.",
+        "operationId": "HaifyController_GetClusterHistory",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetClusterHistoryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "range",
+            "description": "range is \"1h\", \"6h\", \"24h\", \"7d\", \"30d\" or \"90d\"; \"24h\" when empty.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
+    "/v1/cluster/stats": {
+      "get": {
+        "summary": "Node statistics (CPU, memory, disk latency, network) from the Prometheus\nserver named by [metrics] prometheus_url. available is false without one.",
+        "operationId": "HaifyController_GetClusterStats",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetClusterStatsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "range",
+            "description": "range is \"1h\", \"6h\", \"24h\", \"7d\" or \"30d\"; \"24h\" when empty.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
+    "/v1/cluster/summary": {
+      "get": {
+        "summary": "The cluster in numbers, for the dashboard: every count is computed by the\ncontroller from its last health poll and its own records, so a client\nnever pulls thousands of resources to count them.",
+        "operationId": "HaifyController_GetClusterSummary",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetClusterSummaryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
     "/v1/diagnostics/collect": {
       "post": {
         "summary": "The journals and kernel messages the controller does not hold.",
@@ -3664,6 +3751,62 @@
             "in": "query",
             "required": false,
             "type": "string"
+          },
+          {
+            "name": "query",
+            "description": "query matches the name, the owner (PVC, VM) and label values.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "state",
+            "description": "state is \"healthy\", \"resyncing\", \"degraded\", \"no_quorum\", \"unknown\",\n\"attention\" (everything but healthy) or \"offsite\"; empty for all.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "usedBy",
+            "description": "used_by is \"pvc\", \"proxmox\", \"openstack\", \"kvm\", \"gateway\", \"ha\",\n\"app\" or \"none\"; empty for all.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "node",
+            "description": "node and pool keep resources with a replica on that node or in that pool.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "pool",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "sort",
+            "description": "sort is \"attention\" (problems first, the default), \"name\", \"size\" or\n\"writes\".",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "offset",
+            "description": "offset and limit page the result; limit 0 returns everything.",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
           }
         ],
         "tags": [
@@ -8177,6 +8320,29 @@
         }
       }
     },
+    "v1AttentionItem": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "type is the event type (\"resource.degraded\"); severity its severity."
+        },
+        "severity": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "subjects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "subjects names a few of what it concerns, resources or nodes."
+        }
+      }
+    },
     "v1AuditEvent": {
       "type": "object",
       "properties": {
@@ -8409,6 +8575,31 @@
         }
       }
     },
+    "v1CapacityCounts": {
+      "type": "object",
+      "properties": {
+        "totalBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "usedBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "pools": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "poolsAbove90": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "pools80To90": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
     "v1CloneZFSSnapshotResponse": {
       "type": "object",
       "properties": {
@@ -8419,6 +8610,44 @@
           "type": "string"
         }
       }
+    },
+    "v1ClusterSample": {
+      "type": "object",
+      "properties": {
+        "unix": {
+          "type": "string",
+          "format": "int64"
+        },
+        "writeBytesPerSec": {
+          "type": "number",
+          "format": "double"
+        },
+        "readBytesPerSec": {
+          "type": "number",
+          "format": "double"
+        },
+        "outOfSyncBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "capacityUsedBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "capacityTotalBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "apiRequestsPerSec": {
+          "type": "number",
+          "format": "double"
+        },
+        "apiErrorsPerSec": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "description": "ClusterSample is the cluster's totals at one moment; rates are averages over\nthe interval the sample stands for."
     },
     "v1CollectNodeDiagnosticsRequest": {
       "type": "object",
@@ -9724,6 +9953,19 @@
       },
       "description": "GFSRetention is a grandfather-father-son retention policy: how many\nsnapshots to keep per time bucket. Zero disables a bucket."
     },
+    "v1GatewayCounts": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "serving": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
     "v1GatewayInfo": {
       "type": "object",
       "properties": {
@@ -9794,6 +10036,129 @@
             "type": "string"
           },
           "title": "the nodes its promoter runs on"
+        }
+      }
+    },
+    "v1GetClusterHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "samples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ClusterSample"
+          }
+        }
+      }
+    },
+    "v1GetClusterStatsResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "available": {
+          "type": "boolean",
+          "description": "available is false when no Prometheus server is configured; the other\nfields are then empty."
+        },
+        "nodes": {
+          "type": "integer",
+          "format": "int32",
+          "description": "nodes is how many nodes reported."
+        },
+        "cpu": {
+          "$ref": "#/definitions/v1StatSeries"
+        },
+        "memory": {
+          "$ref": "#/definitions/v1StatSeries"
+        },
+        "diskWriteLatency": {
+          "$ref": "#/definitions/v1StatSeries"
+        },
+        "network": {
+          "$ref": "#/definitions/v1StatSeries"
+        },
+        "slowestDisks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1NodeStat"
+          },
+          "description": "slowest_disks is the nodes with the highest disk write latency now,\nslowest first."
+        }
+      }
+    },
+    "v1GetClusterSummaryResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "observedUnix": {
+          "type": "string",
+          "format": "int64",
+          "description": "observed_unix is when the health poll the counts come from finished; 0\nwhen none has."
+        },
+        "resources": {
+          "$ref": "#/definitions/v1ResourceCounts"
+        },
+        "nodes": {
+          "$ref": "#/definitions/v1NodeCounts"
+        },
+        "capacity": {
+          "$ref": "#/definitions/v1CapacityCounts"
+        },
+        "gateways": {
+          "$ref": "#/definitions/v1GatewayCounts"
+        },
+        "replication": {
+          "$ref": "#/definitions/v1ReplicationCounts"
+        },
+        "protection": {
+          "$ref": "#/definitions/v1ProtectionCounts"
+        },
+        "today": {
+          "$ref": "#/definitions/v1TodayCounts"
+        },
+        "attention": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1AttentionItem"
+          },
+          "description": "attention is what is firing now, one entry per kind of problem, worst\nfirst."
+        },
+        "eventsByHour": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1HourEvents"
+          },
+          "description": "events_by_hour is today's events in local hours 0..23 of the controller."
+        },
+        "poolFullness": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": "pool_fullness counts pools in ten buckets of how full they are: 0-10%\n... 90-100%."
+        },
+        "controlPlane": {
+          "type": "string",
+          "description": "control_plane is the node running this controller."
         }
       }
     },
@@ -10388,6 +10753,23 @@
         },
         "health": {
           "$ref": "#/definitions/v1NodeHealthInfo"
+        }
+      }
+    },
+    "v1HourEvents": {
+      "type": "object",
+      "properties": {
+        "critical": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "warning": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "info": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },
@@ -11076,6 +11458,19 @@
             "type": "object",
             "$ref": "#/definitions/v1ResourceInfo"
           }
+        },
+        "total": {
+          "type": "integer",
+          "format": "int32",
+          "description": "total is how many resources matched before paging."
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "description": "counts is how many of the profile's resources (ignoring every other\nfilter) are in each state, keyed like ListResourcesRequest.state."
         }
       }
     },
@@ -11372,6 +11767,27 @@
       },
       "description": "NodeCollectorOutput is one collector's reading on one node."
     },
+    "v1NodeCounts": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "online": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "offline": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "draining": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
     "v1NodeDiagnostics": {
       "type": "object",
       "properties": {
@@ -11569,6 +11985,18 @@
         "receivedKib": {
           "type": "string",
           "format": "uint64"
+        }
+      }
+    },
+    "v1NodeStat": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number",
+          "format": "double"
         }
       }
     },
@@ -11951,6 +12379,32 @@
         }
       },
       "description": "ProfileMemberResult is what a profile operation did to one member resource."
+    },
+    "v1ProtectionCounts": {
+      "type": "object",
+      "properties": {
+        "snapshotSchedules": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "covered": {
+          "type": "integer",
+          "format": "int32",
+          "description": "covered is how many resources a snapshot or backup schedule covers."
+        },
+        "schedulesRunToday": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "backupsToday": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "backupsFailedToday": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
     },
     "v1QuorumInfo": {
       "type": "object",
@@ -12354,6 +12808,59 @@
         }
       }
     },
+    "v1ReplicaHealth": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "description": "state is \"ok\", \"resyncing\", \"bad\" or \"tiebreaker\"."
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "description": "ReplicaHealth is one member of a resource in ResourceHealth."
+    },
+    "v1ReplicationCounts": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "disklessClients": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "tiebreakers": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "offsite": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "encryptedLinks": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "writeBytesPerSec": {
+          "type": "number",
+          "format": "double"
+        },
+        "readBytesPerSec": {
+          "type": "number",
+          "format": "double"
+        },
+        "outOfSyncBytes": {
+          "type": "string",
+          "format": "uint64"
+        }
+      }
+    },
     "v1ReplicationTLSResponse": {
       "type": "object",
       "properties": {
@@ -12434,6 +12941,73 @@
         }
       }
     },
+    "v1ResourceCounts": {
+      "type": "object",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "healthy": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "resyncing": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "degraded": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "noQuorum": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "unknown": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "volumes": {
+          "type": "integer",
+          "format": "int32"
+        }
+      }
+    },
+    "v1ResourceHealth": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "state is \"healthy\", \"resyncing\", \"degraded\", \"no_quorum\" or \"unknown\"."
+        },
+        "summary": {
+          "type": "string",
+          "description": "summary says where the problem is (\"n31 Outdated\", \"n12 63%\") or, when\nthere is none, which node is Primary (\"primary n04\")."
+        },
+        "replicas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ReplicaHealth"
+          }
+        },
+        "outOfSyncBytes": {
+          "type": "string",
+          "format": "uint64"
+        },
+        "writeBytesPerSec": {
+          "type": "number",
+          "format": "double",
+          "description": "write_bytes_per_sec is the application write rate over the last poll\ninterval; unset when it could not be measured."
+        },
+        "observedUnix": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "ResourceHealth is one resource's state from the controller's last health\npoll."
+    },
     "v1ResourceInfo": {
       "type": "object",
       "properties": {
@@ -12510,6 +13084,17 @@
         "faultDomainRisk": {
           "type": "string",
           "description": "fault_domain_risk names the labelled fault domain(s), e.g. \"host=dell\",\nwhose loss would take every copy of the data or the quorum majority."
+        },
+        "health": {
+          "$ref": "#/definitions/v1ResourceHealth",
+          "description": "health is the resource as the last health poll saw it; unset before the\nfirst poll and when health checks are off."
+        },
+        "owner": {
+          "type": "string",
+          "description": "owner is what the resource is to the system that created it, such as\n\"PVC db/data-postgres-0\"; used_by is that system (\"pvc\", \"proxmox\", ...)."
+        },
+        "usedBy": {
+          "type": "string"
         }
       }
     },
@@ -13253,6 +13838,59 @@
         }
       }
     },
+    "v1StatSeries": {
+      "type": "object",
+      "properties": {
+        "unix": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "int64"
+          }
+        },
+        "avg": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "min": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "max": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "nowAvg": {
+          "type": "number",
+          "format": "double"
+        },
+        "busiest": {
+          "$ref": "#/definitions/v1NodeStat"
+        },
+        "sum": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "format": "double"
+          },
+          "description": "sum is all nodes added together, for network; now_sum its latest value."
+        },
+        "nowSum": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "description": "StatSeries is one statistic over time across all nodes: the average, the\nlowest and the highest node at each step, and the busiest node now. Units\nare those of the statistic: a 0..1 fraction for cpu and memory, seconds for\nlatency, bytes per second for network."
+    },
     "v1StopGatewayResponse": {
       "type": "object",
       "properties": {
@@ -13330,6 +13968,48 @@
         "message": {
           "type": "string",
           "description": "message carries the far end's own rejection text when it refused, which is\nthe part that says what to fix."
+        }
+      }
+    },
+    "v1TodayCounts": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "critical": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "warning": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "failovers": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "nodesLost": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "replicasMoved": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "poolsExtended": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "inspectionPassed": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The newest inspection, when one has run: checks passed and in total."
+        },
+        "inspectionTotal": {
+          "type": "integer",
+          "format": "int32"
         }
       }
     },

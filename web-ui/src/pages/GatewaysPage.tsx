@@ -4,9 +4,9 @@ import { api, Gateway } from '@/services/api';
 import { toast } from 'sonner';
 import { Plus, Network } from 'lucide-react';
 import { PageHeader } from '@/components/PageHeader';
-import { SegmentedFilter } from '@/components/SegmentedFilter';
+import { StatFilterStrip } from '@/components/list/StatFilterStrip';
+import { ListToolbar, SearchBox } from '@/components/list/ListToolbar';
 import { StatusTickHead } from '@/components/StatusTick';
-import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -107,7 +107,11 @@ export function GatewaysPage() {
     return c;
   }, [list]);
   const running = list.filter((g) => isRunning(g.state)).length;
-  const shown = filter === 'all' ? list : list.filter((g) => gwKind(g.type) === filter);
+  const [query, setQuery] = useState('');
+  const needle = query.trim().toLowerCase();
+  const shown = (filter === 'all' ? list : list.filter((g) => gwKind(g.type) === filter)).filter(
+    (g) => !needle || `${g.name} ${g.id} ${g.resource} ${g.node} ${g.path} ${JSON.stringify(g.options ?? {})}`.toLowerCase().includes(needle),
+  );
 
   const openCreate = (kind: GwKind) => {
     // Pull a fresh resource list so newly created resources show up in the
@@ -117,30 +121,19 @@ export function GatewaysPage() {
   };
 
   return (
-    <div>
+    <div className="@container mx-auto max-w-[1600px]">
       <PageHeader
         title="Gateways"
         description={
-          <>
-            <span className="font-mono text-foreground">{list.length}</span>{' '}
-            configured,{' '}
-            <span className="font-mono text-foreground">{running}</span> started.
-          </>
+          list.length ? (
+            <>
+              <span className="tabular-nums text-foreground">{running}</span> of{' '}
+              <span className="tabular-nums text-foreground">{list.length}</span> started
+            </>
+          ) : undefined
         }
         actions={
           <>
-            <SegmentedFilter
-              aria-label="Filter gateways by protocol"
-              value={filter}
-              onChange={setFilter}
-              options={[
-                { value: 'all', label: 'All', count: list.length },
-                { value: 'nfs', label: 'NFS', count: counts.nfs },
-                { value: 'iscsi', label: 'iSCSI', count: counts.iscsi },
-                { value: 'nvme', label: 'NVMe-oF', count: counts.nvme },
-                { value: 'smb', label: 'SMB', count: counts.smb },
-              ]}
-            />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button>
@@ -167,8 +160,26 @@ export function GatewaysPage() {
         }
       />
 
-      <Card>
-        <CardContent className="px-0">
+      <StatFilterStrip
+        aria-label="Show gateways of one protocol"
+        loading={isLoading}
+        value={filter}
+        onChange={setFilter}
+        options={[
+          { value: 'all', label: 'All', count: list.length },
+          { value: 'nfs', label: 'NFS', count: counts.nfs },
+          { value: 'iscsi', label: 'iSCSI', count: counts.iscsi },
+          { value: 'nvme', label: 'NVMe-oF', count: counts.nvme },
+          { value: 'smb', label: 'SMB', count: counts.smb },
+        ]}
+      />
+      <div className="mt-4 mb-3">
+        <ListToolbar>
+          <SearchBox value={query} onChange={setQuery} placeholder="Name, resource, address or node" aria-label="Search gateways" />
+        </ListToolbar>
+      </div>
+
+      <div className="tile overflow-hidden">
           {isLoading ? (
             <div className="space-y-2 px-5 py-2">
               {Array.from({ length: 4 }).map((_, i) => (
@@ -180,8 +191,10 @@ export function GatewaysPage() {
               <Network className="h-7 w-7 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
                 {list.length === 0
-                  ? 'No gateways yet. Create one to export a resource over NFS, iSCSI or NVMe-oF.'
-                  : `No ${PROTOCOL[filter as GwKind].label} gateways configured.`}
+                  ? 'No gateways yet. Create one to export a resource over NFS, iSCSI, NVMe-oF or SMB.'
+                  : needle
+                    ? 'No gateway matches this search.'
+                    : `No ${PROTOCOL[filter as GwKind].label} gateways configured.`}
               </p>
             </div>
           ) : (
@@ -217,8 +230,7 @@ export function GatewaysPage() {
               </TableBody>
             </Table>
           )}
-        </CardContent>
-      </Card>
+      </div>
 
       <CreateGatewayDialog
         type={createType}

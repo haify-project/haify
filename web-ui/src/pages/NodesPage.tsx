@@ -10,7 +10,6 @@ import { ControllerChip } from '@/components/ControllerChip';
 import { RecordCard, RecordCards } from '@/components/RecordCard';
 import { TONE_TEXT } from '@/components/status';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import {
   Table,
   TableBody,
@@ -29,6 +28,9 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import { StatFilterStrip } from '@/components/list/StatFilterStrip';
+import { FilterSelect, ListToolbar, SearchBox } from '@/components/list/ListToolbar';
+import { Pager } from '@/components/list/Pager';
 import { formatAge, readinessOf, type HealthResult } from './nodes/health';
 import { NodeRows, NodeMenu } from './nodes/NodeRows';
 import { NodeDetail } from './nodes/NodeDetail';
@@ -133,6 +135,39 @@ export function NodesPage() {
   const list = nodes?.nodes ?? [];
   const online = list.filter((n) => n.state === 'online');
 
+  // The same template as Resources: counts that filter, a search, a sort and
+  // pages. Nodes number in the tens, so this happens here, not on the server.
+  const [stateFilter, setStateFilter] = useState<'' | 'online' | 'offline' | 'maintenance'>('');
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState('name');
+  const [offset, setOffset] = useState(0);
+  const PAGE = 50;
+  const needle = query.trim().toLowerCase();
+  const filtered = list
+    .filter((n) => !stateFilter || n.state === stateFilter || (stateFilter === 'offline' && n.state !== 'online' && n.state !== 'maintenance'))
+    .filter(
+      (n) =>
+        !needle ||
+        [n.name, n.address, n.hostname, ...Object.entries(n.labels ?? {}).map(([k, v]) => `${k}=${v}`)]
+          .join(' ')
+          .toLowerCase()
+          .includes(needle),
+    )
+    .sort((a, b) =>
+      sort === 'state'
+        ? (a.state === 'online' ? 1 : 0) - (b.state === 'online' ? 1 : 0) || a.name.localeCompare(b.name)
+        : sort === 'seen'
+          ? new Date(b.lastSeen ?? 0).getTime() - new Date(a.lastSeen ?? 0).getTime()
+          : a.name.localeCompare(b.name),
+    );
+  const visible = filtered.slice(offset, offset + PAGE);
+  const counts = {
+    '': list.length,
+    online: online.length,
+    offline: list.filter((n) => n.state !== 'online' && n.state !== 'maintenance').length,
+    maintenance: list.filter((n) => n.state === 'maintenance').length,
+  };
+
   // health/healthErrors/confirmNode are keyed by node name, which outlives the
   // node. Register a different machine under a retired name and its row would
   // open showing the old cluster's readiness, stamped with the old time, having
@@ -173,10 +208,13 @@ export function NodesPage() {
   };
 
   // Opening the page runs the check once, so the Readiness column says
-  // something instead of "not checked" on every row.
+  // something instead of "not checked" on every row — on a small cluster. Each
+  // check is an SSH round trip, and on a large one a page view is not worth a
+  // round of them; there the column fills as rows are opened or "Check all"
+  // is pressed.
   const checkedOnOpen = useRef(false);
   useEffect(() => {
-    if (checkedOnOpen.current || online.length === 0) return;
+    if (checkedOnOpen.current || online.length === 0 || online.length > 12) return;
     checkedOnOpen.current = true;
     void checkAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -190,21 +228,12 @@ export function NodesPage() {
       <PageHeader
         title="Nodes"
         description={
-          <>
-            <span className="font-mono tabular-nums text-foreground">{list.length}</span>{' '}
-            registered ·{' '}
-            <span className="font-mono tabular-nums text-foreground">{online.length}</span>{' '}
-            online
-            {lastCheck ? (
-              <>
-                {' '}
-                · last health check{' '}
-                <span className="font-mono tabular-nums text-foreground">
-                  {new Date(lastCheck).toLocaleTimeString()}
-                </span>
-              </>
-            ) : null}
-          </>
+          lastCheck ? (
+            <>
+              Last health check{' '}
+              <span className="tabular-nums text-foreground">{new Date(lastCheck).toLocaleTimeString()}</span>
+            </>
+          ) : undefined
         }
         actions={
           <>
@@ -228,19 +257,60 @@ export function NodesPage() {
         }
       />
 
+      <StatFilterStrip
+        aria-label="Show nodes in one state"
+        loading={isLoading}
+        value={stateFilter}
+        onChange={(v) => {
+          setStateFilter(v);
+          setOffset(0);
+        }}
+        options={[
+          { value: '', label: 'All', count: counts[''] },
+          { value: 'online', label: 'Online', color: 'var(--status-ok)', count: counts.online },
+          { value: 'offline', label: 'Offline', color: 'var(--status-bad)', count: counts.offline },
+          { value: 'maintenance', label: 'Draining', color: 'var(--status-warn)', count: counts.maintenance },
+        ]}
+      />
+      <div className="mt-4 mb-3">
+        <ListToolbar
+          end={
+            <FilterSelect
+              label="Sort"
+              value={sort}
+              anyLabel={null}
+              onChange={setSort}
+              options={[
+                { value: 'name', label: 'Name' },
+                { value: 'state', label: 'Offline first' },
+                { value: 'seen', label: 'Last seen' },
+              ]}
+            />
+          }
+        >
+          <SearchBox
+            value={query}
+            onChange={(v) => {
+              setQuery(v);
+              setOffset(0);
+            }}
+            placeholder="Name, address or label"
+            aria-label="Search nodes"
+          />
+        </ListToolbar>
+      </div>
+
       {isLoading ? (
-        <Card>
-          <CardContent className="p-0">
-            <div className="space-y-3 p-5">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-9 w-full" />
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        <div className="tile">
+          <div className="space-y-3 p-5">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-9 w-full" />
+            ))}
+          </div>
+        </div>
       ) : !list.length ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+        <div className="tile">
+          <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
             <Server className="h-8 w-8 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">
               No nodes registered. Register a storage node to get started.
@@ -249,8 +319,10 @@ export function NodesPage() {
               <Plus />
               Register node
             </Button>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
+      ) : !visible.length ? (
+        <div className="tile px-5 py-16 text-center text-sm text-muted-foreground">No node matches these filters.</div>
       ) : (
         <>
         {/* Below 760px of content the same rows are cards — a six-column
@@ -259,7 +331,7 @@ export function NodesPage() {
             undoes RecordCards' viewport-based hiding. */}
         <div className="@min-[760px]:hidden">
           <RecordCards className="md:flex">
-            {list.map((node) => {
+            {visible.map((node) => {
               const isOnline = node.state === 'online';
               const isChecking = checking.includes(node.name);
               const result = health[node.name];
@@ -347,8 +419,7 @@ export function NodesPage() {
           </RecordCards>
         </div>
 
-        <Card className="hidden overflow-hidden @min-[760px]:block">
-          <CardContent className="p-0">
+        <div className="tile hidden overflow-hidden @min-[760px]:block">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -367,7 +438,7 @@ export function NodesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {list.map((node) => {
+                {visible.map((node) => {
                   const isOnline = node.state === 'online';
                   const isChecking = checking.includes(node.name);
                   const isDeleting =
@@ -400,8 +471,8 @@ export function NodesPage() {
                 })}
               </TableBody>
             </Table>
-          </CardContent>
-        </Card>
+            <Pager offset={offset} limit={PAGE} total={filtered.length} onOffset={setOffset} />
+        </div>
         </>
       )}
 
