@@ -1,538 +1,296 @@
 import { useEffect, useState } from 'react';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router';
-import { Plus, RefreshCw, Server, ShieldCheck } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import { api, poolRoomGiB } from '@/services/api';
-import { type ClusterEvent } from '@/services/events';
-import { EventRows } from '@/components/EventRows';
+import { eventTime } from '@/services/events';
 import { cn } from '@/lib/utils';
-import { PageHeader } from '@/components/PageHeader';
-import { StatBand, StatBandItem } from '@/components/StatBand';
-import { SegmentBar } from '@/components/SegmentBar';
-import { ControllerChip } from '@/components/ControllerChip';
-import { StatusBadge } from '@/components/StatusBadge';
-import { StatusTickCell, StatusTickHead } from '@/components/StatusTick';
-import { RecordCard, RecordCards } from '@/components/RecordCard';
-import { toneOf } from '@/components/status';
+import { toneOf, TONE_TEXT, type StatusTone } from '@/components/status';
+import { useReducedMotion } from '@/components/flow/motion';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Separator } from '@/components/ui/separator';
+import { ClusterHero, type HeroCallout } from './dashboard/ClusterHero';
+import { BarsViz, GaugeViz, MetricTile, RingsViz } from './dashboard/MetricTile';
+import { TodayTimeline } from './dashboard/TodayTimeline';
+import { Insights } from './dashboard/Insights';
 
-// The five queries this page is made of, in one place: the Refresh button has
-// to invalidate exactly the keys the page reads, and a key that drifts from its
-// useQuery below produces a button that looks like it works and refreshes
-// nothing.
+// Every query this page reads, in one place: Refresh has to invalidate
+// exactly these keys, and one that drifts from its useQuery below produces a
+// button that looks like it works and refreshes nothing.
 const PAGE_QUERY_KEYS = {
   nodes: ['nodes'],
   pools: ['pools'],
   resources: ['resources'],
   gateways: ['gateways'],
   selfHa: ['selfha'],
-  events: ['events', 'recent'],
+  events: ['events', 'today'],
+  schedules: ['snapshot-schedules'],
+  inspection: ['inspection', 'latest'],
 } as const;
 
-/** Coarse "how long ago", for a header line and a last-seen column. */
-function agoLabel(ms: number): string {
-  const secs = Math.max(0, Math.round(ms / 1000));
-  if (secs < 5) return 'now';
-  if (secs < 60) return `${secs}s ago`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
+/** GiB as the unit a person would say it in. */
+function capacity(gib: number): string {
+  if (gib >= 1024) return `${(gib / 1024).toFixed(gib >= 10240 ? 0 : 1)} TiB`;
+  return `${Math.round(gib)} GiB`;
+}
+
+function greeting(now: number): string {
+  const h = new Date(now).getHours();
+  if (h < 5) return 'Good evening,';
+  if (h < 12) return 'Good morning,';
+  if (h < 18) return 'Good afternoon,';
+  return 'Good evening,';
 }
 
 export function DashboardPage() {
   const queryClient = useQueryClient();
-
-  const {
-    data: nodes,
-    isLoading: nodesLoading,
-    dataUpdatedAt: nodesUpdatedAt,
-  } = useQuery({
-    queryKey: PAGE_QUERY_KEYS.nodes,
-    queryFn: () => api.getNodes(),
+  const reduced = useReducedMotion();
+  const nodes = useQuery({ queryKey: PAGE_QUERY_KEYS.nodes, queryFn: () => api.getNodes() });
+  const pools = useQuery({ queryKey: PAGE_QUERY_KEYS.pools, queryFn: () => api.getPools() });
+  const resources = useQuery({ queryKey: PAGE_QUERY_KEYS.resources, queryFn: () => api.getResources() });
+  const gateways = useQuery({ queryKey: PAGE_QUERY_KEYS.gateways, queryFn: () => api.getGateways() });
+  const selfHa = useQuery({ queryKey: PAGE_QUERY_KEYS.selfHa, queryFn: () => api.getSelfHaStatus() });
+  const events = useQuery({ queryKey: PAGE_QUERY_KEYS.events, queryFn: () => api.listEvents({ limit: 200 }) });
+  const schedules = useQuery({ queryKey: PAGE_QUERY_KEYS.schedules, queryFn: () => api.getSnapshotSchedules() });
+  // A cluster that has never been inspected answers with an error; that is
+  // an empty card, not something to retry.
+  const inspection = useQuery({
+    queryKey: PAGE_QUERY_KEYS.inspection,
+    queryFn: () => api.getLatestInspection(),
+    retry: false,
   });
 
-  const { data: pools, isLoading: poolsLoading } = useQuery({
-    queryKey: PAGE_QUERY_KEYS.pools,
-    queryFn: () => api.getPools(),
-  });
-
-  const { data: resources, isLoading: resourcesLoading } = useQuery({
-    queryKey: PAGE_QUERY_KEYS.resources,
-    queryFn: () => api.getResources(),
-  });
-
-  const { data: gateways, isLoading: gatewaysLoading } = useQuery({
-    queryKey: PAGE_QUERY_KEYS.gateways,
-    queryFn: () => api.getGateways(),
-  });
-
-  const { data: selfHa, isLoading: selfHaLoading } = useQuery({
-    queryKey: PAGE_QUERY_KEYS.selfHa,
-    queryFn: () => api.getSelfHaStatus(),
-  });
-
-  // Everything on this page that reads "n seconds ago" is measured against a
-  // fixed timestamp, so without a tick it freezes at whatever it said when the
-  // page mounted — which is exactly the value an operator would trust. Five
-  // seconds matches the queries' staleTime; it is not a poll.
+  // "Now" for the timeline's marker and every "ago"; a tick, not a poll.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 5000);
+    const id = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(id);
   }, []);
 
-  const totalNodes = nodes?.nodes.length ?? 0;
-  const onlineNodes =
-    nodes?.nodes.filter((n) => n.state === 'online').length ?? 0;
+  const isFetching = useIsFetching();
+  const refresh = () => {
+    for (const queryKey of Object.values(PAGE_QUERY_KEYS)) queryClient.invalidateQueries({ queryKey });
+  };
 
-  // selfHa.activeNode is an address; members are node names. Resolve the
-  // active node's name so it displays as a name and highlights correctly.
-  const nodeNameByAddr = new Map(
-    (nodes?.nodes ?? []).map((n) => [n.address, n.name]),
-  );
-  const activeNodeName = selfHa?.activeNode
-    ? nodeNameByAddr.get(selfHa.activeNode) ?? selfHa.activeNode
+  // Nodes and the control plane.
+  const nodeList = [...(nodes.data?.nodes ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  const online = nodeList.filter((n) => n.state === 'online').length;
+  const offline = nodeList.filter((n) => toneOf(n.state) === 'bad');
+  const ha = selfHa.data;
+  const activeName = ha?.activeNode
+    ? (nodeList.find((n) => n.address === ha.activeNode)?.name ?? ha.activeNode)
     : '';
 
-  const rooms = (pools?.pools ?? []).map(poolRoomGiB);
-  const totalStorage = Math.round(rooms.reduce((acc, r) => acc + r.total, 0));
-  const freeStorage = Math.round(rooms.reduce((acc, r) => acc + r.free, 0));
-  const usedStorage = Math.max(totalStorage - freeStorage, 0);
-  const usagePct = totalStorage > 0 ? (usedStorage / totalStorage) * 100 : 0;
+  // Capacity.
+  const poolList = pools.data?.pools ?? [];
+  const rooms = poolList.map(poolRoomGiB);
+  const total = rooms.reduce((s, r) => s + r.total, 0);
+  const free = rooms.reduce((s, r) => s + Math.max(0, Math.min(r.total, r.free)), 0);
+  const usedPct = total > 0 ? ((total - free) / total) * 100 : 0;
+  const poolFill = rooms.map((r) => (r.total > 0 ? 1 - Math.max(0, r.free) / r.total : 0));
+  const fullest = poolFill.length ? poolFill.indexOf(Math.max(...poolFill)) : -1;
 
-  const totalResources = resources?.resources.length ?? 0;
+  // Resources.
+  const resList = resources.data?.resources ?? [];
+  const atRisk = resList.filter((r) => r.quorumRisk).length;
+  const volumes = resList.reduce((s, r) => s + r.volumes.length, 0);
+  const offsite = resList.filter((r) => r.drNode).length;
 
-  const totalGateways = gateways?.gateways.length ?? 0;
-  const runningGateways =
-    gateways?.gateways.filter((g) => g.state === 'running').length ?? 0;
+  // Gateways.
+  const gwList = gateways.data?.gateways ?? [];
+  const gwRunning = gwList.filter((g) => g.state === 'running' || g.state === 'started').length;
+  const gwStopped = gwList.filter((g) => !(g.state === 'running' || g.state === 'started'));
+  const gwTypes = [...new Set(gwList.map((g) => g.type.toUpperCase().replace('NVMEOF', 'NVMe-oF').replace('ISCSI', 'iSCSI')))];
 
-  // The segment bar is decorative, so the same node states are also spelled
-  // out beside it — counted by the word the controller actually used rather
-  // than by tone, because "3 online · 1 offline" says more than "3 ok · 1 bad".
-  const nodeStateCounts = new Map<string, number>();
-  for (const n of nodes?.nodes ?? []) {
-    nodeStateCounts.set(n.state, (nodeStateCounts.get(n.state) ?? 0) + 1);
-  }
-  const nodeStateWords = [...nodeStateCounts]
-    .map(([state, count]) => `${count} ${state}`)
-    .join(' · ');
+  // Today's events.
+  const evList = events.data?.events ?? [];
+  const day0 = new Date(now).setHours(0, 0, 0, 0);
+  const todays = evList.filter((e) => {
+    const t = eventTime(e);
+    return t !== null && t >= day0;
+  });
+  const perHour = Array.from({ length: 24 }, () => 0);
+  for (const e of todays) perHour[new Date(eventTime(e)!).getHours()]++;
+  const peak = Math.max(1, ...perHour);
+  const critical = todays.filter((e) => e.severity === 'critical').length;
+  const warnings = todays.filter((e) => e.severity === 'warning').length;
 
-  const totalVolumes =
-    resources?.resources.reduce((acc, r) => acc + r.volumes.length, 0) ?? 0;
-  const drResources = resources?.resources.filter((r) => r.drNode).length ?? 0;
-  const quorumRiskResources =
-    resources?.resources.filter((r) => r.quorumRisk).length ?? 0;
-  const resourceDetail = [
-    `${totalVolumes} volume${totalVolumes === 1 ? '' : 's'}`,
-    drResources > 0 ? `${drResources} replicated off-site` : null,
-    quorumRiskResources > 0 ? `${quorumRiskResources} at quorum risk` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  // Snapshots.
+  const schedList = (schedules.data?.schedules ?? []).filter((s) => s.enabled);
+  const covered = new Set(schedList.map((s) => s.resource)).size;
+  const nextRun = schedList
+    .map((s) => (s.nextRun ? Date.parse(s.nextRun) : NaN))
+    .filter((t) => Number.isFinite(t) && t > now)
+    .sort((a, b) => a - b)[0];
 
-  const stoppedGateways =
-    gateways?.gateways.filter((g) => g.state !== 'running') ?? [];
+  // The latest inspection.
+  const report = inspection.data?.report;
+  const sum = report?.summary;
+  const checks = (sum?.pass ?? 0) + (sum?.warn ?? 0) + (sum?.fail ?? 0) + (sum?.error ?? 0);
+  const problems = (sum?.warn ?? 0) + (sum?.fail ?? 0) + (sum?.error ?? 0);
 
-  // Last-seen formatting is named once and used by both the card and the row:
-  // a value derived twice is a value that can end up saying two different
-  // things about the same node.
-  const lastSeenLabel = (lastSeen: string) => {
-    const ts = Number(lastSeen);
-    return ts ? agoLabel(now - ts * 1000) : '-';
-  };
+  const toLookAt = offline.length + atRisk + gwStopped.length + (sum?.fail ?? 0) + (sum?.error ?? 0);
 
-  // Any of this page's queries in flight — the button says so rather than
-  // looking inert while a wedged controller keeps it waiting.
-  const isFetching = useIsFetching();
-
-  const refresh = () => {
-    for (const queryKey of Object.values(PAGE_QUERY_KEYS)) {
-      queryClient.invalidateQueries({ queryKey });
-    }
-  };
+  const capTone: StatusTone = usedPct >= 90 ? 'bad' : usedPct >= 80 ? 'warn' : 'ok';
+  const callouts: [HeroCallout, HeroCallout, HeroCallout] = [
+    {
+      label: 'Control plane',
+      value: !ha ? '—' : !ha.enabled ? 'standalone' : activeName || 'none',
+      status: !ha ? '' : !ha.enabled ? 'Self-HA off' : activeName ? 'Self-HA' : 'Moving',
+      tone: !ha || !ha.enabled ? 'idle' : activeName ? 'ok' : 'bad',
+    },
+    {
+      label: 'Capacity',
+      value: total > 0 ? usedPct.toFixed(0) : '—',
+      unit: '% used',
+      status: total > 0 ? `${capacity(free)} free` : pools.isLoading ? '' : 'No pools',
+      tone: capTone,
+    },
+    {
+      label: 'Nodes',
+      value: String(online),
+      unit: `/ ${nodeList.length} online`,
+      status: offline.length ? `${offline.length} offline` : 'All online',
+      tone: offline.length ? 'bad' : 'ok',
+    },
+  ];
 
   return (
-    <div>
-      <PageHeader
-        title="Cluster overview"
-        description={
-          <>
-            {/* Three cases, not two. Self-HA enabled with no active node is
-                the failover window — the moment an operator is most likely to
-                be reading this line, and the one where saying "standalone"
-                would be a flat lie. An errored or unread query says nothing. */}
-            {selfHa === undefined ? null : !selfHa.enabled ? (
-              <>Standalone controller · </>
-            ) : activeNodeName ? (
-              <>
-                Control plane on{' '}
-                <span className="font-mono text-foreground">{activeNodeName}</span>
-                {' · '}
-              </>
-            ) : (
-              <>Control plane · no active node · </>
-            )}
-            {selfHa?.vip ? (
-              <>
-                VIP{' '}
-                <span className="font-mono text-foreground">{selfHa.vip}</span>
-                {' · '}
-              </>
-            ) : null}
-            synced{' '}
-            <span className="font-mono tabular-nums text-foreground">
-              {nodesUpdatedAt ? agoLabel(now - nodesUpdatedAt) : '—'}
-            </span>
-          </>
-        }
-        actions={
-          <>
-            <Button variant="outline" onClick={refresh} disabled={isFetching > 0}>
-              <RefreshCw className={cn(isFetching > 0 && 'animate-spin')} />
-              Refresh
-            </Button>
-            {/* Resource creation is a dialog on the Resources page, not a route
-                of its own, so this lands on the page that owns it. */}
-            <Button asChild>
-              <Link to="/resources">
-                <Plus />
-                New resource
-              </Link>
-            </Button>
-          </>
-        }
-      />
+    <div className="mx-auto max-w-[1440px]">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="text-[22px] leading-tight font-light text-foreground/80">{greeting(now)}</div>
+          <h1 className="text-[36px] leading-tight font-semibold tracking-tight">Haify.</h1>
+          <p className="mt-1 text-[14px] text-muted-foreground">Here&apos;s your storage today.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-[13px] text-muted-foreground">
+            {new Date(now).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+          </span>
+          <Button variant="outline" size="sm" onClick={refresh} disabled={isFetching > 0} className="rounded-full">
+            <RefreshCw className={cn(isFetching > 0 && 'animate-spin')} />
+            Refresh
+          </Button>
+        </div>
+      </div>
 
-      <div className="space-y-[18px]">
-        {/* Four 27px figures in a non-wrapping row have ~90px each at 375px:
-            the digits crush and the fourth column falls off the band's own
-            overflow-hidden edge. Stacked below `sm`, with the dividers turning
-            from vertical to horizontal so the band still reads as one object.
-            The 2-up phone grid this wants instead needs StatBand to own its
-            divider rule, which is not this page's to change. */}
-        <StatBand className="flex-col divide-x-0 divide-y sm:flex-row sm:divide-x sm:divide-y-0">
-          <StatBandItem
-            label="Online nodes"
-            value={onlineNodes}
-            unit={`/${totalNodes}`}
-            loading={nodesLoading}
-            detail={
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <SegmentBar
-                  segments={(nodes?.nodes ?? []).map((n) => toneOf(n.state))}
-                />
-                <span className="text-[11.5px]">{nodeStateWords || '—'}</span>
-              </div>
-            }
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+        <section
+          className="hidden flex-col self-start xl:sticky xl:top-0 xl:col-span-5 xl:flex 2xl:col-span-4"
+          aria-label="Cluster"
+        >
+          <ClusterHero
+            nodes={nodeList.map((n) => ({ name: n.name, state: n.state, active: n.name === activeName }))}
+            callouts={callouts}
+            reduced={reduced}
           />
-          <StatBandItem
-            label="Storage"
-            value={freeStorage}
-            unit={`of ${totalStorage} GB free`}
-            grow={1.6}
-            loading={poolsLoading}
-            detail={
-              <>
-                <Progress value={usagePct} className="h-[5px]" />
-                <p className="mt-1.5">
-                  <span className="font-mono tabular-nums">{usedStorage}</span>{' '}
-                  GB used (
-                  <span className="font-mono tabular-nums">
-                    {usagePct.toFixed(0)}%
-                  </span>
-                  )
-                </p>
-              </>
-            }
-          />
-          <StatBandItem
-            label="DRBD resources"
-            value={totalResources}
-            loading={resourcesLoading}
-            detail={resourceDetail}
-          />
-          <StatBandItem
-            label="Gateways"
-            value={runningGateways}
-            unit={`/${totalGateways}`}
-            loading={gatewaysLoading}
-            detail={
-              stoppedGateways.length > 0 ? (
-                <span className="text-status-warn-text">
-                  {stoppedGateways
-                    .slice(0, 2)
-                    .map((g) => g.name)
-                    .join(', ')}
-                  {stoppedGateways.length > 2
-                    ? ` +${stoppedGateways.length - 2} more`
-                    : ''}{' '}
-                  not running
-                </span>
-              ) : totalGateways > 0 ? (
-                'all running'
-              ) : (
-                'none configured'
-              )
-            }
-          />
-        </StatBand>
+        </section>
 
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
-        <Card className="gap-4 py-[18px] lg:col-span-3">
-          <CardHeader className="flex flex-row items-center justify-between px-5">
-            <CardTitle className="flex items-center gap-2.5">
-              <ShieldCheck className="h-[17px] w-[17px] text-primary" />
-              Controller Self-HA
-            </CardTitle>
-            {!selfHaLoading && (
-              <StatusBadge status={selfHa?.enabled ? 'enabled' : 'disabled'} />
-            )}
-          </CardHeader>
-          <CardContent className="px-5">
-            {selfHaLoading ? (
-              <div className="space-y-2">
-                <Skeleton className="h-5 w-48" />
-                <Skeleton className="h-5 w-64" />
+        {/* Below xl the drawing has no room; its three readings stay. */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 xl:hidden">
+          {callouts.map((c) => (
+            <div key={c.label} className="tile p-3">
+              <div className="text-[11.5px] text-muted-foreground">{c.label}</div>
+              <div className="mt-0.5 truncate text-[18px] font-semibold tabular-nums">
+                {c.value}
+                {c.unit && <span className="ml-1 text-[11px] font-normal text-muted-foreground">{c.unit}</span>}
               </div>
-            ) : selfHa?.enabled ? (
-              <div className="space-y-[18px]">
-                {/* The VIP, the only long value here, needs about 160px: three
-                    columns only once the card itself is wide enough for that,
-                    else it takes a row of its own. */}
-                <div className="@container">
-                <div className="grid grid-cols-2 gap-x-4 gap-y-3.5 @lg:grid-cols-3">
-                  <div className="min-w-0">
-                    <div className="eyebrow">Active node</div>
-                    <div className="mt-1.5 font-mono text-sm break-words">
-                      {activeNodeName || '-'}
-                    </div>
-                  </div>
-                  <div className="min-w-0">
-                    <div className="eyebrow">Resource</div>
-                    <div className="mt-1.5 font-mono text-sm break-words">
-                      {selfHa.resource || '-'}
-                    </div>
-                  </div>
-                  <div className="col-span-2 min-w-0 @lg:col-span-1">
-                    <div className="eyebrow">VIP</div>
-                    <div className="mt-1.5 font-mono text-sm whitespace-nowrap tabular-nums">
-                      {selfHa.vip || '-'}
-                    </div>
-                  </div>
-                </div>
-                </div>
-                {selfHa.nodes && selfHa.nodes.length > 0 && (
-                  <>
-                    <Separator />
-                    <div>
-                      <div className="eyebrow">Members</div>
-                      <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                        {selfHa.nodes.map((n) => (
-                          <Badge
-                            key={n}
-                            variant={
-                              n === activeNodeName ? 'default' : 'secondary'
-                            }
-                            className="font-mono font-normal"
-                          >
-                            {n}
-                            {n === activeNodeName && ' (active)'}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
+              <div className={cn('truncate text-[11px]', c.tone === 'ok' ? 'text-muted-foreground' : TONE_TEXT[c.tone])}>
+                {c.status}
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Standalone controller — self-HA is not enabled.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <RecentEvents />
+            </div>
+          ))}
         </div>
 
-        {/* No CardHeader/CardContent here: the table draws its own row rule to
-            the card's edges, which the card's padding would inset. */}
-        <Card className="gap-0 overflow-hidden py-0">
-          <div className="flex items-center justify-between px-5 pt-4 pb-3.5">
-            <div className="text-[14.5px] font-semibold">Cluster nodes</div>
-            <Link
-              to="/nodes"
-              className="text-[12.5px] text-primary hover:underline"
-            >
-              Manage nodes
-            </Link>
-          </div>
-          {nodesLoading ? (
-            <div className="space-y-2 px-5 pb-5">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
-            </div>
-          ) : totalNodes === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
-              <Server className="h-8 w-8 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">
-                No nodes registered yet.
-              </p>
-            </div>
-          ) : (
-            <>
-              {/* Below `md` the six columns put role, state and last-seen past
-                  the right edge. The same rows render as cards instead — no
-                  expand on this one: the Dashboard's node list is a summary,
-                  and "Manage nodes" already leads to the full page. */}
-              <RecordCards className="px-5 pb-5">
-                {nodes?.nodes.map((node) => {
-                  return (
-                    <RecordCard
-                      key={node.name}
-                      status={node.state}
-                      title={
-                        <>
-                          <span className="font-mono text-[14px] font-semibold">
-                            {node.name}
-                          </span>
-                          <span className="text-[11.5px] text-muted-foreground">
-                            {node.hostname}
-                          </span>
-                          {node.name === activeNodeName ? <ControllerChip /> : null}
-                        </>
-                      }
-                      subtitle={
-                        <span className="font-mono tabular-nums">
-                          {node.address}
-                        </span>
-                      }
-                      facts={[
-                        {
-                          label: 'State',
-                          value: <StatusBadge status={node.state} />,
-                        },
-                        {
-                          label: 'Last seen',
-                          value: (
-                            <span className="font-mono tabular-nums text-muted-foreground">
-                              {lastSeenLabel(node.lastSeen)}
-                            </span>
-                          ),
-                        },
-                      ]}
+        <div className="flex flex-col gap-4 xl:col-span-7 2xl:col-span-8">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 2xl:grid-cols-3">
+            <MetricTile
+              title="Resources"
+              href="/resources"
+              tint="mint"
+              value={resList.length}
+              unit="DRBD resources"
+              loading={resources.isLoading}
+              viz={<RingsViz fraction={resList.length ? (resList.length - atRisk) / resList.length : 0} />}
+              footLeft={atRisk ? `${atRisk} at quorum risk` : 'All hold quorum'}
+              footRight={`${volumes} volumes`}
+            />
+            <MetricTile
+              title="Inspection"
+              href="/notifications"
+              tint="peach"
+              value={report ? (sum?.pass ?? 0) : '—'}
+              unit={report ? `of ${checks} checks passed` : 'not run yet'}
+              loading={inspection.isLoading}
+              viz={report ? <GaugeViz fraction={checks ? (sum?.pass ?? 0) / checks : 0} color="var(--status-warn)" /> : undefined}
+              footLeft={report ? `${problems} to look at` : undefined}
+              footRight={
+                report?.finishedAtUnixMs
+                  ? new Date(Number(report.finishedAtUnixMs)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+                  : undefined
+              }
+            />
+            <MetricTile
+              title="Pools"
+              href="/pools"
+              value={poolList.length}
+              unit={total > 0 ? `${capacity(total)} in all` : 'storage pools'}
+              loading={pools.isLoading}
+              viz={poolFill.length ? <BarsViz values={poolFill} highlight={fullest} /> : undefined}
+              footLeft={fullest >= 0 ? 'Fullest pool' : undefined}
+              footRight={fullest >= 0 ? `${Math.round(poolFill[fullest] * 100)}%` : undefined}
+            />
+            <MetricTile
+              title="Gateways"
+              href="/gateways"
+              value={gwRunning}
+              unit={gwList.length ? `of ${gwList.length} serving` : 'no gateways'}
+              loading={gateways.isLoading}
+              footLeft={gwStopped.length ? `${gwStopped.length} stopped` : gwTypes.join(' · ') || undefined}
+            />
+            <MetricTile
+              title="Events today"
+              href="/notifications"
+              tint="rose"
+              value={todays.length}
+              unit="since midnight"
+              loading={events.isLoading}
+              viz={<BarsViz values={perHour.map((c) => c / peak)} highlight={new Date(now).getHours()} />}
+              footLeft={critical ? `${critical} critical` : warnings ? `${warnings} warnings` : 'No warnings'}
+            />
+            <MetricTile
+              title="Snapshots"
+              href="/resources"
+              value={schedList.length}
+              unit={`schedule${schedList.length === 1 ? '' : 's'}`}
+              loading={schedules.isLoading}
+              footLeft={
+                <span className="flex items-center gap-2">
+                  <span className="relative h-1.5 w-24 overflow-hidden rounded-full bg-secondary">
+                    <span
+                      className="absolute inset-y-0 left-0 rounded-full bg-status-ok"
+                      style={{ width: `${resList.length ? (covered / resList.length) * 100 : 0}%` }}
                     />
-                  );
-                })}
-              </RecordCards>
+                  </span>
+                  {covered}/{resList.length}
+                </span>
+              }
+              footRight={
+                nextRun ? `next ${new Date(nextRun).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}` : undefined
+              }
+            />
+          </div>
 
-              <div className="hidden md:block">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <StatusTickHead />
-                      <TableHead>Node</TableHead>
-                      <TableHead>Address</TableHead>
-                      <TableHead>State</TableHead>
-                      <TableHead className="pr-5 text-right">
-                        Last seen
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {nodes?.nodes.map((node) => {
-                      return (
-                        <TableRow key={node.name}>
-                          <StatusTickCell status={node.state} />
-                          <TableCell>
-                            <div className="flex items-baseline gap-1.5">
-                              <span className="font-mono font-medium">
-                                {node.name}
-                              </span>
-                              <span className="text-[11.5px] text-muted-foreground">
-                                {node.hostname}
-                              </span>
-                              {node.name === activeNodeName ? <ControllerChip /> : null}
-                            </div>
-                          </TableCell>
-                          <TableCell className="font-mono tabular-nums">
-                            {node.address}
-                          </TableCell>
-                          <TableCell>
-                            <StatusBadge status={node.state} />
-                          </TableCell>
-                          <TableCell className="pr-5 text-right font-mono tabular-nums text-muted-foreground">
-                            {lastSeenLabel(node.lastSeen)}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            </>
-          )}
-        </Card>
+          {/* Side by side wherever the column is wide: below xl it is the
+              page's full width, at 2xl the wider of the two columns. */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 xl:grid-cols-1 2xl:grid-cols-12">
+            <div className="lg:col-span-7 xl:col-span-1 2xl:col-span-7">
+              <TodayTimeline now={now} events={evList} schedules={schedList} inspection={report} />
+            </div>
+            <div className="lg:col-span-5 xl:col-span-1 2xl:col-span-5">
+              <Insights now={now} report={report} events={evList} loading={inspection.isLoading} />
+            </div>
+          </div>
+        </div>
       </div>
     </div>
-  );
-}
-
-/**
- * What just happened to the cluster, read back from the controller's bounded
- * in-memory history. The SSE stream in services/events.ts is the live tail of
- * the same bus — this is how a page that was not open at the time still shows
- * the failover that woke someone up.
- */
-function RecentEvents() {
-  const { data, isLoading, isError } = useQuery({
-    queryKey: PAGE_QUERY_KEYS.events,
-    queryFn: () => api.listEvents({ limit: 4 }),
-  });
-
-  // The controller returns oldest first; newest belongs at the top of a card
-  // this short.
-  const events: ClusterEvent[] = [...(data?.events ?? [])].reverse();
-
-  return (
-    <Card className="gap-4 py-[18px] lg:col-span-2">
-      <CardHeader className="flex flex-row items-center justify-between px-5">
-        <CardTitle>Recent events</CardTitle>
-        <Link to="/notifications" className="text-[12.5px] text-primary hover:underline">
-          All events
-        </Link>
-      </CardHeader>
-      <CardContent className="px-5">
-        {isLoading ? (
-          <div className="space-y-3">
-            <Skeleton className="h-9 w-full" />
-            <Skeleton className="h-9 w-full" />
-            <Skeleton className="h-9 w-full" />
-          </div>
-        ) : isError ? (
-          <p className="text-sm text-muted-foreground">Could not read the event history.</p>
-        ) : events.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            Nothing yet — the controller has published no events since it started.
-          </p>
-        ) : (
-          <EventRows events={events} />
-        )}
-      </CardContent>
-    </Card>
   );
 }

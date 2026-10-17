@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Outlet, Link, useLocation } from 'react-router';
+import { Outlet, Link, useLocation, useNavigate } from 'react-router';
 import { useIsFetching, useQuery } from '@tanstack/react-query';
 import {
   LayoutDashboard,
@@ -19,8 +19,10 @@ import {
   Activity,
   Monitor,
   Cpu,
+  Search,
+  ChevronRight,
 } from 'lucide-react';
-import { AI_ENABLED } from '@/features';
+import { AI_ENABLED, HAIFY_VERSION } from '@/features';
 import { cn } from '@/lib/utils';
 import { api } from '@/services/api';
 import { isPveManaged } from '@/pages/proxmox/pve';
@@ -105,17 +107,18 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       { name: 'Notifications', href: '/notifications', icon: BellRing },
       { name: 'Access', href: '/access', icon: Lock },
       { name: 'Logs', href: '/logs', icon: ScrollText },
-      // Settings holds only the Copilot's model.
-      ...(AI_ENABLED ? [{ name: 'Settings', href: '/settings', icon: SlidersHorizontal }] : []),
     ],
   },
 ];
 
+// Settings holds only the Copilot's model, so it sits with the Copilot under
+// Tools rather than among the cluster's pages.
+const settingsItem: NavItem = { name: 'Settings', href: '/settings', icon: SlidersHorizontal };
+
 // Flat view of the same data, for the current-section lookup below. Sorted
 // deepest-path-first once at module load rather than on every render: the
 // lookup wants the most specific match, and the input is a constant.
-const navByDepth = navGroups
-  .flatMap((g) => g.items)
+const navByDepth = [...navGroups.flatMap((g) => g.items), ...(AI_ENABLED ? [settingsItem] : [])]
   .sort((a, b) => b.href.length - a.href.length);
 
 // SidebarContent is the shared nav body, rendered both in the static desktop
@@ -170,6 +173,8 @@ function SidebarContent({
         )}
       </div>
 
+      {!collapsed && <SidebarSearch onNavigate={onNavigate} />}
+
       {/* `overflow-y: auto` forces `overflow-x: auto` too, which would shave
           the active pill's 1px outward ring on both sides. The px/-mx pair
           gives the ring the pixel it needs without moving anything. */}
@@ -198,9 +203,7 @@ function SidebarContent({
                       'flex h-[34px] items-center gap-2.5 rounded-md text-[13.5px] transition-colors',
                       collapsed ? 'justify-center px-0' : 'px-2.5',
                       isActive
-                        ? // A white pill lifted off the paper — no left accent
-                          // bar, the elevation alone is the selection.
-                          'bg-sidebar-accent font-semibold text-foreground shadow-[0_1px_2px_var(--sidebar-pill-shadow),0_0_0_1px_var(--sidebar-border)]'
+                        ? 'bg-sidebar-accent font-medium text-foreground'
                         : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
                     )}
                   >
@@ -217,61 +220,128 @@ function SidebarContent({
             </div>
           </div>
         ))}
+        {AI_ENABLED && (
+          <div>
+            {!collapsed && <div className="eyebrow px-2.5 pb-2">Tools</div>}
+            <div className="flex flex-col gap-0.5">
+              <button
+                type="button"
+                onClick={onToggleCopilot}
+                aria-pressed={aiOpen}
+                aria-label="Copilot"
+                title={collapsed ? 'Copilot' : undefined}
+                className={cn(
+                  'flex h-[34px] items-center gap-2.5 rounded-md text-[13.5px] transition-colors',
+                  collapsed ? 'justify-center px-0' : 'px-2.5',
+                  aiOpen
+                    ? 'bg-sidebar-accent font-medium text-foreground'
+                    : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
+                )}
+              >
+                <Sparkles className={cn('size-[17px] shrink-0', aiOpen && 'text-primary')} />
+                {!collapsed && 'Ask Copilot'}
+              </button>
+              <Link
+                to={settingsItem.href}
+                onClick={onNavigate}
+                title={collapsed ? settingsItem.name : undefined}
+                aria-label={collapsed ? settingsItem.name : undefined}
+                className={cn(
+                  'flex h-[34px] items-center gap-2.5 rounded-md text-[13.5px] transition-colors',
+                  collapsed ? 'justify-center px-0' : 'px-2.5',
+                  pathname.startsWith(settingsItem.href)
+                    ? 'bg-sidebar-accent font-medium text-foreground'
+                    : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
+                )}
+              >
+                <SlidersHorizontal className="size-[17px] shrink-0" />
+                {!collapsed && settingsItem.name}
+              </Link>
+            </div>
+          </div>
+        )}
       </nav>
 
       {/* No `mt-auto`: the sibling <nav> already carries `flex-1` in this
-          flex-col and pushes the footer down. One mechanism, not two. */}
-      <div className="flex flex-col gap-2.5 pt-4">
-        {AI_ENABLED &&
-          (collapsed ? (
-          // All three Copilot toggles (here, the expanded card below, and the
-          // header button) answer to the same name, so a screen-reader or
-          // voice-control user has one word for one control.
-          <button
-            type="button"
-            onClick={onToggleCopilot}
-            aria-pressed={aiOpen}
-            aria-label="Copilot"
-            title="Copilot"
-            className={cn(
-              'flex h-9 items-center justify-center rounded-md transition-colors',
-              aiOpen
-                ? 'bg-accent text-accent-foreground'
-                : 'text-muted-foreground hover:bg-sidebar-accent hover:text-foreground',
-            )}
-          >
-            <Sparkles className="size-[17px]" />
-          </button>
+          flex-col and pushes the footer down. */}
+      <div className="pt-4">
+        {collapsed ? (
+          <div className="text-center font-mono text-[10px] text-muted-foreground">{HAIFY_VERSION.split('-')[0]}</div>
         ) : (
-          <button
-            type="button"
-            onClick={onToggleCopilot}
-            aria-pressed={aiOpen}
-            aria-label="Copilot"
-            className={cn(
-              'rounded-lg border bg-card p-3 text-left transition-colors',
-              aiOpen ? 'border-primary/50' : 'border-border hover:border-ring/40',
-            )}
-          >
-            <span className="flex items-center gap-2 text-[13px] font-semibold">
-              <Sparkles className="size-4 shrink-0 text-primary" />
-              Copilot
-            </span>
-            <span className="mt-1.5 block text-[12px] leading-snug text-muted-foreground">
-              Ask about pools, quorum or a failover.
-            </span>
-          </button>
-        ))}
-        <span
-          className={cn(
-            'font-mono text-[11px] text-muted-foreground',
-            collapsed ? 'text-center' : 'px-2.5',
-          )}
-        >
-          {collapsed ? 'v1.8' : 'v1.8.1'}
-        </span>
+          <ControlPlaneCard onNavigate={onNavigate} />
+        )}
       </div>
     </div>
+  );
+}
+
+// Where the controller runs, the one fact about the cluster worth keeping on
+// every page, and the release this UI belongs to.
+function ControlPlaneCard({ onNavigate }: { onNavigate?: () => void }) {
+  const { data: ha } = useQuery({ queryKey: ['selfha'], queryFn: () => api.getSelfHaStatus() });
+  const { data: nodes } = useQuery({ queryKey: ['nodes'], queryFn: () => api.getNodes() });
+  const active = ha?.activeNode
+    ? (nodes?.nodes.find((n) => n.address === ha.activeNode)?.name ?? ha.activeNode)
+    : '';
+  const line = !ha ? '' : !ha.enabled ? 'Standalone controller' : active ? `Control plane on ${active}` : 'Control plane moving';
+  return (
+    <Link
+      to="/ha"
+      onClick={onNavigate}
+      className="flex items-center gap-2.5 rounded-xl border border-sidebar-border bg-card p-2.5 transition-colors hover:border-ring/40"
+    >
+      <HaifyMark className="size-7" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12.5px] font-semibold">{line || 'Haify'}</span>
+        <span className="block truncate font-mono text-[11px] text-muted-foreground">{HAIFY_VERSION}</span>
+      </span>
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+    </Link>
+  );
+}
+
+// Jumps to the Resources page filtered by what was typed; ⌘K or Ctrl+K from
+// anywhere puts the cursor here.
+function SidebarSearch({ onNavigate }: { onNavigate?: () => void }) {
+  const navigate = useNavigate();
+  const ref = useRef<HTMLInputElement>(null);
+  const [q, setQ] = useState('');
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        ref.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  return (
+    <form
+      className="mb-4 px-0.5"
+      role="search"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const term = q.trim();
+        navigate(term ? `/resources?q=${encodeURIComponent(term)}` : '/resources');
+        setQ('');
+        ref.current?.blur();
+        onNavigate?.();
+      }}
+    >
+      <label className="flex h-9 items-center gap-2 rounded-lg border border-sidebar-border bg-card px-2.5 text-muted-foreground focus-within:border-ring/50">
+        <Search className="size-4 shrink-0" />
+        <input
+          ref={ref}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search resources"
+          aria-label="Search resources"
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+        />
+        <kbd className="rounded border border-sidebar-border px-1 font-sans text-[10.5px]">⌘K</kbd>
+      </label>
+    </form>
   );
 }
 

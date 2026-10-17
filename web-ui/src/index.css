@@ -5,10 +5,10 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --radius: 0.625rem;
+  --radius: 0.75rem;
   /* Warm paper, not white: a console read for hours should not glare. One
      deep-blue accent carries every affordance; everything else is ink. */
-  --background: oklch(0.977 0.004 85);
+  --background: oklch(0.968 0.003 90);
   --foreground: oklch(0.22 0.012 260);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.22 0.012 260);
@@ -37,12 +37,12 @@
   --chart-4: oklch(0.7 0.01 260);
   --chart-5: oklch(0.85 0.01 260);
   /* The sidebar is the same paper as the page — only the border separates them. */
-  --sidebar: oklch(0.977 0.004 85);
+  --sidebar: oklch(0.99 0.002 90);
   --sidebar-foreground: oklch(0.22 0.012 260);
   --sidebar-primary: oklch(0.46 0.115 255);
   --sidebar-primary-foreground: oklch(0.99 0 0);
   /* White, because the active nav pill lifts off the paper instead of tinting it. */
-  --sidebar-accent: oklch(1 0 0);
+  --sidebar-accent: oklch(0.948 0.004 90);
   --sidebar-accent-foreground: oklch(0.22 0.012 260);
   --sidebar-border: oklch(0.925 0.006 85);
   --sidebar-ring: oklch(0.46 0.115 255);
@@ -74,6 +74,15 @@
   --status-warn-soft: oklch(0.944 0.027 84);
   --status-bad-soft: oklch(0.922 0.023 27);
   --status-idle-soft: oklch(0.954 0.003 87);
+
+  /* Dashboard tiles: one pastel each, washed from a corner into the card. */
+  --tile-mint: oklch(0.9 0.075 162);
+  --tile-peach: oklch(0.91 0.075 62);
+  --tile-rose: oklch(0.93 0.04 18);
+  --tile-lilac: oklch(0.92 0.05 285);
+  --tile-sky: oklch(0.92 0.05 232);
+  --hero-glow: oklch(0.9 0.012 250);
+  --tile-shadow: oklch(0.3 0.02 260 / 0.05);
 }
 
 .dark {
@@ -129,6 +138,14 @@
   --status-warn-soft: oklch(0.255 0.019 79);
   --status-bad-soft: oklch(0.235 0.027 12);
   --status-idle-soft: oklch(0.215 0.008 260);
+
+  --tile-mint: oklch(0.36 0.07 162);
+  --tile-peach: oklch(0.38 0.07 62);
+  --tile-rose: oklch(0.34 0.05 18);
+  --tile-lilac: oklch(0.35 0.06 285);
+  --tile-sky: oklch(0.35 0.06 232);
+  --hero-glow: oklch(0.3 0.015 250);
+  --tile-shadow: oklch(0 0 0 / 0.25);
 }
 
 @theme inline {
@@ -239,6 +256,46 @@
 
   /* The small uppercase label above a section, a column or a metric. One rule
      rather than five classes repeated, because it appears on every page. */
+  /* A dashboard tile: a white card, or one washed with a pastel from a corner. */
+  .tile {
+    position: relative;
+    overflow: hidden;
+    border-radius: 18px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    box-shadow: 0 1px 2px var(--tile-shadow), 0 8px 24px -16px var(--tile-shadow);
+  }
+  .tile-mint {
+    background: radial-gradient(130% 115% at 0% 0%, var(--tile-mint) 0%, transparent 64%), var(--card);
+  }
+  .tile-peach {
+    background: radial-gradient(130% 115% at 100% 100%, var(--tile-peach) 0%, transparent 66%), var(--card);
+  }
+  .tile-rose {
+    background: radial-gradient(120% 110% at 100% 0%, var(--tile-rose) 0%, transparent 62%), var(--card);
+  }
+  .tile-lilac {
+    background: radial-gradient(120% 110% at 0% 100%, var(--tile-lilac) 0%, transparent 62%), var(--card);
+  }
+  .tile-sky {
+    background: radial-gradient(120% 110% at 100% 100%, var(--tile-sky) 0%, transparent 62%), var(--card);
+  }
+
+  /* Replication on the dashboard's drawing: dots moving along the link. */
+  @keyframes hero-flow {
+    to {
+      stroke-dashoffset: -24;
+    }
+  }
+  .hero-flow {
+    animation: hero-flow 1.4s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero-flow {
+      animation: none;
+    }
+  }
+
   .eyebrow {
     font-size: 11px;
     letter-spacing: 0.07em;

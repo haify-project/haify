@@ -1,4 +1,16 @@
+import { execSync } from 'node:child_process';
 import { defineConfig } from '@rsbuild/core';
+
+// HAIFY_VERSION when the build sets it, else the checkout's own tag; a
+// tarball without git history says "dev".
+function haifyVersion(): string {
+  if (process.env.HAIFY_VERSION) return process.env.HAIFY_VERSION;
+  try {
+    return execSync('git describe --tags --always', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return 'dev';
+  }
+}
 import { pluginReact } from '@rsbuild/plugin-react';
 import http from 'node:http';
 
@@ -31,6 +43,8 @@ export default defineConfig({
     // A literal false lets the bundler drop its code, not just hide it.
     define: {
       __HAIFY_AI__: JSON.stringify(process.env.HAIFY_AI === '1'),
+      // The release this UI is part of, as `git describe` names it.
+      __HAIFY_VERSION__: JSON.stringify(haifyVersion()),
     },
   },
   output: {
