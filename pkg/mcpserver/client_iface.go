@@ -46,6 +46,7 @@ type ControllerClient interface {
 	SetDualPrimary(ctx context.Context, resource string, enable bool) error
 	AddVolume(ctx context.Context, resource, volume, pool string, sizeGB uint32) error
 	UpdateResourceOptions(ctx context.Context, resource string, options map[string]string) error
+	GetResourceOptions(ctx context.Context, resource string) ([]*haifypb.ResourceOption, error)
 	RemoveVolume(ctx context.Context, resource string, volumeID uint32) error
 	ResizeVolume(ctx context.Context, resource string, volumeID uint32, sizeGB uint32) error
 	CreateFilesystem(ctx context.Context, resource string, volumeID uint32, node, fstype string) error

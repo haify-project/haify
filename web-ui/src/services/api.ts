@@ -26,6 +26,8 @@ export type {
   WANMetrics,
   NodeResourceState,
   ResourcesResponse,
+  ResourceOption,
+  ResourceOptionsResponse,
 } from './api/resources';
 export type { ResourceProfile, ResourceProfilesResponse } from './api/profiles';
 export type {

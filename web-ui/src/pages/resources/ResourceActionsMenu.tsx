@@ -69,7 +69,7 @@ export function ResourceActionsMenu({
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onSelect('options')}>
           <SlidersHorizontal className="h-4 w-4" />
-          Edit DRBD Options
+          Edit DRBD options
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onSelect('schedule')}>
           <CalendarClock className="h-4 w-4" />

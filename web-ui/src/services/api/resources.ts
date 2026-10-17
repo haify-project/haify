@@ -23,6 +23,17 @@ export interface Resource {
   drNode?: string;
 }
 
+/** A DRBD option a resource's config sets; a shared-secret comes without its value. */
+export interface ResourceOption {
+  key: string;
+  value?: string;
+  secret?: boolean;
+}
+
+export interface ResourceOptionsResponse extends ApiResponse {
+  options?: ResourceOption[];
+}
+
 export interface Volume {
   volumeId: number;
   device: string;
@@ -173,6 +184,8 @@ export const resourcesApi = (request: RequestFn) => ({
   resourceStatus: (name: string) =>
     request<ApiResponse & { status: ResourceStatus }>(`/resources/${name}/status`),
 
+  getResourceOptions: (name: string) =>
+    request<ResourceOptionsResponse>(`/resources/${encodeURIComponent(name)}/options`),
   updateResourceOptions: (name: string, options: Record<string, string>) =>
     request<ApiResponse>(
       `/resources/${encodeURIComponent(name)}/options`,

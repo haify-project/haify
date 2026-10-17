@@ -65,6 +65,7 @@ const (
 	HaifyController_RenameResource_FullMethodName            = "/v1.HaifyController/RenameResource"
 	HaifyController_ResizeVolume_FullMethodName              = "/v1.HaifyController/ResizeVolume"
 	HaifyController_UpdateResourceOptions_FullMethodName     = "/v1.HaifyController/UpdateResourceOptions"
+	HaifyController_GetResourceOptions_FullMethodName        = "/v1.HaifyController/GetResourceOptions"
 	HaifyController_RepairResource_FullMethodName            = "/v1.HaifyController/RepairResource"
 	HaifyController_ResourceStatus_FullMethodName            = "/v1.HaifyController/ResourceStatus"
 	HaifyController_SetPrimary_FullMethodName                = "/v1.HaifyController/SetPrimary"
@@ -287,6 +288,9 @@ type HaifyControllerClient interface {
 	RenameResource(ctx context.Context, in *RenameResourceRequest, opts ...grpc.CallOption) (*RenameResourceResponse, error)
 	ResizeVolume(ctx context.Context, in *ResizeVolumeRequest, opts ...grpc.CallOption) (*ResizeVolumeResponse, error)
 	UpdateResourceOptions(ctx context.Context, in *UpdateResourceOptionsRequest, opts ...grpc.CallOption) (*UpdateResourceOptionsResponse, error)
+	// The DRBD options a resource's config sets, as "section/key" and value.
+	// A shared-secret is reported as set, without its value.
+	GetResourceOptions(ctx context.Context, in *GetResourceOptionsRequest, opts ...grpc.CallOption) (*GetResourceOptionsResponse, error)
 	// Brings every participant's copy of a resource's DRBD config back into
 	// agreement, tiebreakers and diskless clients included, and applies it.
 	RepairResource(ctx context.Context, in *RepairResourceRequest, opts ...grpc.CallOption) (*RepairResourceResponse, error)
@@ -1051,6 +1055,16 @@ func (c *haifyControllerClient) UpdateResourceOptions(ctx context.Context, in *U
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UpdateResourceOptionsResponse)
 	err := c.cc.Invoke(ctx, HaifyController_UpdateResourceOptions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) GetResourceOptions(ctx context.Context, in *GetResourceOptionsRequest, opts ...grpc.CallOption) (*GetResourceOptionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetResourceOptionsResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetResourceOptions_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2591,6 +2605,9 @@ type HaifyControllerServer interface {
 	RenameResource(context.Context, *RenameResourceRequest) (*RenameResourceResponse, error)
 	ResizeVolume(context.Context, *ResizeVolumeRequest) (*ResizeVolumeResponse, error)
 	UpdateResourceOptions(context.Context, *UpdateResourceOptionsRequest) (*UpdateResourceOptionsResponse, error)
+	// The DRBD options a resource's config sets, as "section/key" and value.
+	// A shared-secret is reported as set, without its value.
+	GetResourceOptions(context.Context, *GetResourceOptionsRequest) (*GetResourceOptionsResponse, error)
 	// Brings every participant's copy of a resource's DRBD config back into
 	// agreement, tiebreakers and diskless clients included, and applies it.
 	RepairResource(context.Context, *RepairResourceRequest) (*RepairResourceResponse, error)
@@ -3038,6 +3055,9 @@ func (UnimplementedHaifyControllerServer) ResizeVolume(context.Context, *ResizeV
 }
 func (UnimplementedHaifyControllerServer) UpdateResourceOptions(context.Context, *UpdateResourceOptionsRequest) (*UpdateResourceOptionsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UpdateResourceOptions not implemented")
+}
+func (UnimplementedHaifyControllerServer) GetResourceOptions(context.Context, *GetResourceOptionsRequest) (*GetResourceOptionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetResourceOptions not implemented")
 }
 func (UnimplementedHaifyControllerServer) RepairResource(context.Context, *RepairResourceRequest) (*RepairResourceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RepairResource not implemented")
@@ -4319,6 +4339,24 @@ func _HaifyController_UpdateResourceOptions_Handler(srv interface{}, ctx context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HaifyControllerServer).UpdateResourceOptions(ctx, req.(*UpdateResourceOptionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_GetResourceOptions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetResourceOptionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetResourceOptions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetResourceOptions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetResourceOptions(ctx, req.(*GetResourceOptionsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -7116,6 +7154,10 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UpdateResourceOptions",
 			Handler:    _HaifyController_UpdateResourceOptions_Handler,
+		},
+		{
+			MethodName: "GetResourceOptions",
+			Handler:    _HaifyController_GetResourceOptions_Handler,
 		},
 		{
 			MethodName: "RepairResource",

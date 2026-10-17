@@ -20,7 +20,17 @@ type volumeAddIn struct {
 
 type resourceSetOptionsIn struct {
 	Resource string            `json:"resource" jsonschema:"DRBD resource name"`
-	Options  map[string]string `json:"options" jsonschema:"DRBD options as section/key -> value (e.g. net/max-buffers: 8000, on-no-quorum: suspend-io, disk/on-io-error: detach); a bare key defaults to the resource-level options section"`
+	Options  map[string]string `json:"options" jsonschema:"DRBD options as section/key -> value (e.g. net/max-buffers: 8000, on-no-quorum: suspend-io, disk/on-io-error: detach); a bare key defaults to the resource-level options section; an empty value removes the key"`
+}
+
+type resourceOptionOut struct {
+	Key    string `json:"key"`
+	Value  string `json:"value,omitempty"`
+	Secret bool   `json:"secret,omitempty"`
+}
+
+type resourceGetOptionsOut struct {
+	Options []resourceOptionOut `json:"options"`
 }
 
 type volumeRemoveIn struct {
@@ -73,7 +83,10 @@ func (s *Server) registerResourceVolumeTools(srv *mcp.Server) {
 		"Update DRBD options on an existing resource and apply them live with "+
 			"`drbdadm adjust`, without recreating it. Options use the "+
 			"\"section/key\" form (e.g. net/max-buffers, disk/on-io-error); a bare "+
-			"key defaults to the resource-level options section."),
+			"key defaults to the resource-level options section, and an empty value "+
+			"removes a key. A node's drbdadm checks the new config first, so an "+
+			"option DRBD does not accept changes nothing; if applying fails, the "+
+			"previous config is put back."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in resourceSetOptionsIn) (*mcp.CallToolResult, opResult, error) {
 			s.logger.Debug("haify_resource_set_options: setting options", zap.String("resource", in.Resource),
 				zap.Array("option_keys", keysOf(in.Options)))
@@ -87,6 +100,26 @@ func (s *Server) registerResourceVolumeTools(srv *mcp.Server) {
 			}
 			s.logger.Debug("haify_resource_set_options: applied", zap.String("resource", in.Resource), zap.Int("count", len(in.Options)))
 			return nil, ok(fmt.Sprintf("applied %d option(s) to resource %s and adjusted", len(in.Options), in.Resource)), nil
+		})
+
+	addRead(s, srv, readOnlyTool("haify_resource_get_options", "Show DRBD options",
+		"List the DRBD options a resource's config sets, as section/key and value. A shared-secret is "+
+			"reported as set, without its value."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
+			Resource string `json:"resource" jsonschema:"DRBD resource name"`
+		}) (*mcp.CallToolResult, resourceGetOptionsOut, error) {
+			s.logger.Debug("haify_resource_get_options: reading", zap.String("resource", in.Resource))
+			opts, err := s.client.GetResourceOptions(ctx, in.Resource)
+			if err != nil {
+				s.logger.Debug("haify_resource_get_options: failed", zap.String("resource", in.Resource), zap.Error(err))
+				return nil, resourceGetOptionsOut{}, err
+			}
+			out := resourceGetOptionsOut{Options: make([]resourceOptionOut, 0, len(opts))}
+			for _, o := range opts {
+				out.Options = append(out.Options, resourceOptionOut{Key: o.Key, Value: o.Value, Secret: o.Secret})
+			}
+			s.logger.Debug("haify_resource_get_options: read", zap.String("resource", in.Resource), zap.Int("count", len(out.Options)))
+			return nil, out, nil
 		})
 
 	addWrite(s, srv, destructiveTool("haify_resource_remove_volume", "Remove volume",

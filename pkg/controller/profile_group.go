@@ -75,6 +75,9 @@ func (rm *ResourceManager) SetProfileOptions(ctx context.Context, name string, o
 		log.Debug("SetProfileOptions: no options given")
 		return nil, nil, fmt.Errorf("no options provided")
 	}
+	if err := validateDrbdOptions(options); err != nil {
+		return nil, nil, err
+	}
 	p, err := rm.requireProfile(ctx, name)
 	if err != nil {
 		return nil, nil, err
@@ -83,6 +86,12 @@ func (rm *ResourceManager) SetProfileOptions(ctx context.Context, name string, o
 		p.DRBDOptions = map[string]string{}
 	}
 	for k, v := range options {
+		// An empty value takes the option off the profile, and off its
+		// members below.
+		if strings.TrimSpace(v) == "" {
+			delete(p.DRBDOptions, k)
+			continue
+		}
 		p.DRBDOptions[k] = v
 	}
 	start := time.Now()

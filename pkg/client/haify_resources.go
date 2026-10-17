@@ -325,6 +325,24 @@ func (c *HaifyClient) UpdateResourceOptions(ctx context.Context, resource string
 	return nil
 }
 
+// GetResourceOptions returns the DRBD options a resource's config sets. A
+// shared-secret comes back marked secret, without its value.
+func (c *HaifyClient) GetResourceOptions(ctx context.Context, resource string) ([]*haifypb.ResourceOption, error) {
+	log := zap.L()
+	log.Debug("HaifyClient.GetResourceOptions: sending request", zap.String("resource", resource))
+	resp, err := c.client.GetResourceOptions(ctx, &haifypb.GetResourceOptionsRequest{Name: resource})
+	if err != nil {
+		log.Debug("HaifyClient.GetResourceOptions: call failed", zap.Error(err))
+		return nil, err
+	}
+	if !resp.Success {
+		log.Debug("HaifyClient.GetResourceOptions: controller reported failure", zap.String("message", resp.Message))
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	log.Debug("HaifyClient.GetResourceOptions: done", zap.Int("options", len(resp.Options)))
+	return resp.Options, nil
+}
+
 // RemoveVolume removes a volume from a resource
 func (c *HaifyClient) RemoveVolume(ctx context.Context, resource string, volumeID uint32) error {
 	log := zap.L()

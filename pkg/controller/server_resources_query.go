@@ -251,3 +251,19 @@ func (s *Server) ResourceStatus(ctx context.Context, req *haifypb.ResourceStatus
 		Status:  status,
 	}, nil
 }
+
+func (s *Server) GetResourceOptions(ctx context.Context, req *haifypb.GetResourceOptionsRequest) (*haifypb.GetResourceOptionsResponse, error) {
+	log := s.serverLog()
+	log.Debug("GetResourceOptions: reading", zap.String("resource", req.Name))
+	opts, err := s.resources.GetOptions(ctx, req.Name)
+	if err != nil {
+		log.Debug("GetResourceOptions: failed", zap.String("resource", req.Name), zap.Error(err))
+		return &haifypb.GetResourceOptionsResponse{Success: false, Message: err.Error()}, nil
+	}
+	out := make([]*haifypb.ResourceOption, 0, len(opts))
+	for _, o := range opts {
+		out = append(out, &haifypb.ResourceOption{Key: o.Key, Value: o.Value, Secret: o.Secret})
+	}
+	log.Debug("GetResourceOptions: read", zap.String("resource", req.Name), zap.Int("options", len(out)))
+	return &haifypb.GetResourceOptionsResponse{Success: true, Options: out}, nil
+}

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,7 +14,12 @@ import (
 // shared .res config in place — preserving volumes and node sections — and runs
 // `drbdadm adjust` so the changes take effect without recreating the resource.
 // Keys use the "section/key" form (e.g. "net/max-buffers", "disk/on-io-error");
-// a bare key defaults to the resource-level "options" section.
+// a bare key defaults to the resource-level "options" section, and an empty
+// value removes the key.
+//
+// The new config is parsed by a node's drbdadm before any node gets it, and
+// when applying it fails on a node the previous config is put back everywhere,
+// so a rejected option never stays behind for the next adjust to trip over.
 func (rm *ResourceManager) SetOptions(ctx context.Context, resource string, options map[string]string) error {
 	log := rm.resourcesLog()
 	log.Debug("SetOptions: start", zap.String("resource", resource), zap.Int("count", len(options)))
@@ -21,21 +27,59 @@ func (rm *ResourceManager) SetOptions(ctx context.Context, resource string, opti
 		log.Debug("SetOptions: no options", zap.String("resource", resource))
 		return fmt.Errorf("no options provided")
 	}
-	if err := rm.rewriteResourceConfig(ctx, resource, func(current string) (string, error) {
+	if err := validateDrbdOptions(options); err != nil {
+		return err
+	}
+	var previous string
+	err := rm.rewriteResourceConfig(ctx, resource, func(current string) (string, error) {
 		updated, err := applyDrbdOptions(current, options)
 		if err != nil {
 			log.Debug("SetOptions: options do not apply", zap.String("resource", resource), zap.Error(err))
 			return "", fmt.Errorf("failed to apply options: %w", err)
 		}
+		if err := rm.checkDrbdConfig(ctx, resource, updated); err != nil {
+			return "", err
+		}
+		previous = current
 		return updated, nil
-	}); err != nil {
-		log.Debug("SetOptions: rewrite failed", zap.String("resource", resource), zap.Error(err))
-		return err
+	})
+	if err != nil && previous != "" {
+		// The new config reached the nodes and did not apply on one of them.
+		log.Debug("SetOptions: applying failed, restoring the previous config", zap.String("resource", resource), zap.Error(err))
+		rerr := rm.rewriteResourceConfig(ctx, resource, func(string) (string, error) { return previous, nil })
+		log.Debug("SetOptions: restore done", zap.String("resource", resource), zap.Error(rerr))
+		if rerr != nil {
+			err = fmt.Errorf("%w; putting the previous config back also failed: %v", err, rerr)
+		} else {
+			err = fmt.Errorf("%w; the previous config is back in place", err)
+		}
+	}
+	if err != nil {
+		log.Debug("SetOptions: failed", zap.String("resource", resource), zap.Error(err))
+		return redactOptionSecrets(err, options)
 	}
 	rm.controller.logger.Info("Updated DRBD options",
 		zap.String("resource", resource),
 		zap.Strings("options", optionKeys(options)))
 	return nil
+}
+
+// redactOptionSecrets keeps a secret given as an option out of an error, which
+// is shown to the caller and logged: drbdadm quotes the value it rejects.
+func redactOptionSecrets(err error, options map[string]string) error {
+	msg := err.Error()
+	changed := false
+	for k, v := range options {
+		section, key := splitOptionKey(k)
+		if v = strings.TrimSpace(v); v != "" && secretOptions[section+"/"+key] && strings.Contains(msg, v) {
+			msg = strings.ReplaceAll(msg, v, "********")
+			changed = true
+		}
+	}
+	if !changed {
+		return err
+	}
+	return errors.New(msg)
 }
 
 // RepairResourceConfig brings every participant's copy of a resource's config

@@ -27,6 +27,10 @@ func (rm *ResourceManager) CreateResourceWithVolumesMetadata(ctx context.Context
 		log.Debug("CreateResourceWithVolumesMetadata: no volumes", zap.String("resource", name))
 		return fmt.Errorf("at least one volume is required")
 	}
+	if err := validateDrbdOptions(drbdOptions); err != nil {
+		log.Debug("CreateResourceWithVolumesMetadata: options rejected", zap.String("resource", name), zap.Error(err))
+		return err
+	}
 
 	if storageType == "" {
 		storageType = "lvm"

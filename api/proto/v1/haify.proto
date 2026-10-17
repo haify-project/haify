@@ -171,6 +171,11 @@ service HaifyController {
   rpc UpdateResourceOptions(UpdateResourceOptionsRequest) returns (UpdateResourceOptionsResponse) {
     option (google.api.http) = { post: "/v1/resources/{name}/options"; body: "*"; };
   }
+  // The DRBD options a resource's config sets, as "section/key" and value.
+  // A shared-secret is reported as set, without its value.
+  rpc GetResourceOptions(GetResourceOptionsRequest) returns (GetResourceOptionsResponse) {
+    option (google.api.http) = { get: "/v1/resources/{name}/options"; };
+  }
   // Brings every participant's copy of a resource's DRBD config back into
   // agreement, tiebreakers and diskless clients included, and applies it.
   rpc RepairResource(RepairResourceRequest) returns (RepairResourceResponse) {
@@ -1468,13 +1473,32 @@ message UpdateResourceOptionsRequest {
   string name = 1;
   // DRBD options as "section/key" -> value (e.g. "net/max-buffers" -> "8000",
   // "on-no-quorum" -> "suspend-io"). Keys without a section default to the
-  // resource-level "options" section.
+  // resource-level "options" section. An empty value removes the key, so
+  // DRBD's default applies again.
   map<string, string> options = 2;
 }
 
 message UpdateResourceOptionsResponse {
   bool success = 1;
   string message = 2;
+}
+
+message GetResourceOptionsRequest {
+  string name = 1;
+}
+
+message ResourceOption {
+  // "section/key", e.g. "net/max-buffers".
+  string key = 1;
+  // Empty when secret is set.
+  string value = 2;
+  bool secret = 3;
+}
+
+message GetResourceOptionsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ResourceOption options = 3;
 }
 
 message RepairResourceRequest {

@@ -256,6 +256,10 @@ func (m *mockExtraClient) UpdateResourceOptions(_ context.Context, _ string, _ m
 	return nil
 }
 
+func (m *mockExtraClient) GetResourceOptions(_ context.Context, _ string) ([]*haifypb.ResourceOption, error) {
+	return []*haifypb.ResourceOption{{Key: "net/max-buffers", Value: "8000"}, {Key: "net/shared-secret", Secret: true}}, nil
+}
+
 func (m *mockExtraClient) SetPrimary(_ context.Context, _, _ string, _ bool) error { return nil }
 
 func (m *mockExtraClient) SetSecondary(_ context.Context, _, _ string) error { return nil }
@@ -387,6 +391,15 @@ func TestMCPExtraSubTools2(t *testing.T) {
 		t.Logf("tool error: %+v", res.Content[0])
 	}
 	assert.False(t, res.IsError)
+
+	// haify_resource_get_options
+	res, err = session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "haify_resource_get_options",
+		Arguments: map[string]interface{}{"resource": "res1"},
+	})
+	require.NoError(t, err)
+	assert.False(t, res.IsError)
+	assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, "net/max-buffers")
 
 	// haify_resource_set_options
 	res, err = session.CallTool(t.Context(), &mcp.CallToolParams{

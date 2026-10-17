@@ -567,6 +567,7 @@ haify resource profile get db-tier                # settings and members
 
 # one change, every member: saved on the profile, applied to each resource
 haify resource profile set-options db-tier --drbd-options net/max-buffers=8000
+haify resource profile set-options db-tier --unset net/max-buffers   # off the profile and its members
 
 # after raising --replicas, or for a member attached with fewer copies:
 haify resource profile adjust db-tier --dry-run   # what would change
@@ -588,14 +589,34 @@ take them out first with `resource set-profile <resource> --none`.
 
 ```bash
 haify resource create --name db ... --drbd-options on-no-quorum=suspend-io
+haify resource get-options db                     # what the config sets now
 haify resource set-options db --drbd-options disk/c-max-rate=200M,net/max-buffers=8000
+haify resource set-options db --unset net/max-buffers   # back to DRBD's default
 ```
 
-Keys take the form `section/key`; a bare key goes to the resource-level
-`options` section, so `on-no-quorum` needs no prefix but a `net` or `disk`
-option does. `disk/` options go into every volume, both at creation and with
-`set-options`. `set-options` rewrites the config on every node and runs
-`drbdadm adjust`.
+Keys take the form `section/key`, the section being `options`, `net`, `disk`,
+`startup` or `handlers`; a bare key goes to the resource-level `options`
+section, so `on-no-quorum` needs no prefix but a `net` or `disk` option does.
+`disk/` options go into every volume, both at creation and with
+`set-options`. DRBD's resync settings (`resync-rate`, `c-plan-ahead`,
+`c-max-rate`, ...) are `disk/` options too. A value is one word, number or
+path, or one double-quoted string (a handler command with arguments). An
+empty value removes the key, as `--unset` does. `get-options` shows a
+`shared-secret` as `(set)`, never its value.
+
+`set-options` builds the new config and has a node's `drbdadm` parse it
+before any node gets it, so an option DRBD does not know, or a value it does
+not take, is reported with the line it is on and changes nothing. Then it
+installs the config on every node and runs `drbdadm adjust`. If the adjust
+fails on a node, the previous config is installed and adjusted again, and
+the command says so.
+
+Three options have commands of their own and are refused here:
+`auto-promote` (Haify promotes resources itself), `net/allow-two-primaries`
+(`haify resource dual-primary`) and `net/tls` (`haify resource tls`).
+
+In the web UI the same is under the resource's actions, **Edit DRBD options**:
+it lists what the config sets and sends only what you change.
 
 **Labels** on a resource (`--label app=postgres`, repeatable) are free-form tags
 shown by `resource list`; a profile can carry default labels. Change them later

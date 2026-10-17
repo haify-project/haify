@@ -30,9 +30,11 @@ func TestSetOptionsSuccessAndFailures(t *testing.T) {
 	ctrl.hostsMap["n2"] = "10.0.0.2"
 
 	require.NoError(t, ctrl.resources.SetOptions(ctx, "res1", map[string]string{"net/max-buffers": "8000"}))
-	require.Len(t, dep.distributedConfigs, 1)
-	assert.Contains(t, dep.distributedConfigs[0].content, "max-buffers 8000;")
-	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2"}, dep.distributedConfigs[0].hosts)
+	// First the copy a node's drbdadm checks, then the config itself.
+	require.Len(t, dep.distributedConfigs, 2)
+	assert.Equal(t, "/var/lib/haify/drbd-check/res1.res", dep.distributedConfigs[0].remotePath)
+	assert.Contains(t, dep.distributedConfigs[1].content, "max-buffers 8000;")
+	assert.Equal(t, []string{"10.0.0.1", "10.0.0.2"}, dep.distributedConfigs[1].hosts)
 	assert.Error(t, ctrl.resources.SetOptions(ctx, "res1", nil))
 	assert.Error(t, ctrl.resources.SetOptions(ctx, "missing", map[string]string{"a": "b"}))
 

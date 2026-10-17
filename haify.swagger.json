@@ -3799,6 +3799,35 @@
       }
     },
     "/v1/resources/{name}/options": {
+      "get": {
+        "summary": "The DRBD options a resource's config sets, as \"section/key\" and value.\nA shared-secret is reported as set, without its value.",
+        "operationId": "HaifyController_GetResourceOptions",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetResourceOptionsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      },
       "post": {
         "operationId": "HaifyController_UpdateResourceOptions",
         "responses": {
@@ -7644,7 +7673,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "DRBD options as \"section/key\" -\u003e value (e.g. \"net/max-buffers\" -\u003e \"8000\",\n\"on-no-quorum\" -\u003e \"suspend-io\"). Keys without a section default to the\nresource-level \"options\" section."
+          "description": "DRBD options as \"section/key\" -\u003e value (e.g. \"net/max-buffers\" -\u003e \"8000\",\n\"on-no-quorum\" -\u003e \"suspend-io\"). Keys without a section default to the\nresource-level \"options\" section. An empty value removes the key, so\nDRBD's default applies again."
         }
       }
     },
@@ -9956,6 +9985,24 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/v1ResourceAgentParameter"
+          }
+        }
+      }
+    },
+    "v1GetResourceOptionsResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ResourceOption"
           }
         }
       }
@@ -12463,6 +12510,22 @@
         "faultDomainRisk": {
           "type": "string",
           "description": "fault_domain_risk names the labelled fault domain(s), e.g. \"host=dell\",\nwhose loss would take every copy of the data or the quorum majority."
+        }
+      }
+    },
+    "v1ResourceOption": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "\"section/key\", e.g. \"net/max-buffers\"."
+        },
+        "value": {
+          "type": "string",
+          "description": "Empty when secret is set."
+        },
+        "secret": {
+          "type": "boolean"
         }
       }
     },

@@ -44,6 +44,7 @@ func resourceCommand() *cobra.Command {
 	cmd.AddCommand(resourceRemoveVolume())
 	cmd.AddCommand(resourceResizeVolume())
 	cmd.AddCommand(resourceSetOptions())
+	cmd.AddCommand(resourceGetOptions())
 	cmd.AddCommand(resourcePrimary())
 	cmd.AddCommand(resourceAddReplica())
 	cmd.AddCommand(resourceRemoveReplica())
@@ -102,46 +103,6 @@ func resourceRepair() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-func resourceSetOptions() *cobra.Command {
-	var options map[string]string
-	cmd := &cobra.Command{
-		Use:   "set-options <resource>",
-		Short: "Update DRBD options on a resource and apply with drbdadm adjust",
-		Long: "Update DRBD options on an existing resource and apply them with " +
-			"`drbdadm adjust`, without recreating the resource. Options use the " +
-			"\"section/key\" form (e.g. net/max-buffers=8000, disk/on-io-error=detach); " +
-			"a bare key goes to the resource-level options section.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			log := zap.L()
-			// Option values are not traced: net/shared-secret is one of them.
-			log.Debug("resourceSetOptions: running command", zap.Strings("args", args), zap.Int("options", len(options)))
-			if len(options) == 0 {
-				log.Debug("resourceSetOptions: no --drbd-options given")
-				return fmt.Errorf("at least one --drbd-options key=value is required")
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			haifyClient, err := newHaifyClient()
-			if err != nil {
-				log.Debug("resourceSetOptions: newHaifyClient failed", zap.Error(err))
-				return fmt.Errorf("failed to connect to controller: %w", err)
-			}
-			defer closeClient(haifyClient)
-			if err := haifyClient.UpdateResourceOptions(ctx, args[0], options); err != nil {
-				log.Debug("resourceSetOptions: UpdateResourceOptions failed", zap.Error(err))
-				return fmt.Errorf("failed to update options: %w", err)
-			}
-			fmt.Printf("Options applied to '%s' and adjusted: %v\n", args[0], options)
-			log.Debug("resourceSetOptions: done")
-			return nil
-		},
-	}
-	cmd.Flags().StringToStringVar(&options, "drbd-options", nil,
-		"DRBD options as section/key=value (e.g. net/max-buffers=8000,on-no-quorum=suspend-io)")
-	return cmd
 }
 
 func resourceGet() *cobra.Command {

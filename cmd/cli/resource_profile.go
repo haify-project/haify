@@ -47,17 +47,24 @@ func printMemberResults(members []*haifypb.ProfileMemberResult) {
 
 func resourceProfileSetOptions() *cobra.Command {
 	var options map[string]string
+	var unset []string
 	cmd := &cobra.Command{
 		Use:   "set-options <profile> --drbd-options key=value[,...]",
-		Short: "Set DRBD options on a profile and on every resource in it",
+		Short: "Set or remove DRBD options on a profile and on every resource in it",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log := zap.L()
 			// Option values are not traced: net/shared-secret is one of them.
 			log.Debug("resourceProfileSetOptions: running command", zap.Strings("args", args), zap.Int("options", len(options)))
+			if options == nil {
+				options = map[string]string{}
+			}
+			for _, k := range unset {
+				options[k] = ""
+			}
 			if len(options) == 0 {
-				log.Debug("resourceProfileSetOptions: no --drbd-options given")
-				return fmt.Errorf("give at least one --drbd-options key=value")
+				log.Debug("resourceProfileSetOptions: nothing given")
+				return fmt.Errorf("give at least one --drbd-options key=value or --unset key")
 			}
 			haifyClient, err := newHaifyClient()
 			if err != nil {
@@ -81,6 +88,7 @@ func resourceProfileSetOptions() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringToStringVar(&options, "drbd-options", nil, "DRBD options as key=value pairs (e.g., net/max-buffers=8000)")
+	cmd.Flags().StringSliceVar(&unset, "unset", nil, "DRBD options to remove from the profile and its resources, as section/key")
 	return cmd
 }
 

@@ -65,6 +65,10 @@ func (s *Server) CreateResourceProfile(ctx context.Context, req *haifypb.CreateR
 		log.Debug("CreateResourceProfile: no profile name")
 		return &haifypb.CreateResourceProfileResponse{Success: false, Message: "profile name is required"}, nil
 	}
+	if err := validateDrbdOptions(profile.DRBDOptions); err != nil {
+		log.Debug("CreateResourceProfile: options rejected", zap.String("profile", profile.Name), zap.Error(err))
+		return &haifypb.CreateResourceProfileResponse{Success: false, Message: err.Error()}, nil
+	}
 	if err := s.ctrl.db.SaveResourceProfile(ctx, profile); err != nil {
 		log.Debug("CreateResourceProfile: database write failed", zap.String("profile", profile.Name), zap.Error(err))
 		return &haifypb.CreateResourceProfileResponse{Success: false, Message: err.Error()}, nil

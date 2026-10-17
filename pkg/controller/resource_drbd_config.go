@@ -71,8 +71,12 @@ func (rm *ResourceManager) generateDrbdConfig(name string, port uint32, volumes 
 		setOption("net", "csums-alg", wanCsumsAlg)
 	}
 
-	// Process user options
+	// Process user options. An empty value removes a key (a profile records
+	// a removal that way), so it falls back to the default here.
 	for k, v := range options {
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
 		parts := strings.SplitN(k, "/", 2)
 		if len(parts) == 2 {
 			// section/key format (e.g. disk/on-io-error)

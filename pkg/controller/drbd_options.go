@@ -12,8 +12,9 @@ import (
 // "options" section; "disk/..." keys go to the disk-options sub-block of every
 // resource-level volume block, as generateDrbdConfig writes them at create
 // time. Existing keys are replaced, missing keys and missing blocks are
-// created. Volumes, on-sections and unrelated settings are preserved, so this
-// is safe to run against a live, multi-volume resource.
+// created, and a key given an empty value is removed, so DRBD's default applies
+// again. Volumes, on-sections and unrelated settings are preserved, so this is
+// safe to run against a live, multi-volume resource.
 func applyDrbdOptions(config string, raw map[string]string) (string, error) {
 	// Option values are not traced: net/shared-secret is one of them.
 	log := zap.L()
@@ -49,9 +50,14 @@ func applyDrbdOptions(config string, raw map[string]string) (string, error) {
 				paths = append(paths, []string{vol, "disk"})
 			}
 		}
+		value := strings.TrimSpace(v)
 		for _, path := range paths {
 			var err error
-			lines, err = setOptionAtPath(lines, path, key, strings.TrimSpace(v))
+			if value == "" {
+				lines, err = removeOptionAtPath(lines, path, key)
+			} else {
+				lines, err = setOptionAtPath(lines, path, key, value)
+			}
 			if err != nil {
 				log.Debug("applyDrbdOptions: setting option failed", zap.Strings("path", path), zap.String("key", key), zap.Error(err))
 				return "", err
@@ -222,4 +228,38 @@ func setOptionAtPath(lines []string, path []string, key, value string) ([]string
 		open, close = childOpen, childClose
 	}
 	return setKeyInBlock(lines, open, close, key, value), nil
+}
+
+// removeOptionAtPath deletes key from the block at path, if the block and the
+// key are there; a missing one is already what was asked for.
+func removeOptionAtPath(lines []string, path []string, key string) ([]string, error) {
+	open, close, err := resourceBlock(lines)
+	if err != nil {
+		zap.L().Debug("removeOptionAtPath: no resource block", zap.Strings("path", path), zap.Error(err))
+		return nil, err
+	}
+	for _, header := range path {
+		childOpen, childClose, found := findChildBlock(lines, open, close, header)
+		if !found {
+			zap.L().Debug("removeOptionAtPath: block missing, nothing to remove", zap.String("header", header))
+			return lines, nil
+		}
+		open, close = childOpen, childClose
+	}
+	depth := 0
+	for i := open + 1; i < close; i++ {
+		t := strings.TrimSpace(lines[i])
+		if depth == 0 && !strings.Contains(t, "{") {
+			if f := strings.Fields(t); len(f) >= 1 && strings.TrimSuffix(f[0], ";") == key {
+				zap.L().Debug("removeOptionAtPath: removing key", zap.String("key", key), zap.Int("line", i))
+				return append(lines[:i:i], lines[i+1:]...), nil
+			}
+		}
+		depth += braceDelta(lines[i])
+		if depth < 0 {
+			depth = 0
+		}
+	}
+	zap.L().Debug("removeOptionAtPath: key not set", zap.String("key", key))
+	return lines, nil
 }
