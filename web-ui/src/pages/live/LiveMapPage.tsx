@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { subscribeEvents, type ClusterEvent } from '@/services/events';
@@ -13,14 +13,30 @@ import { computeRates, formatRate } from '@/components/flow/rates';
 import { useReducedMotion } from '@/components/flow/motion';
 import { LIVE_META, LIVE_POLL_MS } from '@/components/flow/useLiveStatus';
 import { Legend } from '@/components/topology/NodeCard';
+import { SegmentedFilter } from '@/components/SegmentedFilter';
 import { buildClusterMap } from './clusterModel';
 import { ClusterMap } from './ClusterMap';
+import { buildResourceCard, sortCards, usersOf } from './resourceModel';
+import { ResourceTile } from './ResourceTile';
+
+type View = 'nodes' | 'resources';
 
 const LIST_POLL_MS = 10_000;
 
 export function LiveMapPage() {
   const qc = useQueryClient();
   const reduced = useReducedMotion();
+  const [params, setParams] = useSearchParams();
+  const view: View = params.get('view') === 'resources' ? 'resources' : 'nodes';
+  const setView = (v: View) =>
+    setParams(
+      (p) => {
+        if (v === 'resources') p.set('view', v);
+        else p.delete('view');
+        return p;
+      },
+      { replace: true },
+    );
 
   const nodes = useQuery({ queryKey: ['nodes'], queryFn: () => api.getNodes(), refetchInterval: LIST_POLL_MS });
   const pools = useQuery({ queryKey: ['pools'], queryFn: () => api.getPools(), refetchInterval: LIST_POLL_MS * 3 });
@@ -42,20 +58,58 @@ export function LiveMapPage() {
       meta: LIVE_META,
     })),
   });
-  const stamp = statusQueries.map((q) => q.dataUpdatedAt).join(',');
+  // When each status last changed, answered or failed: the memos below key on it.
+  const stamp = statusQueries.map((q) => `${q.dataUpdatedAt}:${q.status}`).join(',');
 
-  const map = useMemo(() => {
-    const flows = new Map<string, ResourceFlows>();
+  // What uses each resource, for the resource view.
+  const gateways = useQuery({
+    queryKey: ['gateways'],
+    queryFn: () => api.getGateways(),
+    refetchInterval: LIST_POLL_MS * 3,
+    enabled: view === 'resources',
+  });
+  const haConfigs = useQuery({
+    queryKey: ['ha'],
+    queryFn: () => api.getHaConfigs(),
+    refetchInterval: LIST_POLL_MS * 3,
+    enabled: view === 'resources',
+  });
+
+  const flows = useMemo(() => {
+    const out = new Map<string, ResourceFlows>();
     list.forEach((r, i) => {
       const q = statusQueries[i];
       const status = q?.data?.status;
       const rates = computeRates(JSON.stringify(['resource-status', r.name]), status, q?.dataUpdatedAt ?? 0);
-      flows.set(r.name, resourceFlows(r, status, rates));
+      out.set(r.name, resourceFlows(r, status, rates));
     });
-    return buildClusterMap(nodes.data?.nodes ?? [], pools.data?.pools ?? [], list, flows);
+    return out;
     // statusQueries is a new array every render; stamp says when it changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.data, pools.data, list, stamp]);
+  }, [list, stamp]);
+
+  const map = useMemo(
+    () => buildClusterMap(nodes.data?.nodes ?? [], pools.data?.pools ?? [], list, flows),
+    [nodes.data, pools.data, list, flows],
+  );
+
+  const cards = useMemo(() => {
+    if (view !== 'resources') return [];
+    const gws = gateways.data?.gateways ?? [];
+    const ha = haConfigs.data?.configs ?? [];
+    return sortCards(
+      list.map((r, i) =>
+        buildResourceCard(
+          r,
+          statusQueries[i]?.data?.status,
+          flows.get(r.name),
+          usersOf(r, gws, ha),
+          statusQueries[i]?.isPending ?? true,
+        ),
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, list, flows, stamp, gateways.data, haConfigs.data]);
 
   // The latest events: the history to start with, then the live stream.
   const recent = useQuery({ queryKey: ['events', 'live'], queryFn: () => api.listEvents({ limit: 5 }) });
@@ -118,11 +172,29 @@ export function LiveMapPage() {
 
       <Card className="gap-3 py-4">
         <CardContent className="px-4 sm:px-5">
+          <SegmentedFilter
+            aria-label="Show"
+            className="mb-3"
+            value={view}
+            onChange={setView}
+            options={[
+              { value: 'nodes', label: 'Nodes' },
+              { value: 'resources', label: 'Resources', count: list.length },
+            ]}
+          />
           <Legend
             protocol=""
             hasWAN={hasWAN}
-            hasTiebreaker={map.links.some((l) => l.kind === 'tiebreaker')}
-            hasClient={map.links.some((l) => l.kind === 'client')}
+            hasTiebreaker={
+              view === 'nodes'
+                ? map.links.some((l) => l.kind === 'tiebreaker')
+                : cards.some((c) => c.peers.some((p) => p.kind === 'tiebreaker'))
+            }
+            hasClient={
+              view === 'nodes'
+                ? map.links.some((l) => l.kind === 'client')
+                : cards.some((c) => c.centre?.kind === 'client' || c.peers.some((p) => p.kind === 'client'))
+            }
           />
           {loading ? (
             <Skeleton className="h-[320px] w-full" />
@@ -133,8 +205,21 @@ export function LiveMapPage() {
                 Go to Nodes
               </Link>
             </p>
-          ) : (
+          ) : view === 'nodes' ? (
             <ClusterMap nodes={map.nodes} links={map.links} reduced={reduced} />
+          ) : cards.length === 0 ? (
+            <p className="py-16 text-center text-[13px] text-muted-foreground">
+              No resources yet.{' '}
+              <Link to="/resources" className="font-medium text-primary hover:underline">
+                Go to Resources
+              </Link>
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {cards.map((c) => (
+                <ResourceTile key={c.name} card={c} reduced={reduced} />
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>
