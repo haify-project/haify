@@ -125,6 +125,7 @@ func (h *HealthReporter) check(ctx context.Context, pv *corev1.PersistentVolume,
 		h.log.Debug("health sweep: get resource", zap.String("pv", pv.Name), zap.Error(err))
 		return
 	}
+	h.syncClaimLabel(ctx, pv, r)
 	abnormal, msg, onlyResync := volumeHealthDetail(r)
 	current := ""
 	if abnormal {
