@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/bin/haify-opennebula --remotes "$(dirname "$0")/../.." tm cpds "$@"

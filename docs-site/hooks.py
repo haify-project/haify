@@ -24,6 +24,7 @@ EXTERNAL = {
     "deploy/proxmox/README.md": "proxmox.md",
     "deploy/libvirt/README.md": "libvirt.md",
     "deploy/openstack/README.md": "openstack.md",
+    "deploy/opennebula/README.md": "opennebula.md",
     "deploy/xcp-ng/README.md": "xcp-ng.md",
     "deploy/docker/README.md": "docker.md",
     "deploy/nomad/README.md": "nomad.md",

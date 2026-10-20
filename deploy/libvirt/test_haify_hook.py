@@ -88,6 +88,14 @@ class DiskParsing(HookTest):
         xml = domain("/dev/drbd/by-res/a/0", "/dev/sda", "/dev/drbd/by-res/a/1", "/dev/drbd/by-res/b/0", "/dev/drbd0")
         self.assertEqual(hook.haify_disks(xml), ["a", "b"])
 
+    def test_a_link_to_a_haify_disk_is_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            link = os.path.join(d, "disk.0")
+            os.symlink("/dev/drbd/by-res/one-img-3/0", link)
+            other = os.path.join(d, "disk.1")
+            os.symlink("/dev/sdz", other)
+            self.assertEqual(hook.haify_disks(domain(link, other)), ["one-img-3"])
+
     def test_no_disks_no_calls(self):
         ctl = FakeController()
         self.handle(ctl, "prepare", "begin", xml=domain("/dev/sda"))

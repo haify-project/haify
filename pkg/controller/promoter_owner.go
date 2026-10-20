@@ -23,6 +23,8 @@ import (
 //     host Nova runs the instance on, and moved by Nova live migration;
 //   - an XCP-ng virtual disk is made Primary by the SR driver on the host the
 //     VM runs on, and moved by XAPI live migration;
+//   - an OpenNebula image or VM disk is made Primary by the libvirt hook on
+//     the host OpenNebula runs the VM on, and moved by its live migration;
 //   - a resource with diskless clients is used from nodes the promoter never
 //     runs on (the Proxmox plugin attaches one where a VM runs without a local
 //     replica).
@@ -42,6 +44,8 @@ const (
 	cinderManagedByLabel = "haify.openstack/managed-by"
 	// xcpManagedByLabel marks a resource the XCP-ng SR driver created.
 	xcpManagedByLabel = "haify.xcp/managed-by"
+	// openNebulaManagedByLabel marks a resource the OpenNebula driver created.
+	openNebulaManagedByLabel = "haify.opennebula/managed-by"
 )
 
 // pveDefaultNameRe matches what the Proxmox plugin names a volume under its
@@ -62,6 +66,8 @@ func externallyPromoted(name string, labels map[string]string) string {
 		owner = "OpenStack Cinder"
 	case labels[xcpManagedByLabel] == "xcp-ng":
 		owner = "XCP-ng"
+	case labels[openNebulaManagedByLabel] == "opennebula":
+		owner = "OpenNebula"
 	}
 	zap.L().Debug("externallyPromoted: decided", zap.String("resource", name), zap.String("owner", owner))
 	return owner

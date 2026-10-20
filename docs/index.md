@@ -20,5 +20,6 @@ hide:
 - [XCP-ng](../deploy/xcp-ng/README.md): a storage repository whose every disk is replicated
 - [KVM (libvirt)](../deploy/libvirt/README.md): VM disks under libvirt, with failover
 - [OpenStack](../deploy/openstack/README.md): Cinder volumes, and a panel in Horizon
+- [OpenNebula](../deploy/opennebula/README.md): images on replicated volumes, with live migration and host-failure restarts
 - [Evacuating VMware vSAN](vsan-evacuation.md): move VMware VMs to Proxmox VE on Haify
 - [AI assistants (MCP)](mcp.md): manage Haify by asking

@@ -302,6 +302,8 @@ func (sm *SnapshotManager) PopulateVolume(ctx context.Context, resource string, 
 	// conv=fsync forces the copy to reach stable storage (and, through DRBD, the
 	// peers) before dd exits, so a later promote elsewhere cannot read stale
 	// data. Errors are fatal: a partial copy must never look like success.
+	// Closing the written device makes udev probe it; the demote that follows
+	// fails with "held open" while that probe runs, so the copy waits for it.
 	//
 	// When the source is a DRBD backing volume, its own data region bounds the
 	// copy instead, and the target is grown first if it is the smaller of the
@@ -324,7 +326,7 @@ func (sm *SnapshotManager) PopulateVolume(ctx context.Context, resource string, 
 	cmd := fmt.Sprintf(
 		"set -e; %s SZ=%s; %s"+
 			"sudo dd if=%s of=%s bs=4M count=$SZ iflag=fullblock,count_bytes oflag=direct conv=$CONV status=none; "+
-			"sudo blockdev --flushbufs %s; echo $SZ",
+			"sudo blockdev --flushbufs %s; sudo udevadm settle >/dev/null 2>&1 || true; echo $SZ",
 		activateSnapshotCmd(sourceDevice), size,
 		sparseWriteSetup(sparse, target),
 		sourceDevice, target, target)
@@ -341,7 +343,13 @@ func (sm *SnapshotManager) PopulateVolume(ctx context.Context, resource string, 
 
 	var copied uint64
 	if hr, ok := result.Hosts[address]; ok && hr != nil {
-		if n, perr := strconv.ParseUint(strings.TrimSpace(hr.Output), 10, 64); perr == nil {
+		// The count is the last line; sudo may print warnings before it.
+		out := strings.Fields(hr.Output)
+		last := ""
+		if len(out) > 0 {
+			last = out[len(out)-1]
+		}
+		if n, perr := strconv.ParseUint(last, 10, 64); perr == nil {
 			copied = n
 		} else {
 			log.Debug("PopulateVolume: copied byte count not readable", zap.Error(perr))

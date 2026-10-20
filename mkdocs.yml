@@ -74,6 +74,7 @@ nav:
       - XCP-ng: xcp-ng.md
       - KVM (libvirt): libvirt.md
       - OpenStack (Cinder, Horizon): openstack.md
+      - OpenNebula: opennebula.md
       - Evacuating VMware vSAN: vsan-evacuation.md
       - Prometheus and Grafana: monitoring.md
       - AI assistants (MCP): mcp.md

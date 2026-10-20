@@ -57,6 +57,16 @@ const MANAGERS: { label: string; value: string; manager: ResourceManager }[] = [
         'This is an OpenStack Cinder volume. Deleting it here leaves Cinder, and any instance it is attached to, with a volume whose data is gone. Delete it with Cinder (openstack volume delete) instead.',
     },
   },
+  {
+    label: 'haify.opennebula/managed-by',
+    value: 'opennebula',
+    manager: {
+      chip: 'opennebula',
+      about: 'An OpenNebula image or VM disk. Delete it in OpenNebula instead of here.',
+      deleteWarning:
+        'This is an OpenNebula image or VM disk. Deleting it here leaves OpenNebula, and any VM using it, with a disk whose data is gone. Delete the image (oneimage delete) or the VM in OpenNebula instead.',
+    },
+  },
 ];
 
 // The claim a CSI volume was provisioned for, as namespace/name. Volumes

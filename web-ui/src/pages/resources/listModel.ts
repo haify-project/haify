@@ -15,6 +15,7 @@ export const USED_BY: Record<string, string> = {
   proxmox: 'Proxmox',
   openstack: 'OpenStack',
   'xcp-ng': 'XCP-ng',
+  opennebula: 'OpenNebula',
   gateway: 'Gateway',
   ha: 'HA service',
   app: 'App',

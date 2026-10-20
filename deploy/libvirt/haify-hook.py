@@ -13,7 +13,8 @@ calls out to (/etc/libvirt/hooks/qemu.d/, with the guest's XML on stdin):
   release end     after the guest stopped here, or left in a migration:
                   demote every Haify disk and close the dual-primary window.
 
-A disk is a Haify disk when its source is /dev/drbd/by-res/<resource>/<vol>.
+A disk is a Haify disk when its source is /dev/drbd/by-res/<resource>/<vol>,
+or a link to it (OpenNebula links each disk into the VM's directory).
 
 Promotion goes through haify-controller, which promotes with a quorum guard
 (it forces nothing a partitioned node could split-brain with), attaches a host
@@ -106,7 +107,10 @@ def haify_disks(domain_xml):
         src = disk.find("source")
         if src is None:
             continue
-        m = BY_RES.match(src.get("dev") or src.get("file") or "")
+        path = src.get("dev") or src.get("file") or ""
+        m = BY_RES.match(path)
+        if not m and os.path.islink(path):
+            m = BY_RES.match(os.readlink(path))
         if m and m.group(1) not in seen:
             seen.append(m.group(1))
     return seen

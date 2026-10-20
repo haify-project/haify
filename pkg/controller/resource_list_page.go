@@ -56,6 +56,8 @@ func usedBy(r *haifypb.ResourceInfo, users map[string]string) string {
 		return "openstack"
 	case l[xcpManagedByLabel] == "xcp-ng":
 		return "xcp-ng"
+	case l[openNebulaManagedByLabel] == "opennebula":
+		return "opennebula"
 	}
 	if u := users[r.Name]; u != "" {
 		return u

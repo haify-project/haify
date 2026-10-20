@@ -45,6 +45,7 @@ build: ui-sync
 	GOOS=linux go build -o bin/service-ip ./cmd/service-ip
 	go build -o bin/haify-csi ./cmd/haify-csi
 	go build -o bin/haify-docker ./cmd/haify-docker
+	go build -o bin/haify-opennebula ./cmd/haify-opennebula
 ifeq ($(AI),1)
 	@echo "Building haify-ai..."
 	cd cmd/haify-ai && go build -o ../../bin/haify-ai .
