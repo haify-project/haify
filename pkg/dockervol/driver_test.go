@@ -136,6 +136,20 @@ func TestVolumeLifecycle(t *testing.T) {
 	assert.Contains(t, call(t, h, "/VolumeDriver.Get", map[string]any{"Name": "pg.data"})["Err"], "no such volume")
 }
 
+// Podman takes any 200 answer as success, so a failure has to be a 500 too.
+func TestFailureIsHTTP500(t *testing.T) {
+	_, _, _, h := newTestDriver(t)
+	raw, _ := json.Marshal(map[string]any{"Name": "missing"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/VolumeDriver.Get", bytes.NewReader(raw)))
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "no such volume")
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/Plugin.Activate", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestMountFailureReleasesTheRole(t *testing.T) {
 	d, b, m, _ := newTestDriver(t)
 	require.NoError(t, d.Create(context.Background(), "v", nil))

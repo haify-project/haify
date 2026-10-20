@@ -14,6 +14,9 @@ import (
 
 // Docker's volume plugin protocol: every call is a POST with a JSON body, and
 // every answer is JSON whose Err field, when set, is the failure Docker shows.
+// A failure also carries HTTP 500: Docker reads Err either way, but Podman
+// reads it only from a non-200 answer and takes a 200 as success, so a
+// refused Mount would hand it an empty mountpoint.
 
 const contentType = "application/vnd.docker.plugins.v1.2+json"
 
@@ -43,7 +46,11 @@ func Handler(d *Driver) http.Handler {
 		w.Header().Set("Content-Type", contentType)
 		_ = json.NewEncoder(w).Encode(v)
 	}
-	fail := func(w http.ResponseWriter, err error) { reply(w, map[string]string{"Err": err.Error()}) }
+	fail := func(w http.ResponseWriter, err error) {
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"Err": err.Error()})
+	}
 	handle := func(path string, fn func(ctx context.Context, r request) (any, error)) {
 		mux.HandleFunc(path, func(w http.ResponseWriter, req *http.Request) {
 			log := zap.L()

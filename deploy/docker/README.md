@@ -1,4 +1,4 @@
-# Docker volumes on Haify
+# Docker and Podman volumes on Haify
 
 `haify-docker` is a Docker volume plugin. Each volume made with it is a Haify
 resource, replicated across your servers. A container that uses the volume can
@@ -42,6 +42,66 @@ Containers on the same host can share a volume. Only one host can use a volume
 at a time: while a container on one host has it, starting a container with the
 same volume on another host is refused, with an error naming the host that has
 it. `docker volume rm` deletes the volume and its data on every node.
+
+## Podman
+
+Podman speaks the same plugin protocol, so the same `haify-docker` service
+serves it. Install the plugin as above, then tell Podman where it is. Podman
+gives a plugin call 5 seconds by default, and creating or first mounting a
+replicated volume takes longer, so raise that to the 2 minutes Docker allows:
+
+```bash
+sudo mkdir -p /etc/containers/containers.conf.d
+sudo tee /etc/containers/containers.conf.d/haify.conf <<'EOF'
+[engine]
+volume_plugin_timeout = 120
+
+[engine.volume_plugins]
+haify = "/run/docker/plugins/haify.sock"
+EOF
+```
+
+```bash
+podman volume create -d haify -o size=20G pgdata
+podman run -d -v pgdata:/var/lib/postgresql/data docker.io/library/postgres:17
+```
+
+Podman keeps its own list of volumes on each host and does not ask the plugin
+about a name it has never seen: `podman run -v pgdata:...` on a host that has
+not heard of `pgdata` quietly makes an empty local volume of that name. Before
+a host first uses a volume made elsewhere, run `podman volume reload`, or
+declare the volume there with `-d haify` again (that finds the existing
+volume, it does not make a second one).
+
+With Quadlet, a `.volume` unit does that declaration on every host it is
+installed on, and the container unit waits for the plugin at boot:
+
+```ini
+# /etc/containers/systemd/pgdata.volume
+[Volume]
+VolumeName=pgdata
+Driver=haify
+PodmanArgs=--opt size=20G
+```
+
+```ini
+# /etc/containers/systemd/pg.container
+[Unit]
+Requires=haify-docker.service
+After=haify-docker.service
+
+[Container]
+Image=docker.io/library/postgres:17
+Volume=pgdata.volume:/var/lib/postgresql/data
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The rest is as with Docker: containers on one host share a volume, another
+host is refused while it is in use, and when the host using it goes down,
+starting the container on another host brings the volume up there with the
+data.
 
 ## Sharing data between hosts
 
