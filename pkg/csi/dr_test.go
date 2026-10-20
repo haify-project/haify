@@ -123,7 +123,8 @@ func TestLocalReplicasLeaveOutTheDRNode(t *testing.T) {
 
 func TestExistingDRVolumeAnswersWithLocalTopology(t *testing.T) {
 	b := newFakeBackend("n1", "n2", "dr1")
-	b.resources["pvc_dr"] = &haifypb.ResourceInfo{Name: "pvc_dr", Nodes: []string{"n1", "n2", "dr1"}, WanMode: true, DrNode: "dr1"}
+	b.resources["pvc_dr"] = &haifypb.ResourceInfo{Name: "pvc_dr", Nodes: []string{"n1", "n2", "dr1"}, WanMode: true, DrNode: "dr1",
+		Labels: map[string]string{managedByLabel: managedByValue}}
 	s := newTestController(b)
 
 	resp, err := s.CreateVolume(context.Background(), drCreateReq(nil))

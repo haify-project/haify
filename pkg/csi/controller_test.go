@@ -331,3 +331,15 @@ func TestCreateVolumeOutOfCapacityIsResourceExhausted(t *testing.T) {
 	assert.Equal(t, codes.ResourceExhausted, status.Code(err))
 	assert.Empty(t, b.createCalls, "no resource may be created when placement fails")
 }
+
+// Nomad passes the volume name the user chose; a Haify resource of that name
+// that the driver did not make (a gateway's, haify-meta) is not handed out.
+func TestCreateVolumeRefusesForeignResource(t *testing.T) {
+	b := newFakeBackend("n1", "n2", "n3")
+	b.resources["share"] = &haifypb.ResourceInfo{Name: "share", Nodes: []string{"n1", "n2"}}
+	_, err := newTestController(b).CreateVolume(context.Background(), validCreateReq("share"))
+	require.Error(t, err)
+	assert.Equal(t, codes.AlreadyExists, status.Code(err))
+	assert.Contains(t, err.Error(), "not a CSI volume")
+	assert.Empty(t, b.createCalls)
+}

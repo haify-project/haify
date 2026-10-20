@@ -115,7 +115,7 @@ func TestInterruptedRestoreIsDiscarded(t *testing.T) {
 	// A volume left with the label by a process that is gone.
 	b := newFakeBackupBackend("m1", "m2")
 	b.resources["pvc_new"] = &haifypb.ResourceInfo{Name: "pvc_new", Nodes: []string{"m1", "m2"},
-		Labels: map[string]string{restoringLabel: "pvc_abc_haifysnap_s1"}}
+		Labels: map[string]string{managedByLabel: managedByValue, restoringLabel: "pvc_abc_haifysnap_s1"}}
 	s := newTestController(b)
 
 	_, err := s.CreateVolume(context.Background(), backupRestoreReq("pvc-new"))

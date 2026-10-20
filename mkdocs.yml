@@ -68,7 +68,8 @@ nav:
       - Kubernetes (CSI): kubernetes.md
       - Kubernetes (Helm chart): helm.md
       - DRBD on Kubernetes nodes: kubernetes-drbd.md
-      - Docker: docker.md
+      - Nomad: nomad.md
+      - Docker and Podman: docker.md
       - Proxmox VE: proxmox.md
       - XCP-ng: xcp-ng.md
       - KVM (libvirt): libvirt.md

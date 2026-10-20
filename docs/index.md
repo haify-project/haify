@@ -14,7 +14,8 @@ hide:
 - [User guide](user-guide.md): everyday tasks, step by step
 - [Node prerequisites](node-prerequisites.md): what each server needs
 - [Kubernetes (CSI)](../deploy/k8s/README.md): volumes for containers, also as a [Helm chart](../deploy/helm/haify-csi/README.md); [DRBD on Kubernetes nodes](./kubernetes-drbd.md) covers loading the kernel module from the cluster
-- [Docker](../deploy/docker/README.md): volumes that follow containers between hosts
+- [Nomad](../deploy/nomad/README.md): the CSI driver as Nomad plugin jobs
+- [Docker and Podman](../deploy/docker/README.md): volumes that follow containers between hosts
 - [Proxmox VE](../deploy/proxmox/README.md): volumes for virtual machines
 - [XCP-ng](../deploy/xcp-ng/README.md): a storage repository whose every disk is replicated
 - [KVM (libvirt)](../deploy/libvirt/README.md): VM disks under libvirt, with failover

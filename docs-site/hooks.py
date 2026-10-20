@@ -26,6 +26,7 @@ EXTERNAL = {
     "deploy/openstack/README.md": "openstack.md",
     "deploy/xcp-ng/README.md": "xcp-ng.md",
     "deploy/docker/README.md": "docker.md",
+    "deploy/nomad/README.md": "nomad.md",
     "deploy/helm/haify-csi/README.md": "helm.md",
     "deploy/monitoring/README.md": "monitoring.md",
     "README_cn.md": "zh.md",

@@ -193,7 +193,8 @@ func TestCreateVolumeReplicationTLSSwitchFailureRollsBack(t *testing.T) {
 // earlier attempt may have stopped before it) and reports the flags.
 func TestCreateVolumeExistingFinishesTLS(t *testing.T) {
 	b := newTLSFakeBackend("n1", "n2", "n3")
-	b.resources["pvc_tls"] = &haifypb.ResourceInfo{Name: "pvc_tls", Nodes: []string{"n1", "n2"}, Encrypted: true}
+	b.resources["pvc_tls"] = &haifypb.ResourceInfo{Name: "pvc_tls", Nodes: []string{"n1", "n2"}, Encrypted: true,
+		Labels: map[string]string{managedByLabel: managedByValue}}
 	resp, err := newTestController(b).CreateVolume(context.Background(),
 		withParams(validCreateReq("pvc-tls"), "replicationTLS", "true", "encryption", "true"))
 	require.NoError(t, err)
@@ -207,7 +208,8 @@ func TestCreateVolumeExistingFinishesTLS(t *testing.T) {
 // encryption, and encryption cannot be added in place.
 func TestCreateVolumeExistingUnencryptedRefused(t *testing.T) {
 	b := newFakeBackend("n1", "n2", "n3")
-	b.resources["pvc_enc"] = &haifypb.ResourceInfo{Name: "pvc_enc", Nodes: []string{"n1", "n2"}}
+	b.resources["pvc_enc"] = &haifypb.ResourceInfo{Name: "pvc_enc", Nodes: []string{"n1", "n2"},
+		Labels: map[string]string{managedByLabel: managedByValue}}
 	_, err := newTestController(b).CreateVolume(context.Background(), withParams(validCreateReq("pvc-enc"), "encryption", "true"))
 	require.Error(t, err)
 	assert.Equal(t, codes.AlreadyExists, status.Code(err))

@@ -67,6 +67,16 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	s.log.Debug("controllerServer.CreateVolume: looked up existing resource", zap.String("resource", name),
 		zap.Bool("found", getErr == nil && existing != nil), zap.Duration("took", time.Since(start)), zap.Error(getErr))
 	if getErr == nil && existing != nil {
+		// Kubernetes names volumes pvc-<uid>, but Nomad and other COs pass the
+		// name the user chose, which can be that of a gateway's resource or
+		// haify-meta. Handing such a resource out as a volume would let a
+		// workload write over it, and deleting the volume would delete it.
+		if existing.GetLabels()[managedByLabel] != managedByValue {
+			s.log.Debug("controllerServer.CreateVolume: name taken by a resource the driver did not make",
+				zap.String("resource", name))
+			return nil, status.Errorf(codes.AlreadyExists,
+				"Haify resource %q already exists and is not a CSI volume; choose another volume name", name)
+		}
 		if err := s.checkRestore(ctx, existing); err != nil {
 			return nil, err
 		}
