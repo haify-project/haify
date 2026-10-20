@@ -68,6 +68,7 @@ nav:
       - Kubernetes (CSI): kubernetes.md
       - Kubernetes (Helm chart): helm.md
       - DRBD on Kubernetes nodes: kubernetes-drbd.md
+      - Harvester: harvester.md
       - Nomad: nomad.md
       - Docker and Podman: docker.md
       - Proxmox VE: proxmox.md

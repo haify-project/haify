@@ -2,7 +2,7 @@
 
 # Haify
 
-Haify is storage that keeps working when a server fails. It replicates volumes across nodes with DRBD 9 and provides them to Kubernetes (CSI, Helm), Nomad, Docker, Podman, Proxmox VE, XCP-ng, KVM (libvirt), OpenStack (Cinder, Horizon) and OpenNebula, or exports them through NFS / SMB / iSCSI / NVMe-oF gateways. It also manages storage pools and high availability, and AI assistants can operate it over MCP. The controller is a lightweight program written in Go.
+Haify is storage that keeps working when a server fails. It replicates volumes across nodes with DRBD 9 and provides them to Kubernetes (CSI, Helm), Harvester, Nomad, Docker, Podman, Proxmox VE, XCP-ng, KVM (libvirt), OpenStack (Cinder, Horizon) and OpenNebula, or exports them through NFS / SMB / iSCSI / NVMe-oF gateways. It also manages storage pools and high availability, and AI assistants can operate it over MCP. The controller is a lightweight program written in Go.
 
 English | [简体中文](README_cn.md) | [Documentation site](https://haify-project.github.io/haify/)
 
@@ -21,6 +21,7 @@ There is no management agent on the storage nodes. One controller drives them ov
 - **Integrity**: scheduled DRBD verify, and on request a resync of the blocks it found different. Alerts on degraded replicas, lost Primaries, out-of-sync data and full pools.
 - **Kubernetes**: CSI driver (manifests or a Helm chart; OpenShift and MicroShift too) with snapshots, group snapshots taken at one instant across several volumes, clones, expansion, raw block and remote (diskless) access. Encryption and TLS replication per StorageClass. Replicas and I/O limits of a volume in use change through a VolumeAttributesClass. Snapshots can go to an S3, SMB or WebDAV target and be restored in another cluster, and a volume can keep an asynchronous replica at another site. When a node dies, its Pods run again on another node in about 30 seconds instead of Kubernetes' five minutes. KubeVirt and OpenShift Virtualization VMs live-migrate on ReadWriteMany block volumes.
 - **Docker and Podman**: a volume plugin whose volumes follow containers between hosts.
+- **Harvester**: VM disks, images and snapshots on Haify volumes, with Harvester nodes as local agents.
 - **Nomad**: the same CSI driver, run as Nomad plugin jobs.
 - **Virtual machines**: Proxmox VE storage plugin with a panel in the PVE web UI; an XCP-ng storage driver; a libvirt hook for plain KVM; an OpenStack Cinder driver with a Horizon panel; an OpenNebula datastore and transfer driver. Live migration works on all five.
 - **AI**: MCP server for Claude Code, ChatGPT and others (local or remote with role-scoped tokens and OAuth), plus a Copilot in the web UI, which runs as a separate, optional service.
@@ -120,7 +121,7 @@ The web UI is at `http://node1:3376`. Self-HA for the controller, WAN replicas, 
 
 ## Integrations
 
-Kubernetes: put the controller address in `deploy/k8s/00-haify-controller-endpoint.yaml`, `kubectl apply -f deploy/k8s/`, then use the `haify-drbd` StorageClass ([deploy/k8s/README.md](deploy/k8s/README.md)). Proxmox VE: [deploy/proxmox/README.md](deploy/proxmox/README.md); `deploy/proxmox/bootstrap.sh` sets up an existing PVE cluster (DRBD, controller, Self-HA, plugin, storage entry) in one command. XCP-ng: [deploy/xcp-ng/README.md](deploy/xcp-ng/README.md). KVM (libvirt): [deploy/libvirt/README.md](deploy/libvirt/README.md). Docker and Podman: [deploy/docker/README.md](deploy/docker/README.md). Nomad: [deploy/nomad/README.md](deploy/nomad/README.md). Helm: [deploy/helm/haify-csi/README.md](deploy/helm/haify-csi/README.md). OpenStack (Cinder, Horizon): [deploy/openstack/README.md](deploy/openstack/README.md). OpenNebula: [deploy/opennebula/README.md](deploy/opennebula/README.md). Prometheus and Grafana: [deploy/monitoring/README.md](deploy/monitoring/README.md).
+Kubernetes: put the controller address in `deploy/k8s/00-haify-controller-endpoint.yaml`, `kubectl apply -f deploy/k8s/`, then use the `haify-drbd` StorageClass ([deploy/k8s/README.md](deploy/k8s/README.md)). Proxmox VE: [deploy/proxmox/README.md](deploy/proxmox/README.md); `deploy/proxmox/bootstrap.sh` sets up an existing PVE cluster (DRBD, controller, Self-HA, plugin, storage entry) in one command. XCP-ng: [deploy/xcp-ng/README.md](deploy/xcp-ng/README.md). KVM (libvirt): [deploy/libvirt/README.md](deploy/libvirt/README.md). Docker and Podman: [deploy/docker/README.md](deploy/docker/README.md). Nomad: [deploy/nomad/README.md](deploy/nomad/README.md). Harvester: [docs/harvester.md](docs/harvester.md). Helm: [deploy/helm/haify-csi/README.md](deploy/helm/haify-csi/README.md). OpenStack (Cinder, Horizon): [deploy/openstack/README.md](deploy/openstack/README.md). OpenNebula: [deploy/opennebula/README.md](deploy/opennebula/README.md). Prometheus and Grafana: [deploy/monitoring/README.md](deploy/monitoring/README.md).
 
 AI assistants:
 
