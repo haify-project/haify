@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/haify-project/haify/pkg/database"
 	"github.com/haify-project/haify/pkg/deployment"
@@ -135,6 +136,7 @@ func TestVipServiceIPInstance(t *testing.T) {
 }
 
 func TestResourceManagerEvictHaUsesResourceNodesOnly(t *testing.T) {
+	var evictTimeoutSeen time.Duration
 	dep := &fakeDeploymentClient{
 		reactorPromoterStatusByResourceFunc: func(ctx context.Context, host, resource string) (*deployment.ReactorPromoterStatus, error) {
 			if host == "10.0.0.1" {
@@ -147,10 +149,10 @@ func TestResourceManagerEvictHaUsesResourceNodesOnly(t *testing.T) {
 			return nil, assert.AnError
 		},
 		execFunc: func(ctx context.Context, hosts []string, cmd string, opts ...deployment.ExecOption) (*deployment.ExecResult, error) {
-			switch {
-			default:
-				return successExecResult(hosts, ""), nil
+			if strings.Contains(cmd, base64Std(evictScript("res1"))) {
+				evictTimeoutSeen = deployment.ExecTimeoutOf(opts...)
 			}
+			return successExecResult(hosts, ""), nil
 		},
 	}
 	ctrl := newBasicTestController(dep)
@@ -189,4 +191,8 @@ func TestResourceManagerEvictHaUsesResourceNodesOnly(t *testing.T) {
 	}
 	assert.False(t, sawRemoteStatus)
 	assert.True(t, sawEvict)
+	// Cut off at the 30-second default, drbd-reactorctl was interrupted after
+	// stopping the services and before a peer took over.
+	assert.Equal(t, evictTimeout, evictTimeoutSeen)
+	assert.Greater(t, evictTimeoutSeen, 30*time.Second)
 }

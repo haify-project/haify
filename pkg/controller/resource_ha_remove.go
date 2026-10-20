@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/haify-project/haify/pkg/deployment"
 	"go.uber.org/zap"
 )
 
@@ -95,7 +96,7 @@ func (rm *ResourceManager) EvictHa(ctx context.Context, resource string) error {
 	} else {
 		host := rm.controller.ResolveHost(activeNode)
 		result, err := rm.deployment.Exec(ctx, []string{host},
-			"echo "+base64Std(script)+" | base64 -d | sudo /bin/bash")
+			"echo "+base64Std(script)+" | base64 -d | sudo /bin/bash", deployment.WithExecTimeout(evictTimeout))
 		log.Debug("EvictHa: ran eviction script remotely", zap.String("resource", resource), zap.String("host", host),
 			zap.Array("failed_hosts", resourcesFailedHosts{result}), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
@@ -115,6 +116,13 @@ func (rm *ResourceManager) EvictHa(ctx context.Context, resource string) error {
 
 	return nil
 }
+
+// evictTimeout bounds the eviction script. drbd-reactorctl evict stops the
+// services here, which a service may take its whole TimeoutStopSec over, then
+// waits up to 20 seconds for a peer to take over. Cut off at the default 30
+// seconds it was interrupted after the services had stopped and before any
+// peer had promoted, and the resource came back where it was.
+const evictTimeout = 3 * time.Minute
 
 // evictPromoterConfigs are the promoter configs Haify writes for a resource, in
 // the order evictScript tries them.
