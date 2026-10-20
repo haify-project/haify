@@ -16,6 +16,7 @@ func (rm *ResourceManager) DeleteResource(ctx context.Context, name string, forc
 	rm.controller.logger.Info("Deleting DRBD resource",
 		zap.String("name", name),
 		zap.Bool("force", force))
+	defer rm.resLocks.lock(name)()
 
 	if rm.deployment == nil {
 		log.Debug("DeleteResource: no deployment client", zap.String("resource", name))

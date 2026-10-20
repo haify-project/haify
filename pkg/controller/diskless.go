@@ -39,6 +39,7 @@ var errDisklessNotPresent = fmt.Errorf("node not present in resource config")
 func (rm *ResourceManager) AttachDisklessClient(ctx context.Context, resource, node string) error {
 	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.AttachDisklessClient: start", zap.String("resource", resource), zap.String("node", node))
+	defer rm.resLocks.lock(resource)()
 	if rm.deployment == nil {
 		log.Debug("ResourceManager.AttachDisklessClient: no deployment client")
 		return fmt.Errorf("deployment client not set")
@@ -244,6 +245,7 @@ func (rm *ResourceManager) AttachDisklessClient(ctx context.Context, resource, n
 func (rm *ResourceManager) DetachDisklessClient(ctx context.Context, resource, node string) error {
 	log := rm.controller.traceLogger()
 	log.Debug("ResourceManager.DetachDisklessClient: start", zap.String("resource", resource), zap.String("node", node))
+	defer rm.resLocks.lock(resource)()
 	if rm.deployment == nil {
 		log.Debug("ResourceManager.DetachDisklessClient: no deployment client")
 		return fmt.Errorf("deployment client not set")

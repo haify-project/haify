@@ -147,6 +147,9 @@ type ResourceManager struct {
 	// unreachableHosts remembers hosts that failed a status query, so they
 	// are asked last for a while; see unreachableFor.
 	unreachableHosts sync.Map
+	// resLocks keeps a delete and a diskless attach or detach of the same
+	// resource from interleaving; see resourceLocks.
+	resLocks resourceLocks
 }
 
 // NewResourceManager creates a new resource manager
