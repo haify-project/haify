@@ -34,7 +34,9 @@ kubeletDir: /var/lib/kubelet
 operationTimeout: 120s
 
 # One StorageClass per entry. pool is the Haify pool; replicas the number of
-# copies. Any other parameters the driver takes go in parameters.
+# copies. Any other parameters the driver takes go in parameters, and
+# annotations go on the StorageClass (Harvester needs its CDI ones, see the
+# chart README).
 storageClasses:
   - name: haify
     default: false
@@ -44,6 +46,7 @@ storageClasses:
     volumeBindingMode: WaitForFirstConsumer
     allowVolumeExpansion: true
     parameters: {}
+    annotations: {}
   # Encrypted volumes: LUKS2 beneath DRBD on every replica (encryption: LVM
   # pools only), and kernel TLS on the DRBD connections (replicationTLS: run
   # `haify replication-tls setup` first). Each node keeps its own keys; nothing

@@ -5,9 +5,14 @@ kind: StorageClass
 metadata:
   name: {{ required "every storageClasses entry needs a name" .name }}
   labels: {{- include "haify-csi.labels" $ | nindent 4 }}
-  {{- if .default }}
+  {{- if or .default .annotations }}
   annotations:
+    {{- if .default }}
     storageclass.kubernetes.io/is-default-class: "true"
+    {{- end }}
+    {{- range $k, $v := .annotations }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
   {{- end }}
 provisioner: {{ include "haify-csi.driver" $ }}
 parameters:
