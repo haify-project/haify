@@ -167,6 +167,11 @@ watch_drbd_events = true
 idle_interval_sec = 300
 # A warning must last this long before it is raised. Critical is never held.
 warning_hold_sec = 30
+# A resource whose Primary moves this many times within the window raises
+# resource.failover_loop (critical): a service that fails on every node moves
+# the Primary back and forth, and each move alone is only a warning.
+failover_loop_count = 3
+failover_loop_window_sec = 900
 # Thin pool data/metadata usage thresholds (percent).
 check_pools = true
 pool_near_full_percent = 85

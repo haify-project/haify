@@ -81,6 +81,13 @@ type AlertConfig struct {
 	// raised, so a link that drops and reconnects within it is not reported.
 	// Critical conditions are never held. Zero raises warnings at once.
 	WarningHoldSec int `mapstructure:"warning_hold_sec"`
+	// FailoverLoopCount and FailoverLoopWindowSec say what a failover loop is:
+	// that many failovers of one resource within that many seconds raise
+	// resource.failover_loop at critical. A service that fails on every node
+	// moves the Primary back and forth for as long as the fault lasts, and
+	// each move alone is only a warning. Zero uses 3 failovers in 900 seconds.
+	FailoverLoopCount     int `mapstructure:"failover_loop_count"`
+	FailoverLoopWindowSec int `mapstructure:"failover_loop_window_sec"`
 	// HistorySize is how many past events are retained for late-joining clients.
 	// Zero uses the event package default.
 	HistorySize int `mapstructure:"history_size"`

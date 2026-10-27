@@ -2141,11 +2141,26 @@ history_size = 500            # default; kept in the database across failovers
 watch_drbd_events = true      # default; see below
 idle_interval_sec = 300       # default
 warning_hold_sec = 30         # default; see below
+failover_loop_count = 3       # default; see below
+failover_loop_window_sec = 900  # default
 ```
 
 A **warning** is raised only once its condition has lasted `warning_hold_sec`:
 a replica link that drops and reconnects within it is not reported. Critical
 conditions (a full pool, a lost Primary, an unreachable node) are never held.
+
+A **failover loop** is a resource whose Primary moves `failover_loop_count`
+times within `failover_loop_window_sec`. Each move alone is a
+`resource.failover` warning, and a node that fails now and then is exactly what
+that is for. A service that fails on every node is different: when the data it
+reads is damaged it fails on the node that holds the Primary, the cluster moves
+the Primary, it fails there too, and the Primary moves back, for as long as the
+fault lasts. That raises `resource.failover_loop` at `critical`, once, and
+resolves it when the Primary has stayed put for the whole window. Moving again
+does not help; look at the managed service and what it reads (`haify ha
+status <resource>`, then the service's journal on the node that is Primary). A
+resource whose Primary Proxmox VE, Kubernetes or OpenStack decides is not
+counted: a live migration is not a failure.
 
 With `watch_drbd_events` the controller keeps one `drbdsetup events2` stream
 open to each node. A DRBD state change is then checked within a few seconds
@@ -2154,7 +2169,8 @@ resyncing or verifying, the cluster is polled every `idle_interval_sec`
 instead of every `check_interval_sec`. That longer interval still applies to
 what DRBD does not report, such as a thin pool filling up.
 
-Events: `resource.degraded`, `resource.failover`, `resource.no_primary`,
+Events: `resource.degraded`, `resource.failover`, `resource.failover_loop`
+(the Primary moving repeatedly, see above), `resource.no_primary`,
 `resource.promoted`, `node.unreachable`, `wan.degraded`, `resource.out_of_sync`,
 `pool.data_near_full`, `pool.data_full`, `pool.metadata_near_full`,
 `pool.metadata_full`, `pool.out_of_space` (LVM already refused writes),

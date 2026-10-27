@@ -71,6 +71,14 @@ type Monitor struct {
 	// Primary at all. Most resources sit Secondary on every node by design, so
 	// treating that as an outage would raise a critical for each of them.
 	lastPrimary map[string]string
+	// failovers remembers when each resource's Primary last moved, newest
+	// last, which is what turns a run of failovers into a failover loop.
+	// Entries older than failoverLoopWindow are dropped as they are read.
+	failovers map[string][]failoverMark
+	// failoverLoopCount and failoverLoopWindow are how many failovers inside
+	// how long make a loop; see alert_failover_loop.go.
+	failoverLoopCount  int
+	failoverLoopWindow time.Duration
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -120,7 +128,22 @@ type Options struct {
 	// WarningHold is how long a warning condition must last before it is
 	// raised; zero raises it on the first poll that sees it. See alert_hold.go.
 	WarningHold time.Duration
+	// FailoverLoopCount is how many failovers of one resource within
+	// FailoverLoopWindow raise resource.failover_loop. Zero or below uses
+	// DefaultFailoverLoopCount.
+	FailoverLoopCount int
+	// FailoverLoopWindow is the period those failovers are counted over. Zero
+	// or below uses DefaultFailoverLoopWindow.
+	FailoverLoopWindow time.Duration
 }
+
+// Defaults for failover loop detection: three moves in a quarter of an hour is
+// well past a node having a bad moment, and short enough to be raised while
+// the loop is still running.
+const (
+	DefaultFailoverLoopCount  = 3
+	DefaultFailoverLoopWindow = 15 * time.Minute
+)
 
 // Default thin pool utilisation thresholds, in percent.
 const (
@@ -153,6 +176,16 @@ func NewMonitor(bus *event.Bus, opts Options) *Monitor {
 		opts.IdleInterval = max(opts.Interval, DefaultIdleInterval)
 	}
 	near, full := normalizeThresholds(opts.NearFullPercent, opts.FullPercent)
+	if opts.FailoverLoopCount <= 0 {
+		log.Debug("NewMonitor: failover loop count not set, using default",
+			zap.Int("requested", opts.FailoverLoopCount), zap.Int("count", DefaultFailoverLoopCount))
+		opts.FailoverLoopCount = DefaultFailoverLoopCount
+	}
+	if opts.FailoverLoopWindow <= 0 {
+		log.Debug("NewMonitor: failover loop window not set, using default",
+			zap.Duration("requested", opts.FailoverLoopWindow), zap.Duration("window", DefaultFailoverLoopWindow))
+		opts.FailoverLoopWindow = DefaultFailoverLoopWindow
+	}
 	log.Debug("NewMonitor: creating alert monitor",
 		zap.Duration("interval", opts.Interval), zap.Duration("idle_interval", opts.IdleInterval),
 		zap.Bool("has_resources", opts.Resources != nil), zap.Bool("has_nodes", opts.Nodes != nil),
@@ -173,13 +206,17 @@ func NewMonitor(bus *event.Bus, opts Options) *Monitor {
 		owners:       make(map[string]source),
 		primaries:    make(map[string]string),
 		lastPrimary:  make(map[string]string),
+		failovers:    make(map[string][]failoverMark),
 		stop:         make(chan struct{}),
 		kick:         make(chan struct{}, 1),
 		idleInterval: opts.IdleInterval,
 		hold:         opts.WarningHold,
 		pending:      make(map[string]time.Time),
-		raised:       make(map[string]FiringCondition),
-		now:          time.Now,
+
+		failoverLoopCount:  opts.FailoverLoopCount,
+		failoverLoopWindow: opts.FailoverLoopWindow,
+		raised:             make(map[string]FiringCondition),
+		now:                time.Now,
 	}
 }
 

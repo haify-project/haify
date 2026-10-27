@@ -40,6 +40,13 @@ const (
 	// set of nodes to a different one — the event an operator most wants pushed
 	// at them, because by the time it happens the cluster has already reacted.
 	TypeResourceFailover Type = "resource.failover"
+	// TypeResourceFailoverLoop fires when one resource's Primary has moved
+	// several times within a short window, and resolves once it has stayed put
+	// for that long. Each move is already reported as a resource.failover
+	// warning; this is the same moves read as a pattern. A service that fails
+	// on every node, because the data it reads is damaged, bounces between the
+	// nodes for as long as the fault lasts, and moving again fixes nothing.
+	TypeResourceFailoverLoop Type = "resource.failover_loop"
 	// TypeResourceNoPrimary fires when a resource that had a Primary no longer
 	// has one anywhere. Nothing is serving I/O for it.
 	TypeResourceNoPrimary Type = "resource.no_primary"

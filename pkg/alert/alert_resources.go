@@ -40,19 +40,25 @@ func (m *Monitor) checkResources(ctx context.Context, sc *pollScope, obs *Observ
 			zap.Bool("wan_enabled", res.WANEnabled), zap.Bool("idle_without_primary", res.IdleWithoutPrimary))
 		m.checkReplicas(res, sc)
 		m.checkPrimary(res, sc)
+		m.checkFailoverLoop(res, sc)
 		m.checkWAN(res, sc)
 		m.checkOutOfSync(res, sc)
 	}
 
 	m.mu.Lock()
+	var gone []string
 	for name := range m.primaries {
 		if !sc.live[name] {
 			m.log.Debug("Monitor.checkResources: resource gone, forgetting its Primary", zap.String("resource", name))
 			delete(m.primaries, name)
 			delete(m.lastPrimary, name)
+			gone = append(gone, name)
 		}
 	}
 	m.mu.Unlock()
+	for _, name := range gone {
+		m.forgetFailovers(name)
+	}
 }
 
 // checkReplicas raises one condition per replica whose disk or replication
@@ -247,6 +253,7 @@ func (m *Monitor) checkPrimary(res ResourceStatusInfo, sc *pollScope) {
 		// reading them. no_primary is different and does resolve, via promoted.
 		m.log.Debug("Monitor.checkPrimary: Primary moved, reporting failover",
 			zap.String("resource", res.Name), zap.String("from", prev), zap.String("to", cur))
+		m.noteFailover(res.Name, prev, cur)
 		m.publish(event.Event{
 			Type:     event.TypeResourceFailover,
 			Severity: event.SeverityWarning,
