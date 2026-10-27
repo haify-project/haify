@@ -187,6 +187,37 @@ type PoolLister interface {
 	GetPoolStatusList(ctx context.Context) ([]PoolStatusInfo, error)
 }
 
+// ServiceStatusInfo is one service of an HA chain as the monitor needs it: a
+// systemd unit that drbd-reactor starts on whichever node holds the chain.
+type ServiceStatusInfo struct {
+	// Resource is the DRBD resource whose chain the unit belongs to, and Unit
+	// the unit's name. Together they identify the condition: the node does not,
+	// because the unit moves with the chain.
+	Resource string
+	Unit     string
+	// Label is what the unit is for, in words, when there is one.
+	Label string
+	// Node is the host running the chain, empty when no node does. A chain
+	// that runs nowhere says nothing about its service: the lost Primary is
+	// reported by its own alert.
+	Node string
+	// Active is whether the unit is running (or finished, for one that is meant
+	// to). SubState is systemd's finer word for it: running, start,
+	// auto-restart, failed, dead.
+	Active   bool
+	SubState string
+	// Restarts is systemd's count of automatic restarts of this unit since it
+	// was started on Node. It starts again from zero when the chain moves, so
+	// it is only comparable with an earlier reading from the same node.
+	Restarts int
+}
+
+// ServiceLister reports every service of every HA chain. It is optional: a
+// Monitor built without one never raises service events.
+type ServiceLister interface {
+	GetServiceStatusList(ctx context.Context) ([]ServiceStatusInfo, error)
+}
+
 // SourceStatus is how one of the monitor's data sources answered on one poll.
 //
 // The three states it distinguishes are the whole point of it. A source that is
@@ -282,4 +313,5 @@ const (
 	sourceResources source = iota
 	sourceNodes
 	sourcePools
+	sourceServices
 )

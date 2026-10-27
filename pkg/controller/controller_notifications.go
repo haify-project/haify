@@ -34,6 +34,11 @@ func (c *Controller) alertOptions() alert.Options {
 	if c.config.Alert.CheckNodes {
 		opts.Nodes = c.nodes
 	}
+	// The services of HA chains are read from the same probe as `haify ha
+	// status`, so like the node checks they cost a round trip per node.
+	if c.config.Alert.CheckServices {
+		opts.Services = haServiceLister{rm: c.resources}
+	}
 	if c.config.Alert.CheckPools {
 		opts.Pools = c.storage
 		opts.NearFullPercent = c.config.Alert.PoolNearFullPercent

@@ -80,6 +80,15 @@ type Monitor struct {
 	failoverLoopCount  int
 	failoverLoopWindow time.Duration
 
+	// services lists the services of every HA chain, nil when service checks
+	// are off. serviceTracks is what the monitor remembers about each between
+	// polls; see alert_services.go.
+	services             ServiceLister
+	serviceTracks        map[string]*serviceTrack
+	serviceDownGrace     time.Duration
+	serviceRestartCount  int
+	serviceRestartWindow time.Duration
+
 	stop     chan struct{}
 	stopOnce sync.Once
 
@@ -135,7 +144,25 @@ type Options struct {
 	// FailoverLoopWindow is the period those failovers are counted over. Zero
 	// or below uses DefaultFailoverLoopWindow.
 	FailoverLoopWindow time.Duration
+	// Services is optional; nil disables the checks on the services of HA
+	// chains. It costs an SSH round trip per node per poll.
+	Services ServiceLister
+	// ServiceDownGrace is how long a service may be seen not running before it
+	// is raised: starting takes time, and the gateway the first of these was
+	// written for needs more than a minute. Zero uses DefaultServiceDownGrace.
+	ServiceDownGrace time.Duration
+	// ServiceRestartCount is how many automatic restarts inside
+	// ServiceRestartWindow make a crash loop. Zero or below uses the defaults.
+	ServiceRestartCount  int
+	ServiceRestartWindow time.Duration
 }
+
+// Defaults for service checks.
+const (
+	DefaultServiceDownGrace     = 3 * time.Minute
+	DefaultServiceRestartCount  = 3
+	DefaultServiceRestartWindow = 10 * time.Minute
+)
 
 // Defaults for failover loop detection: three moves in a quarter of an hour is
 // well past a node having a bad moment, and short enough to be raised while
@@ -186,6 +213,15 @@ func NewMonitor(bus *event.Bus, opts Options) *Monitor {
 			zap.Duration("requested", opts.FailoverLoopWindow), zap.Duration("window", DefaultFailoverLoopWindow))
 		opts.FailoverLoopWindow = DefaultFailoverLoopWindow
 	}
+	if opts.ServiceDownGrace <= 0 {
+		opts.ServiceDownGrace = DefaultServiceDownGrace
+	}
+	if opts.ServiceRestartCount <= 0 {
+		opts.ServiceRestartCount = DefaultServiceRestartCount
+	}
+	if opts.ServiceRestartWindow <= 0 {
+		opts.ServiceRestartWindow = DefaultServiceRestartWindow
+	}
 	log.Debug("NewMonitor: creating alert monitor",
 		zap.Duration("interval", opts.Interval), zap.Duration("idle_interval", opts.IdleInterval),
 		zap.Bool("has_resources", opts.Resources != nil), zap.Bool("has_nodes", opts.Nodes != nil),
@@ -215,8 +251,14 @@ func NewMonitor(bus *event.Bus, opts Options) *Monitor {
 
 		failoverLoopCount:  opts.FailoverLoopCount,
 		failoverLoopWindow: opts.FailoverLoopWindow,
-		raised:             make(map[string]FiringCondition),
-		now:                time.Now,
+
+		services:             opts.Services,
+		serviceTracks:        make(map[string]*serviceTrack),
+		serviceDownGrace:     opts.ServiceDownGrace,
+		serviceRestartCount:  opts.ServiceRestartCount,
+		serviceRestartWindow: opts.ServiceRestartWindow,
+		raised:               make(map[string]FiringCondition),
+		now:                  time.Now,
 	}
 }
 

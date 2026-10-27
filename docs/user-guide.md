@@ -2134,6 +2134,7 @@ Detection is on by default. Its settings are in `controller.toml`:
 enabled = true                # default; false stops the health poll
 check_interval_sec = 30       # default
 check_nodes = true            # default; SSH-probe each node, produces node.unreachable
+check_services = true         # default; SSH-read each HA chain's services, produces ha.service_failing
 check_pools = true            # default; thin pool data/metadata use
 pool_near_full_percent = 85   # default; warning
 pool_full_percent = 95        # default; critical
@@ -2162,6 +2163,21 @@ status <resource>`, then the service's journal on the node that is Primary). A
 resource whose Primary Proxmox VE, Kubernetes or OpenStack decides is not
 counted: a live migration is not a failure.
 
+A **failing service** is the other half of that failure. When a service of an
+HA chain (`haify ha create`) stops working, DRBD says nothing: every replica is
+`UpToDate`, a Primary exists, the mount and the service IP are up, and nothing
+is served. With `check_services` the controller reads each chain's services
+every poll, with the same probe as `haify ha status`, and raises
+`ha.service_failing` at `critical` for a unit that has not been running for
+three minutes, or that has restarted three times in ten. The second case is not
+seen as stopped at all: systemd restarts a crashing unit within seconds, so a
+poll finds it running about as often as not, and only its restart counter shows
+it. The unit is the subject of the event (its name is in the `node` field, the
+host running it in `details.node`), and it resolves when the unit has run
+steadily for the whole window. A chain that runs on no node says nothing about
+its service; the lost Primary has its own alert. Gateways have theirs
+(`gateway.*`) and are not read here.
+
 With `watch_drbd_events` the controller keeps one `drbdsetup events2` stream
 open to each node. A DRBD state change is then checked within a few seconds
 instead of at the next poll. While every node's stream is up and nothing is
@@ -2170,7 +2186,8 @@ instead of every `check_interval_sec`. That longer interval still applies to
 what DRBD does not report, such as a thin pool filling up.
 
 Events: `resource.degraded`, `resource.failover`, `resource.failover_loop`
-(the Primary moving repeatedly, see above), `resource.no_primary`,
+(the Primary moving repeatedly, see above), `ha.service_failing` (a service
+of an HA chain not running or restarting, see above), `resource.no_primary`,
 `resource.promoted`, `node.unreachable`, `wan.degraded`, `resource.out_of_sync`,
 `pool.data_near_full`, `pool.data_full`, `pool.metadata_near_full`,
 `pool.metadata_full`, `pool.out_of_space` (LVM already refused writes),

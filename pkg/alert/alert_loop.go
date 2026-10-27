@@ -128,6 +128,7 @@ func (m *Monitor) Poll(ctx context.Context) {
 	m.checkResources(ctx, sc, &obs)
 	m.checkNodes(ctx, sc, &obs)
 	m.checkPools(ctx, sc, &obs)
+	m.checkServices(ctx, sc)
 	m.resolveVanished(sc)
 	m.dropUnseenPending(sc)
 	obs.Firing = m.firingConditions()

@@ -260,6 +260,7 @@ func setDefaults() {
 	viper.SetDefault("alert.failover_loop_window_sec", 900)
 	viper.SetDefault("alert.check_interval_sec", 30)
 	viper.SetDefault("alert.check_nodes", true)
+	viper.SetDefault("alert.check_services", true)
 	viper.SetDefault("alert.watch_drbd_events", true)
 	viper.SetDefault("alert.idle_interval_sec", 300)
 	viper.SetDefault("alert.history_size", 500)

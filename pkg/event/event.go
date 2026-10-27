@@ -47,6 +47,12 @@ const (
 	// on every node, because the data it reads is damaged, bounces between the
 	// nodes for as long as the fault lasts, and moving again fixes nothing.
 	TypeResourceFailoverLoop Type = "resource.failover_loop"
+	// TypeHAServiceFailing fires when a service managed by an HA chain is not
+	// running, or keeps restarting, on the node that holds the chain. It is
+	// raised for the unit (the Node field carries its name, not a host) and
+	// resolves when the unit has run steadily again. DRBD reports nothing of it:
+	// every replica is UpToDate and a Primary exists while nothing is served.
+	TypeHAServiceFailing Type = "ha.service_failing"
 	// TypeResourceNoPrimary fires when a resource that had a Primary no longer
 	// has one anywhere. Nothing is serving I/O for it.
 	TypeResourceNoPrimary Type = "resource.no_primary"

@@ -102,6 +102,11 @@ type AlertConfig struct {
 	// package defaults (85 and 95).
 	PoolNearFullPercent float64 `mapstructure:"pool_near_full_percent"`
 	PoolFullPercent     float64 `mapstructure:"pool_full_percent"`
+	// CheckServices enables alerts on the services of HA chains: a unit that
+	// is not running, or keeps restarting, on the node that holds its chain
+	// (ha.service_failing). DRBD says nothing of it, so it needs its own read
+	// of the chains, one SSH session per node per poll.
+	CheckServices bool `mapstructure:"check_services"`
 	// WatchDRBDEvents keeps a `drbdsetup events2` stream open to every node,
 	// so a DRBD state change is checked within seconds instead of at the next
 	// poll, and a healthy cluster is polled every IdleIntervalSec instead of

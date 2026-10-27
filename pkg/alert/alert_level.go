@@ -28,6 +28,7 @@ type pollScope struct {
 	resourcesOK bool
 	nodesOK     bool
 	poolsOK     bool
+	servicesOK  bool
 }
 
 func (s *pollScope) mark(key string) {
@@ -99,6 +100,13 @@ func (m *Monitor) resolveVanished(sc *pollScope) {
 			} else {
 				msg = fmt.Sprintf("pool %s on %s no longer exists; clearing its outstanding alert", resource, node)
 			}
+		case sourceServices:
+			if !sc.servicesOK {
+				m.log.Debug("Monitor.resolveVanished: service source did not answer, keeping condition", zap.String("key", key))
+				continue
+			}
+			// Node carries the unit's name for these conditions.
+			msg = fmt.Sprintf("service %s is no longer part of resource %s's HA chain; clearing its outstanding alert", node, resource)
 		default:
 			if !sc.resourcesOK {
 				m.log.Debug("Monitor.resolveVanished: resource source did not answer, keeping condition", zap.String("key", key))

@@ -160,6 +160,11 @@ check_interval_sec = 30
 # SSH-probe every registered node on each poll. This is what produces
 # node.unreachable events, and the only check that costs a round trip per node.
 check_nodes = true
+# Read the services of every HA chain (`haify ha create`) on each poll, one SSH
+# session per node. This is what produces ha.service_failing: a unit that has
+# not run for three minutes, or restarted three times in ten. DRBD says
+# nothing of it, because the replicas stay UpToDate while nothing is served.
+check_services = true
 # Keep a `drbdsetup events2` stream open to every node, so a DRBD state change
 # is checked within seconds; a healthy cluster is then polled every
 # idle_interval_sec instead of every check_interval_sec.
