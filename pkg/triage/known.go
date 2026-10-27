@@ -30,6 +30,8 @@ var matchers = []matcher{
 	matchPromoterStartFailed,
 	matchUnplannedFailover,
 	matchNoPrimary,
+	matchFailoverLoop,
+	matchServiceFailing,
 	matchNodeUnreachable,
 	matchMountFull,
 }
