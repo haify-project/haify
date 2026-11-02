@@ -35,6 +35,7 @@ detect_var="STUB_DETECT_$n"
 
 # shellcheck disable=SC2016 # patterns match the probes' text literally
 case "$cmd" in
+	"") exit 1 ;; # a master connection (-fN): the tests run without one
 	true) exit 0 ;;
 	"hostname -s") echo "$node" ;;
 	*os-release*) printf '%b\n' "${!detect_var:-${STUB_DETECT:-os ubuntu 24.04 x86_64}}" ;;

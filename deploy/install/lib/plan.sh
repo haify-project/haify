@@ -6,8 +6,36 @@
 # ssh_opts_for replaces the PVE one (lib.sh): outside PVE there is no
 # cluster-kept known_hosts, so a node's key is learnt on first contact and
 # checked from then on.
+#
+# Each node gets one master connection that every later ssh and scp to it
+# rides: an install makes dozens of calls per node, and a fresh handshake
+# each time made a dry run of three nodes take over a minute. The master is
+# started on its own with /dev/null for all three streams, because one
+# spawned by ControlMaster=auto inside $(...) would hold the capture open
+# until ControlPersist ran out. A node it cannot reach is not retried.
 ssh_opts_for() {
 	SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+	[ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ] || return 0
+	local node="$1" sock="$WORK_DIR/ssh-$1"
+	if [ ! -S "$sock" ] && [ ! -e "$sock.none" ]; then
+		if ssh "${SSH_OPTS[@]}" -o ControlMaster=yes -o "ControlPath=$sock" -o ControlPersist=300 \
+			-fN "root@$(node_ip "$node")" </dev/null >/dev/null 2>&1 && [ -S "$sock" ]; then
+			:
+		else
+			: > "$sock.none"
+		fi
+	fi
+	[ -S "$sock" ] && SSH_OPTS+=(-o ControlMaster=no -o "ControlPath=$sock")
+	return 0
+}
+
+# ssh_close_masters ends the master connections before WORK_DIR goes.
+ssh_close_masters() {
+	local s
+	for s in "${WORK_DIR:-/nonexistent}"/ssh-*; do
+		[ -S "$s" ] && ssh -o "ControlPath=$s" -O exit x >/dev/null 2>&1
+	done
+	return 0
 }
 
 LOCAL_ENV=plain
@@ -32,7 +60,11 @@ add_node() {
 	in_list "$1" "${NODES[@]}" && die "node '$1' is listed twice"
 	NODES+=("$1")
 	NODE_IP["$1"]="$2"
-	if local_addresses | grep -qxF "$2"; then LOCAL_NODE="$1"; fi
+	# Matched against a captured list: under pipefail, grep -q leaving early
+	# would fail the pipe it reads from.
+	local mine
+	mine=$(local_addresses)
+	if printf '%s\n' "$mine" | grep -qxF "$2"; then LOCAL_NODE="$1"; fi
 }
 
 find_nodes() {
@@ -46,6 +78,12 @@ find_nodes() {
 				*)
 					# An address alone: the node is called what it calls itself.
 					NODE_IP["$item"]="$item"
+					if [ "$PROBE_JSON" = 1 ] && ! reachable "$item"; then
+						# Reported as unreachable under its address.
+						unset 'NODE_IP[$item]'
+						add_node "$item" "$item"
+						continue
+					fi
 					ensure_root_ssh "$item"
 					name=$(check_on "$item" "hostname -s")
 					unset 'NODE_IP[$item]'
@@ -126,8 +164,8 @@ choose_env() {
 blank_disks() {
 	local node="$1" d
 	while read -r d size; do
-		[ "$(device_verdict "$node" "$d")" = clean ] && printf '%s %s\n' "$d" "$size"
-	done < <(check_on "$node" "lsblk -dpno NAME,SIZE,TYPE | awk '\$3 == \"disk\" { print \$1, \$2 }'" || true)
+		[ "$(device_verdict "$node" "$d" < /dev/null)" = clean ] && printf '%s %s\n' "$d" "$size"
+	done < <(check_on "$node" "lsblk -dpno NAME,SIZE,TYPE | awk '\$3 == \"disk\" && \$1 !~ /^\/dev\/(drbd|zram|nbd|rbd|loop)/ { print \$1, \$2 }'" || true)
 }
 
 # ask_devices fills in the disks the options left out, offering the blank

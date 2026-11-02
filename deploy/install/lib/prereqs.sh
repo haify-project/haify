@@ -119,21 +119,42 @@ prereqs_xcpng() {
 	fi
 }
 
+prereqs_node() {
+	local node="$1" fam
+	fam=$(os_family "$node")
+	log "$node: ${NODE_OS[$node]} ($fam)"
+	case "$fam" in
+		ubuntu) prereqs_ubuntu "$node" ;;
+		debian) prereqs_debian "$node" ;;
+		el) prereqs_el "$node" ;;
+		xcp-ng) prereqs_xcpng "$node" ;;
+		*) die "$node runs ${NODE_OS[$node]}, which the installer has no packages for. Install DRBD 9, drbd-utils and drbd-reactor
+by hand (docs/node-prerequisites.md), then rerun with --from-step 3" ;;
+	esac
+	ensure_drbd9_loaded "$node"
+	ensure_drbd_reactor_config "$node"
+}
+
+# step_prereqs installs on all nodes at once: building the DRBD module takes
+# minutes per node, and one after another tripled the wait. Each node's
+# output is tagged [node] so it can be told apart (and filtered by the web
+# installer). A dry run stays sequential, so its plan reads in order.
 step_prereqs() {
 	step 2 "DRBD 9, drbd-utils, drbd-reactor and the storage tools on every node"
-	local node fam
+	local node failed=()
+	if [ "$DRY_RUN" = 1 ] || [ "${#NODES[@]}" -eq 1 ]; then
+		for node in "${NODES[@]}"; do prereqs_node "$node"; done
+		return 0
+	fi
 	for node in "${NODES[@]}"; do
-		fam=$(os_family "$node")
-		log "$node: ${NODE_OS[$node]} ($fam)"
-		case "$fam" in
-			ubuntu) prereqs_ubuntu "$node" ;;
-			debian) prereqs_debian "$node" ;;
-			el) prereqs_el "$node" ;;
-			xcp-ng) prereqs_xcpng "$node" ;;
-			*) die "$node runs ${NODE_OS[$node]}, which the installer has no packages for. Install DRBD 9, drbd-utils and drbd-reactor
-by hand (docs/node-prerequisites.md), then rerun with --from-step 3" ;;
-		esac
-		ensure_drbd9_loaded "$node"
-		ensure_drbd_reactor_config "$node"
+		{
+			(prereqs_node "$node") 2>&1
+			echo "$?" > "$WORK_DIR/prereqs-$node.rc"
+		} | sed -u "/\\[$node\\]/!s/^/[$node] /" &
 	done
+	wait
+	for node in "${NODES[@]}"; do
+		[ "$(cat "$WORK_DIR/prereqs-$node.rc" 2>/dev/null)" = 0 ] || failed+=("$node")
+	done
+	[ "${#failed[@]}" -eq 0 ] || die "the prerequisites failed on ${failed[*]}: the lines tagged with those nodes above say why"
 }

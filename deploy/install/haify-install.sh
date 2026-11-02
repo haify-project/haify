@@ -42,6 +42,8 @@ BOOT_DIR="$DEPLOY_DIR/proxmox/bootstrap"
 . "$SCRIPT_DIR/lib/integrations.sh"
 # shellcheck source=lib/plan.sh
 . "$SCRIPT_DIR/lib/plan.sh"
+# shellcheck source=lib/probe.sh
+. "$SCRIPT_DIR/lib/probe.sh"
 
 usage() {
 	cat <<EOF
@@ -54,6 +56,8 @@ Platform:
   --env ENV               One of: ${ENVS[*]}
                           (default: what the nodes run; asked when they run several)
   --list-envs             Print what each node runs and exit
+  --probe-json            Print the nodes, what they run and their disks as JSON, and exit
+                          (for the web wizard, haify-installer)
 
 Nodes:
   --nodes N=IP[,N=IP...]  The nodes, by name and address. Default: the platform's own
@@ -106,6 +110,7 @@ REPLICAS=""
 ASSUME_YES=0
 FROM_STEP=1
 LIST_ENVS=0
+PROBE_JSON=0
 PASS_THROUGH=()
 
 need_arg() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value (see --help)"; }
@@ -115,6 +120,7 @@ while [ $# -gt 0 ]; do
 		--env) need_arg "$@"; ENV="$2"; shift 2; continue ;;
 		--nodes) need_arg "$@"; NODES_ARG="$2"; shift 2; continue ;;
 		--list-envs) LIST_ENVS=1; shift; continue ;;
+		--probe-json) PROBE_JSON=1; shift; continue ;;
 		--storage-nodes) need_arg "$@"; STORAGE_NODES_ARG="$2" ;;
 		--devices) need_arg "$@"; DEVICES="$2" ;;
 		--node-devices)
@@ -159,6 +165,7 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/haify-install.XXXXXX")
 CURRENT_STEP=0
 on_exit() {
 	local rc=$?
+	ssh_close_masters
 	rm -rf "$WORK_DIR"
 	if [ "$rc" -ne 0 ] && [ "$CURRENT_STEP" -gt 0 ]; then
 		printf '\nStep %s failed. Fix the cause above, then resume with:\n  %s' "$CURRENT_STEP" "$0" >&2
@@ -179,6 +186,13 @@ trap on_exit EXIT
 # ---------------------------------------------------------------------------
 
 detect_local
+if [ "$PROBE_JSON" = 1 ]; then
+	# Only the JSON goes to stdout; the progress lines go with the errors.
+	exec 3>&1 1>&2
+	find_nodes
+	probe_json >&3
+	exit 0
+fi
 if [ "$LOCAL_ENV" = proxmox ] && { [ -z "$ENV" ] || [ "$ENV" = proxmox ]; }; then
 	# The PVE bootstrap reads the cluster from pmxcfs and does everything
 	# from here on, including the storage plugin and storage.cfg.

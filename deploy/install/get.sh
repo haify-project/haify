@@ -5,7 +5,9 @@
 #   curl -fsSL https://github.com/haify-project/haify/releases/latest/download/install.sh | sudo bash
 #   curl -fsSL .../install.sh | sudo bash -s -- --env libvirt --nodes kvm1=10.0.0.11,kvm2=10.0.0.12 --dry-run
 #
-# Arguments go to the installer (haify-install.sh --help lists them).
+# Without arguments it starts the web wizard and prints the address to open.
+# With arguments (or --cli) it asks in the terminal; the arguments go to
+# haify-install.sh (--help lists them).
 # HAIFY_VERSION=v1.18.0 picks a release instead of the latest;
 # HAIFY_DOWNLOAD_BASE=<url> downloads the bundle from a mirror instead.
 set -eu
@@ -35,6 +37,13 @@ fetch "$base/haify-bundle-linux-amd64.tar.gz.sha256" haify-bundle-linux-amd64.ta
 sha256sum -c --quiet haify-bundle-linux-amd64.tar.gz.sha256
 rm -rf haify-bundle
 tar -xzf haify-bundle-linux-amd64.tar.gz
+
+# With no options it opens the web wizard and prints its address; options,
+# or --cli, run the installer in this terminal instead.
+if [ $# -eq 0 ]; then
+	exec "$dir/haify-bundle/bin/haify-installer"
+fi
+[ "${1:-}" = --cli ] && shift
 
 # Piped into bash, this script's stdin is the pipe; the installer's
 # questions are read from the terminal instead.

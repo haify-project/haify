@@ -92,6 +92,10 @@ os_family() {
 
 members_of() {
 	case "$1" in
+		proxmox)
+			# pmxcfs keeps every member's name and address here.
+			json_query 'printf "%s\t%s\n", $_, $j->{nodelist}{$_}{ip} for sort keys %{ $j->{nodelist} || {} };' < "$PVE_DIR/.members" 2>/dev/null
+			;;
 		xcp-ng)
 			# xe prints "name-label ( RO): x" blocks; the pool master knows every host.
 			xe host-list params=name-label,address 2>/dev/null | awk -F': ' '

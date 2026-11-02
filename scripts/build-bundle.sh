@@ -20,7 +20,7 @@ export GOOS=linux GOARCH=amd64 CGO_ENABLED=0
 cd "$root"
 go build -ldflags "-s -w -X main.version=$version" -o "$b/bin/haify-controller" ./cmd/controller
 go build -ldflags "-s -w -X main.version=$version" -o "$b/bin/haify-mcp" ./cmd/mcp
-for c in cli:haify service-ip:service-ip haify-csi:haify-csi haify-docker:haify-docker haify-opennebula:haify-opennebula; do
+for c in cli:haify haify-installer:haify-installer service-ip:service-ip haify-csi:haify-csi haify-docker:haify-docker haify-opennebula:haify-opennebula; do
 	go build -ldflags "-s -w" -o "$b/bin/${c#*:}" "./cmd/${c%%:*}"
 done
 
