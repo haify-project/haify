@@ -33,6 +33,23 @@ Storage nodes: Linux with DRBD 9 (kernel module and `drbd-utils`), `drbd-reactor
 
 The controller host (a storage node or a separate machine) needs root SSH to every node.
 
+## Install
+
+On one of the nodes, as root:
+
+```bash
+curl -fsSL https://github.com/haify-project/haify/releases/latest/download/install.sh | sudo bash
+```
+
+The installer finds out what the nodes run (Proxmox VE, XCP-ng, Kubernetes, OpenStack, OpenNebula, Nomad, KVM/libvirt, Docker/Podman, or none of these) and asks which to connect when they run several. It reads the nodes from the platform's own member list where there is one. Then, on every node, it installs DRBD 9, drbd-utils and drbd-reactor from the repository for the node's distribution (Ubuntu, Debian, Rocky/Alma/RHEL, XCP-ng). It offers the blank disks it finds for the pool, starts the controller with Self-HA behind a floating address, and installs the platform's driver, plugin or hook. For Kubernetes, Nomad and OpenStack it writes the chart values, jobs or `cinder.conf` section with the controller filled in. Nothing changes before it shows the plan. A rerun changes only what is missing, and `--from-step` resumes after a failure. To choose everything up front instead of answering questions:
+
+```bash
+curl -fsSL .../install.sh | sudo bash -s -- --env libvirt \
+  --nodes kvm1=10.0.0.11,kvm2=10.0.0.12,kvm3=10.0.0.13 --devices /dev/sdb --vip 10.0.0.250/24 --dry-run
+```
+
+`--help` lists every option; [deploy/install/haify-install.sh](deploy/install/haify-install.sh) is the script. The steps it takes by hand follow.
+
 ## Quickstart
 
 Three nodes, `node1`..`node3` at `10.0.0.11`..`10.0.0.13`, each with an empty disk `/dev/sdb`. The controller runs on `node1`.

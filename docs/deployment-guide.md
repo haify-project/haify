@@ -7,6 +7,11 @@ The per-node package list, with the symptom each missing piece produces, is
 [`node-prerequisites.md`](./node-prerequisites.md). Day-to-day operation is
 covered in [`user-guide.md`](./user-guide.md).
 
+`deploy/install/haify-install.sh` (published with each release as
+`install.sh`) does sections 2 to 8 and the platform's integration in one run,
+on Ubuntu, Debian, Rocky/Alma/RHEL and XCP-ng nodes; on Proxmox VE it runs
+`deploy/proxmox/bootstrap.sh`. This guide is what it does, by hand.
+
 The commands are for Ubuntu 24.04 (amd64 and arm64). Package names below are
 Ubuntu's; adjust them for other distributions.
 

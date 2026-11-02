@@ -89,9 +89,9 @@ register_nodes() {
 			[ "$addr" = "${NODE_IP[$n]}" ] ||
 				warn "$n is registered with $addr, PVE has ${NODE_IP[$n]}; left as is (change it with: haify node set-address $n <ip>)"
 		elif [ -n "$regname" ]; then
-			# The plugin attaches and promotes a disk by the PVE node name, so
-			# the same machine under another haify name is unusable for guests.
-			die "${NODE_IP[$n]} is registered in haify as '$regname', but its PVE name is '$n'; haify node names must equal PVE node names.
+			# Platforms attach and promote a disk by their own name for the
+			# host, so the same machine under another haify name is unusable.
+			die "${NODE_IP[$n]} is registered in haify as '$regname', but the cluster calls it '$n'; haify node names must equal the cluster's.
 Unregister it (haify node unregister $regname, once nothing uses it) and rerun with --from-step 5."
 		else
 			run_on "$CONTROLLER_NODE" "haify node register --name $(q "$n") --address $(q "${NODE_IP[$n]}")"

@@ -26,9 +26,8 @@ dispatch_key_path() {
 write_dispatch_config() {
 	local file="$1" key="$2" n ip
 	{
-		printf '# How haify-controller reaches the PVE nodes over SSH (dispatch library).\n'
-		printf "# Written by deploy/proxmox/bootstrap.sh; it reuses the root SSH trust PVE\n"
-		printf '# keeps between cluster members. Hosts are keyed by the address each node\n'
+		printf '# How haify-controller reaches the nodes over SSH (dispatch library).\n'
+		printf '# Written by the Haify installer. Hosts are keyed by the address each node\n'
 		printf '# is registered with in haify.\n\n'
 		printf '[ssh]\nuser = "root"\nport = 22\nkey_path = "%s"\n' "$key"
 		# dispatch records host keys in root'"'"'s known_hosts and adds an

@@ -33,6 +33,23 @@ Haify 是一套坏一台服务器也照常工作的存储。它用 DRBD 9 把卷
 
 控制器所在主机（存储节点或单独一台机器）需要能以 root 通过 SSH 登录每个节点。
 
+## 安装
+
+在任一节点上以 root 运行：
+
+```bash
+curl -fsSL https://github.com/haify-project/haify/releases/latest/download/install.sh | sudo bash
+```
+
+安装程序会先识别节点上跑的是什么平台（Proxmox VE、XCP-ng、Kubernetes、OpenStack、OpenNebula、Nomad、KVM/libvirt、Docker/Podman，或都不是）。节点上同时跑着好几种平台时，会问你接哪一个。平台本身有成员列表时，节点就从那里读。然后在每个节点上按发行版（Ubuntu、Debian、Rocky/Alma/RHEL、XCP-ng）从对应的软件源装好 DRBD 9、drbd-utils 和 drbd-reactor，列出找到的空盘供选作存储池，启动控制器，并在浮动地址后开启 Self-HA，最后装好该平台的驱动、插件或 hook。Kubernetes、Nomad 和 OpenStack 则生成填好控制器地址的 chart values、job 文件或 `cinder.conf` 片段。改动之前会先列出完整计划；重跑只补缺的部分，失败后用 `--from-step` 接着跑。不想回答问题，就把选项一次给全：
+
+```bash
+curl -fsSL .../install.sh | sudo bash -s -- --env libvirt \
+  --nodes kvm1=10.0.0.11,kvm2=10.0.0.12,kvm3=10.0.0.13 --devices /dev/sdb --vip 10.0.0.250/24 --dry-run
+```
+
+`--help` 列出全部选项，脚本在 [deploy/install/haify-install.sh](deploy/install/haify-install.sh)。下面是手动安装的步骤。
+
 ## 快速上手
 
 三个节点 `node1`..`node3`，地址 `10.0.0.11`..`10.0.0.13`，各有一块空盘 `/dev/sdb`。控制器跑在 `node1` 上。

@@ -60,9 +60,15 @@ jobs:
             service-ip@.service haify-controller.service controller.toml.example
           sha256sum haify-linux-amd64.tar.gz > haify-linux-amd64.tar.gz.sha256
 
+      - name: Installer bundle
+        run: ./scripts/build-bundle.sh dist "${GITHUB_REF#refs/tags/}"
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/haify-linux-amd64.tar.gz
             dist/haify-linux-amd64.tar.gz.sha256
+            dist/haify-bundle-linux-amd64.tar.gz
+            dist/haify-bundle-linux-amd64.tar.gz.sha256
+            dist/install.sh

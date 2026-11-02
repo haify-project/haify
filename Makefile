@@ -1,4 +1,4 @@
-.PHONY: kb build test clean install-controller install-cli install-mcp run-controller run-cli proto web-ui web-ui-dev web-ui-build ui-sync ui-ensure hooks ci deb deb-pve-plugin
+.PHONY: bundle kb build test clean install-controller install-cli install-mcp run-controller run-cli proto web-ui web-ui-dev web-ui-build ui-sync ui-ensure hooks ci deb deb-pve-plugin
 
 # Sync the freshly built web UI into ui/dist for go:embed. The directory is
 # gitignored and intentionally kept around after builds so plain `go build`
@@ -157,6 +157,11 @@ ci: ui-ensure
 	@go build ./...
 	@echo "==> go test (race, uncached)"
 	@go test -race -count=1 ./...
+	@echo "==> installer and Proxmox bootstrap tests"
+	@# bash 4 or newer: macOS's /bin/bash is 3.2, Homebrew's is on PATH.
+	@for t in deploy/install/test.sh deploy/proxmox/bootstrap/test.sh; do \
+		out=$$(bash $$t 2>&1) || { echo "$$out"; exit 1; }; echo "$$out" | tail -1; \
+	done
 	@echo "==> python tests (libvirt hook)"
 	@python3 -m unittest discover -s deploy/libvirt -p 'test_*.py'
 	@echo "==> python tests (Cinder driver, Horizon plugin)"
@@ -178,6 +183,11 @@ ci: ui-ensure
 	@echo "==> web-ui build"
 	@npm --prefix web-ui run build --silent >/dev/null
 	@echo "CI pipeline passed"
+
+# The release bundle the installer runs from: every linux/amd64 binary, the
+# configs and the platform integrations (scripts/build-bundle.sh).
+bundle: ui-sync
+	./scripts/build-bundle.sh dist $$(git describe --tags --always)
 
 # Dependencies
 deps:

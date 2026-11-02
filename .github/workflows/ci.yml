@@ -74,6 +74,10 @@ jobs:
 
       - name: Test the libvirt hook
         run: python3 -m unittest discover -s deploy/libvirt -p 'test_*.py'
+      - name: Test the installer and the Proxmox bootstrap
+        run: |
+          bash deploy/install/test.sh
+          bash deploy/proxmox/bootstrap/test.sh
       - name: Test the Cinder driver and Horizon plugin
         run: |
           python3 -m venv /tmp/haify-py

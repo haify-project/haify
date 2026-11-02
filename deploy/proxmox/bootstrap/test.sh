@@ -88,7 +88,7 @@ run_bootstrap() {
 	env PATH="$T/bin:$PATH" TMPDIR="$T/tmp" STUB_DIR="$T" STUB_MODE="$mode" \
 		HAIFY_PVE_DIR="$T/pve" HAIFY_BIN_DIR="$T/haifybin" HAIFY_CONFIG_DIR="$REPO_ROOT/configs" \
 		STUB_PLUGIN_SRC="$PROXMOX_DIR" STUB_VOTES="${STUB_VOTES:-3}" \
-		"$BOOTSTRAP" "$@" > "$T/out" 2>&1 || RC=$?
+		bash "$BOOTSTRAP" "$@" > "$T/out" 2>&1 || RC=$?
 }
 
 # ---------------------------------------------------------------------------
