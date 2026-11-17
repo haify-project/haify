@@ -94,6 +94,12 @@ export function NodeRows({
               <span className="font-mono text-[14px] font-semibold">{node.name}</span>
               <span className="text-[11.5px] text-muted-foreground">{node.hostname}</span>
               {isController ? <ControllerChip /> : null}
+              {/* A drained node says whose doing it is; the reason is in the panel. */}
+              {node.state === 'maintenance' && node.maintenanceBy ? (
+                <span className="text-[11.5px] text-muted-foreground">
+                  Drained by {node.maintenanceBy}
+                </span>
+              ) : null}
             </span>
           </button>
         </TableCell>

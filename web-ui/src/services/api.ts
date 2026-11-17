@@ -54,6 +54,9 @@ export type {
   HaStatusResponse,
   HaTomlResponse,
   HaConfigsResponse,
+  HaMigration,
+  VmDefinition,
+  VmDefinitionNode,
 } from './api/ha';
 export type {
   Gateway,

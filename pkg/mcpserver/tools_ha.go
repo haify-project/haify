@@ -20,7 +20,8 @@ type haCreateIn struct {
 	Mount    string   `json:"mount,omitempty" jsonschema:"mount point managed by the HA config, e.g. /mnt/data"`
 	FsType   string   `json:"fs_type,omitempty" jsonschema:"filesystem type for the mount (default ext4)"`
 	Services []string `json:"services,omitempty" jsonschema:"systemd services started on the active node, e.g. [\"mysql\"]"`
-	VM       string   `json:"vm,omitempty" jsonschema:"libvirt guest to run on the active node instead; it must already be defined under this name on every diskful replica (virsh define, autostart off), with its disks on /dev/drbd/by-res/<resource>/<volume>"`
+	VM       string   `json:"vm,omitempty" jsonschema:"libvirt guest to run on the active node instead; it must be defined under this name on one replica, with its disks on /dev/drbd/by-res/<resource>/<volume>. Haify defines it on the other replicas under the same UUID"`
+	VMFrom   string   `json:"vm_from,omitempty" jsonschema:"node to take the guest's definition from, when replicas already hold different ones"`
 }
 
 type haResourceIn struct {
@@ -150,7 +151,8 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 				}
 				agents = append(agents, agent)
 			}
-			configPath, err := s.client.MakeHa(ctx, in.Resource, in.Services, in.Mount, fsType, in.VIP, agents, nil)
+			configPath, err := s.client.MakeHaWith(ctx, &haifypb.MakeHaRequest{Resource: in.Resource, Services: in.Services,
+				MountPoint: in.Mount, Fstype: fsType, Vip: in.VIP, OcfAgents: agents, VmDefinitionNode: in.VMFrom})
 			if err != nil {
 				s.logger.Debug("haify_ha_create: create failed", zap.String("resource", in.Resource), zap.Error(err))
 				return nil, opResult{}, err
@@ -176,24 +178,7 @@ func (s *Server) registerHATools(srv *mcp.Server) {
 			return nil, ok(strings.Join(parts, ", ")), nil
 		})
 
-	addWrite(s, srv, destructiveTool("haify_ha_evict", "Evict HA resource",
-		"Planned switchover of one HA resource: its active node stops the services and another node takes over. "+
-			"It moves exactly the resource named and nothing else on the node — haify-meta is the controller with its "+
-			"VIP and the AI Copilot, any other name is that resource's own service. For haify-meta the call returns as "+
-			"soon as the switchover is launched, and when this server runs in the same chain (as Haify sets it up) it "+
-			"moves too: expect this connection to drop for several seconds, which is not a failure; check "+
-			"haify_ha_promoter_status for where it landed. For any other resource the call returns once another node "+
-			"has taken over, and fails if none did. Never stop or restart a drbd-reactor-managed service by hand "+
-			"instead: the promoter treats that as a fault and fails the resource over."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in haResourceIn) (*mcp.CallToolResult, opResult, error) {
-			s.logger.Debug("haify_ha_evict: evicting resource from its active node", zap.String("resource", in.Resource))
-			if err := s.client.EvictHa(ctx, in.Resource); err != nil {
-				s.logger.Debug("haify_ha_evict: failed", zap.String("resource", in.Resource), zap.Error(err))
-				return nil, opResult{}, err
-			}
-			s.logger.Debug("haify_ha_evict: done", zap.String("resource", in.Resource))
-			return nil, ok(fmt.Sprintf("resource %s evicted from its active node", in.Resource)), nil
-		})
+	s.registerHaEvictTools(srv)
 
 	addWrite(s, srv, destructiveTool("haify_ha_delete", "Delete HA config",
 		"Remove the drbd-reactor HA configuration of a resource. Running services are stopped; "+

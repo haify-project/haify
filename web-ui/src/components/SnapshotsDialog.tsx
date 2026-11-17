@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Camera, Loader2, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/services/api';
+import { replyNote } from '@/services/api/client';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -83,9 +84,17 @@ export function SnapshotsDialog({
     queryClient.invalidateQueries({ queryKey: ['snapshots', volumePath, node] });
 
   const createMutation = useMutation({
-    mutationFn: () => api.createSnapshot(volumePath, snapName, node),
-    onSuccess: () => {
-      toast.success(`Snapshot "${snapName}" created`);
+    mutationFn: async () => {
+      const res = await api.createSnapshot(volumePath, snapName, node);
+      if (!res.success) throw new Error(res.message);
+      return res;
+    },
+    onSuccess: (res) => {
+      // For a guest's volume the reply says whether the snapshot is
+      // filesystem- or crash-consistent, and why.
+      toast.success(`Snapshot "${snapName}" created`, {
+        description: replyNote(res.message, 'Snapshot created successfully'),
+      });
       setSnapName('');
       invalidate();
     },
@@ -168,6 +177,13 @@ export function SnapshotsDialog({
                         <span className="ml-2 text-muted-foreground">
                           {s.sizeGb}GB
                         </span>
+                        {s.consistency ? (
+                          <span className="ml-2 text-muted-foreground">
+                            {s.consistency === 'filesystem'
+                              ? 'Filesystem-consistent'
+                              : 'Crash-consistent'}
+                          </span>
+                        ) : null}
                       </div>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>

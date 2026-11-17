@@ -53,9 +53,9 @@ func (m *mockClient) HealthCheck(ctx context.Context, node string) (*client.Node
 	return m.healthCheckFn(ctx, node)
 }
 
-func (m *mockClient) CreateLvmSnapshot(_ context.Context, pool, lvName, snapshotName, node, size string) error {
+func (m *mockClient) CreateLvmSnapshotNoted(_ context.Context, pool, lvName, snapshotName, node, size string) (string, error) {
 	m.lvmSnapshots = append(m.lvmSnapshots, strings.Join([]string{pool, lvName, snapshotName, node, size}, "|"))
-	return nil
+	return "LVM snapshot created successfully", nil
 }
 
 func (m *mockClient) ResourceStatus(ctx context.Context, name string) (*haifypb.ResourceStatus, error) {
@@ -151,7 +151,7 @@ func TestToolRegistration(t *testing.T) {
 		// Observability: what the cluster did, not just what it is. Without
 		// these an assistant can describe a cluster but not explain how it got
 		// there, which is most of what gets asked after an incident.
-		"haify_event_list", "haify_audit_list", "haify_log_list",
+		"haify_event_list", "haify_audit_list", "haify_log_list", "haify_self_heal_status",
 		// Inspection: the stored verdict on everything around the alerts.
 		"haify_inspect_report", "haify_inspect_run",
 		// ZFS: the controller has had this surface for a long time and the

@@ -132,19 +132,29 @@ func (c *HaifyClient) UnregisterNode(ctx context.Context, address string) error 
 
 // DrainNode moves all Primary DRBD resources off the node and marks it maintenance.
 func (c *HaifyClient) DrainNode(ctx context.Context, name string) ([]string, error) {
+	resp, err := c.DrainNodeWith(ctx, &haifypb.DrainNodeRequest{Name: name})
+	return resp.GetResourcesMoved(), err
+}
+
+// DrainNodeWith drains a node as req says: with keep_in_use only what Haify
+// itself keeps Primary is moved, and the reply lists what stayed and why. The
+// reply is returned alongside an error too, when the controller sent one: a
+// drain that could not move everything still says what it moved.
+func (c *HaifyClient) DrainNodeWith(ctx context.Context, req *haifypb.DrainNodeRequest) (*haifypb.DrainNodeResponse, error) {
 	log := zap.L()
-	log.Debug("HaifyClient.DrainNode: sending request", zap.String("name", name))
-	resp, err := c.client.DrainNode(ctx, &haifypb.DrainNodeRequest{Name: name})
+	log.Debug("HaifyClient.DrainNodeWith: sending request", zap.String("name", req.GetName()), zap.Bool("keep_in_use", req.GetKeepInUse()),
+		zap.String("requested_by", req.GetRequestedBy()), zap.String("reason", req.GetReason()))
+	resp, err := c.client.DrainNode(ctx, req)
 	if err != nil {
-		log.Debug("HaifyClient.DrainNode: DrainNode failed", zap.Error(err))
+		log.Debug("HaifyClient.DrainNodeWith: DrainNode failed", zap.Error(err))
 		return nil, err
 	}
 	if !resp.Success {
-		log.Debug("HaifyClient.DrainNode: controller reported failure", zap.String("message", resp.Message))
-		return resp.ResourcesMoved, fmt.Errorf("%s", resp.Message)
+		log.Debug("HaifyClient.DrainNodeWith: controller reported failure", zap.String("message", resp.Message))
+		return resp, fmt.Errorf("%s", resp.Message)
 	}
-	log.Debug("HaifyClient.DrainNode: done", zap.Int("count", len(resp.ResourcesMoved)))
-	return resp.ResourcesMoved, nil
+	log.Debug("HaifyClient.DrainNodeWith: done", zap.Int("moved", len(resp.ResourcesMoved)), zap.Int("left", len(resp.ResourcesLeft)))
+	return resp, nil
 }
 
 // UndrainNode returns a drained node to active service.

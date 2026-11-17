@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"time"
 
 	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/client"
@@ -48,17 +49,22 @@ type ControllerClient interface {
 	UpdateResourceOptions(ctx context.Context, resource string, options map[string]string) error
 	GetResourceOptions(ctx context.Context, resource string) ([]*haifypb.ResourceOption, error)
 	RemoveVolume(ctx context.Context, resource string, volumeID uint32) error
-	ResizeVolume(ctx context.Context, resource string, volumeID uint32, sizeGB uint32) error
+	// ResizeVolumeWith returns what the controller said about the resize:
+	// what happened to a running guest and to a filesystem mounted from the
+	// volume.
+	ResizeVolumeWith(ctx context.Context, req *haifypb.ResizeVolumeRequest) (string, error)
 	CreateFilesystem(ctx context.Context, resource string, volumeID uint32, node, fstype string) error
 	MountResource(ctx context.Context, resource string, volumeID uint32, path, node, fstype string) error
 	UnmountResource(ctx context.Context, resource string, volumeID uint32, node string) error
 
 	// Snapshots (storage-type aware)
-	CreateLvmSnapshot(ctx context.Context, pool, lvName, snapshotName, node, size string) error
+	// The Noted variants return the controller's reply, which for a guest's
+	// volume says whether the snapshot is filesystem or crash consistent.
+	CreateLvmSnapshotNoted(ctx context.Context, pool, lvName, snapshotName, node, size string) (string, error)
 	ListLvmSnapshots(ctx context.Context, pool, node, resource string) ([]*haifypb.SnapshotInfo, error)
 	DeleteLvmSnapshot(ctx context.Context, pool, snapshotName, node string) error
 	RestoreLvmSnapshot(ctx context.Context, pool, snapshotName, node string) error
-	CreateZFSSnapshot(ctx context.Context, dataset, snapshotName, node string) error
+	CreateZFSSnapshotNoted(ctx context.Context, dataset, snapshotName, node string) (string, error)
 	ListZFSSnapshots(ctx context.Context, dataset, node string) ([]*haifypb.SnapshotInfo, error)
 	DeleteZFSSnapshot(ctx context.Context, snapshot, node string) error
 	RestoreZFSSnapshot(ctx context.Context, dataset, snapshotName, node string) error
@@ -112,6 +118,15 @@ type ControllerClient interface {
 	ListHa(ctx context.Context) ([]*haifypb.HaConfigInfo, error)
 	GetHa(ctx context.Context, resource string) (*haifypb.HaConfigInfo, error)
 	EvictHa(ctx context.Context, resource string) error
+	MakeHaWith(ctx context.Context, req *haifypb.MakeHaRequest) (string, error)
+	EvictHaLive(ctx context.Context, resource, target string, timeout time.Duration) (*haifypb.EvictHaResponse, error)
+	GetHaMigration(ctx context.Context, resource string) (*haifypb.HaMigration, error)
+	// GetSelfHealStatus is what auto-evict and auto-diskful are doing and
+	// waiting for.
+	GetSelfHealStatus(ctx context.Context) (*haifypb.GetSelfHealStatusResponse, error)
+	WaitHaMigration(ctx context.Context, resource string, every time.Duration, progress func(*haifypb.HaMigration)) (*haifypb.HaMigration, error)
+	GetVmDefinition(ctx context.Context, resource string) (*haifypb.VmDefinitionResponse, error)
+	SyncVmDefinition(ctx context.Context, resource, from string) (*haifypb.VmDefinitionResponse, error)
 	DeleteHa(ctx context.Context, resource string) error
 	GetSelfHaStatus(ctx context.Context) (*client.SelfHaStatus, error)
 	EnableSelfHa(ctx context.Context, vip, pool string, sizeGB, port uint32, nodes []string) (string, string, error)
@@ -152,7 +167,9 @@ type ControllerClient interface {
 	RepairWanProxy(ctx context.Context, name string, dryRun bool) (*haifypb.RepairWanProxyResponse, error)
 
 	// Node lifecycle
-	DrainNode(ctx context.Context, name string) ([]string, error)
+	// DrainNodeWith returns the reply alongside an error too: a drain that
+	// could not move everything still says what it moved and what it left.
+	DrainNodeWith(ctx context.Context, req *haifypb.DrainNodeRequest) (*haifypb.DrainNodeResponse, error)
 	UndrainNode(ctx context.Context, name string) error
 	SetNodeLabels(ctx context.Context, node string, labels map[string]string, replace bool) (*haifypb.NodeInfo, error)
 	ConvertPoolToThin(ctx context.Context, node, pool string) error

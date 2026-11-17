@@ -23,7 +23,7 @@ import (
 // after another (move-replica: the new replica syncs before the old one goes).
 //
 // Left out, with a note: the controller's metadata, WAN resources, resources
-// already moving, and CSI volumes — a PersistentVolume's node affinity is
+// already moving (by move-replica or by auto-diskful), and CSI volumes — a PersistentVolume's node affinity is
 // fixed when it is created, so moving its replica limits where its pod can be
 // scheduled.
 //
@@ -87,6 +87,10 @@ func (rm *ResourceManager) PlanRebalance(ctx context.Context, maxMoves int) ([]R
 		case r.Name == SelfHaResource, r.WANMode, r.MoveFrom != "":
 			log.Debug("PlanRebalance: resource not movable", zap.String("resource", r.Name), zap.Bool("wan", r.WANMode),
 				zap.Bool("moving", r.MoveFrom != ""))
+			continue
+		case rm.controller.follower.following(r.Name):
+			log.Debug("PlanRebalance: replica is following its user; left out", zap.String("resource", r.Name))
+			notes = append(notes, r.Name+": its replica is moving to the node that uses it (auto-diskful)")
 			continue
 		case externallyPromoted(r.Name, r.Labels) == "the CSI driver":
 			log.Debug("PlanRebalance: CSI volume left out", zap.String("resource", r.Name))

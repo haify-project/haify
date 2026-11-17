@@ -180,6 +180,7 @@ func backupToProto(b *database.Backup) *haifypb.BackupInfo {
 		Id: b.ID, Resource: b.Resource, Target: b.Target, Node: b.Node,
 		Backend: b.Backend, State: b.State, Error: b.Error, Prefix: b.Prefix,
 		TotalBytes: b.TotalBytes, Kind: b.Kind, Parent: b.Parent, Schedule: b.Schedule,
+		Consistency: b.Consistency,
 	}
 	if info.Kind == "" {
 		info.Kind = database.BackupKindFull

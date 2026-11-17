@@ -124,7 +124,7 @@ func (sm *StorageManager) ListLvmSnapshots(ctx context.Context, vgName, node, re
 }
 
 // parseSnapshotLine reads one row of LVListSnapshots output:
-// "name|size_bytes|time|origin".
+// "name|size_bytes|time|origin|tags".
 func parseSnapshotLine(line, vgName string) (*SnapshotInfo, bool) {
 	fields := strings.Split(strings.TrimSpace(line), "|")
 	if len(fields) < 4 {
@@ -134,13 +134,17 @@ func parseSnapshotLine(line, vgName string) (*SnapshotInfo, bool) {
 	if name == "" {
 		return nil, false
 	}
-	return &SnapshotInfo{
+	snap := &SnapshotInfo{
 		Name:      name,
 		Volume:    vgName,
 		SizeGB:    bytesToGB(parseThinUint(fields[1])),
 		CreatedAt: strings.TrimSpace(fields[2]),
 		Origin:    strings.TrimSpace(fields[3]),
-	}, true
+	}
+	if len(fields) > 4 {
+		snap.Consistency = consistencyOfTags(fields[4])
+	}
+	return snap, true
 }
 
 // backingVolumesOf resolves a resource to the set of LV names its snapshots can

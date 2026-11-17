@@ -51,6 +51,7 @@ func (s *Server) GetResource(ctx context.Context, req *haifypb.GetResourceReques
 			ReadKib:          state.ReadKiB,
 			SentKib:          state.SentKiB,
 			ReceivedKib:      state.ReceivedKiB,
+			Joining:          state.Joining,
 		}
 	}
 
@@ -76,6 +77,9 @@ func (s *Server) GetResource(ctx context.Context, req *haifypb.GetResourceReques
 			Encrypted:       resource.Encrypted,
 			Labels:          resource.Labels,
 			Profile:         resource.Profile,
+
+			JoiningNodes:      resource.JoiningNodes,
+			CommittedReplicas: uint32(max(resource.CommittedReplicas, 0)),
 		},
 	}, nil
 }

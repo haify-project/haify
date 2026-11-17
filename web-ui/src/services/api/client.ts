@@ -95,6 +95,17 @@ export function createRequest(baseUrl: string = API_BASE): RequestFn {
   };
 }
 
+/**
+ * What a reply says beyond its plain confirmation, or undefined when it says
+ * nothing more. The controller's reply to a resize or a snapshot can carry
+ * what the person has to know: that a gateway's filesystem was grown, that a
+ * running guest still sees the old size, that a snapshot is crash-consistent.
+ */
+export function replyNote(message: string | undefined, plain: string): string | undefined {
+  const text = (message ?? '').trim();
+  return text && text !== plain ? text : undefined;
+}
+
 // queryString renders only the parameters that were actually set. Sending
 // empty values would be read by the server as filters rather than as absence.
 export function queryString(params: object): string {

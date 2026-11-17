@@ -197,6 +197,7 @@ func (rm *ResourceManager) GetResource(ctx context.Context, name string) (*Resou
 		Encrypted:  dbRes.Encrypted,
 	}
 	info.FaultDomainRisk = faultDomainRisk(nodeAddresses, disklessNodes, rm.labelsByNode(ctx), rm.faultDomainKey())
+	rm.settleJoining(ctx, dbRes, info)
 
 	if len(info.Volumes) == 0 && len(dbVolumes) > 0 {
 		log.Debug("GetResource: no live volumes; using database records", zap.String("resource", name), zap.Int("count", len(dbVolumes)))
@@ -320,6 +321,7 @@ func (rm *ResourceManager) GetResourceStatusList(ctx context.Context) ([]alert.R
 		// diskless clients. They report Diskless as their normal state, so the
 		// monitor has to be told, or it alerts on every one of them forever.
 		diskless := disklessByDesign(rm.controller, dbRes)
+		liveMove, liveMoveEndedOn := rm.liveMoveRecent(ctx, dbRes.Name)
 
 		item := alert.ResourceStatusInfo{
 			Name:       dbRes.Name,
@@ -327,7 +329,10 @@ func (rm *ResourceManager) GetResourceStatusList(ctx context.Context) ([]alert.R
 			// A CSI volume is promoted only while a pod has it mounted, and a
 			// Proxmox VM disk only while its VM runs.
 			IdleWithoutPrimary: externallyPromoted(dbRes.Name, dbRes.Labels) != "",
+			LiveMove:           liveMove,
+			LiveMoveEndedOn:    liveMoveEndedOn,
 			Owner:              resourceOwner(dbRes.Labels),
+			CommittedReplicas:  info.CommittedReplicas,
 		}
 		for node, st := range info.NodeStates {
 			state := alert.NodeStateInfo{
@@ -335,6 +340,7 @@ func (rm *ResourceManager) GetResourceStatusList(ctx context.Context) ([]alert.R
 				ReplicationState: st.Replication,
 				Role:             st.Role,
 				ExpectedDiskless: diskless[node] || diskless[rm.controller.ResolveHost(node)],
+				Joining:          st.Joining,
 				Quorum:           st.Quorum,
 				Connection:       st.Connection,
 				OutOfSyncKiB:     st.OutOfSyncKiB,

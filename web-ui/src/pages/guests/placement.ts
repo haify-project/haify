@@ -22,6 +22,8 @@ export interface Guest {
   disks: GuestDisk[];
   /** Restarted on another replica by drbd-reactor when its node fails. */
   ha?: boolean;
+  /** The resource whose HA config runs the guest, when it can be moved live. */
+  haResource?: string;
   /** The guest's page in the hypervisor's own interface, on a node's address. */
   link?: { label: string; url: (address: string) => string };
 }

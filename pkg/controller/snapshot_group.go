@@ -130,15 +130,35 @@ type suspendedResource struct {
 // or the group takes so long that a watchdog may have resumed I/O, the
 // snapshots already taken are deleted.
 func (rm *ResourceManager) CreateSnapshotGroup(ctx context.Context, members []SnapshotGroupMember) error {
+	_, err := rm.CreateSnapshotGroupNoted(ctx, members)
+	return err
+}
+
+// CreateSnapshotGroupNoted is CreateSnapshotGroup, and also says which
+// consistency the snapshots of libvirt guests' volumes have
+// (snapshot_consistency.go); "" when no member belongs to a guest.
+func (rm *ResourceManager) CreateSnapshotGroupNoted(ctx context.Context, members []SnapshotGroupMember) (note string, err error) {
 	log := rm.resourcesLog()
 	log.Debug("CreateSnapshotGroup: start", zap.Int("members", len(members)))
 	resources, err := rm.validateSnapshotGroup(ctx, members)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	snapshotGroupMu.Lock()
 	defer snapshotGroupMu.Unlock()
+
+	// The members' guests are frozen before any I/O is suspended, and thawed
+	// after all of it has resumed (this deferred call is registered before
+	// the resume, so it runs after it): a freeze flushes through DRBD.
+	q := rm.quiesceGuests(ctx, resources...)
+	defer func() {
+		if err != nil {
+			q.discard()
+		}
+		q.finish()
+		note = q.notes(resources...)
+	}()
 
 	var suspended []suspendedResource
 	// Resume in the reverse order, on contexts of their own (resumeAfterSnapshot):
@@ -155,14 +175,14 @@ func (rm *ResourceManager) CreateSnapshotGroup(ctx context.Context, members []Sn
 		hosts, err := rm.resourceHosts(ctx, res)
 		if err != nil {
 			log.Debug("CreateSnapshotGroup: no hosts", zap.String("resource", res), zap.Error(err))
-			return fmt.Errorf("hosts of %s: %w", res, err)
+			return "", fmt.Errorf("hosts of %s: %w", res, err)
 		}
 		start := time.Now()
 		unit, onHosts, err := rm.suspendForSnapshot(ctx, res, hosts)
 		log.Debug("CreateSnapshotGroup: suspended resource", zap.String("resource", res), zap.Strings("hosts", onHosts),
 			zap.String("unit", unit), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
-			return fmt.Errorf("suspend I/O of %s: %w", res, err)
+			return "", fmt.Errorf("suspend I/O of %s: %w", res, err)
 		}
 		suspended = append(suspended, suspendedResource{resource: res, hosts: onHosts, watchdog: unit})
 	}
@@ -170,26 +190,32 @@ func (rm *ResourceManager) CreateSnapshotGroup(ctx context.Context, members []Sn
 	var made []SnapshotGroupMember
 	for _, m := range members {
 		start := time.Now()
-		err := rm.controller.snapshots.CreateSnapshot(ctx, m.Volume, m.Name, m.Node)
+		err := rm.controller.snapshots.takeSnapshot(ctx, m.Volume, m.Name, m.Node)
 		log.Debug("CreateSnapshotGroup: member snapshot", zap.String("resource", m.Resource), zap.String("volume", m.Volume),
 			zap.String("snapshot", m.Name), zap.String("node", m.Node), zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
 			rm.undoSnapshotGroup(made)
-			return fmt.Errorf("snapshot %s of %s on %s: %w", m.Name, m.Volume, m.Node, err)
+			return "", fmt.Errorf("snapshot %s of %s on %s: %w", m.Name, m.Volume, m.Node, err)
 		}
 		made = append(made, m)
+		if dataset, zfs := rm.controller.snapshots.zfsVolumeDataset(ctx, m.Volume); zfs {
+			q.took(m.Resource, rm.controller.ResolveHost(m.Node), dataset+"@"+m.Name, true)
+		} else {
+			pool, _ := parseVolumePath(m.Volume)
+			q.took(m.Resource, rm.controller.ResolveHost(m.Node), pool+"/"+m.Name, false)
+		}
 	}
 
 	if elapsed := time.Since(firstArmed); elapsed >= resourceSnapshotWatchdog-snapshotGroupMargin {
 		log.Debug("CreateSnapshotGroup: too slow, a watchdog may have resumed I/O", zap.Duration("elapsed", elapsed),
 			zap.Duration("watchdog", resourceSnapshotWatchdog))
 		rm.undoSnapshotGroup(made)
-		return fmt.Errorf("the group took %s, close to the %s after which I/O resumes by itself, so its snapshots may not "+
+		return "", fmt.Errorf("the group took %s, close to the %s after which I/O resumes by itself, so its snapshots may not "+
 			"be from one instant; they were deleted. Snapshot fewer volumes at once", elapsed.Round(time.Second), resourceSnapshotWatchdog)
 	}
 	rm.controller.logger.Info("Snapshot group taken", zap.Int("members", len(members)), zap.Strings("resources", resources),
 		zap.Duration("took", time.Since(firstArmed)))
-	return nil
+	return "", nil
 }
 
 // undoSnapshotGroup deletes the members already taken. It runs on its own

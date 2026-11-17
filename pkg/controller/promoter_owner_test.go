@@ -58,6 +58,9 @@ func TestExternallyPromoted(t *testing.T) {
 		"an explicit label wins over the name")
 	assert.Equal(t, "Proxmox VE", externallyPromoted("disk", map[string]string{pveManagedByLabel: "pve"}))
 	assert.Equal(t, "OpenStack Cinder", externallyPromoted("os-0d6f", map[string]string{cinderManagedByLabel: "cinder"}))
+	assert.Equal(t, "the CSI driver", externallyPromoted("pvc-1", map[string]string{csiManagedByLabel: "csi"}))
+	assert.Empty(t, externallyPromoted("pvc-2", map[string]string{csiManagedByLabel: "csi", csiSharedLabel: "nfs"}),
+		"a shared CSI volume is served by its NFS gateway, whose promoter decides the Primary")
 }
 
 func TestResourceOwner(t *testing.T) {

@@ -46,10 +46,20 @@ type ResourceInfo struct {
 	// container (DRBD → LUKS → LVM). Encryption at rest only: DRBD is
 	// above the crypt layer, so replication traffic is plaintext.
 	Encrypted bool
+	// JoiningNodes are the replicas still in their first sync after being
+	// added, and CommittedReplicas how many UpToDate replicas the resource
+	// has to keep meanwhile; empty and 0 when none is joining
+	// (resource_joining.go). Set by GetResource only: the list does not read
+	// the nodes.
+	JoiningNodes      []string
+	CommittedReplicas int
 }
 
 // ResourceNodeState represents detailed state of a node for a resource
 type ResourceNodeState struct {
+	// Joining marks the state of a replica that is in its first sync after
+	// being added (resource_joining.go).
+	Joining     bool
 	Role        string
 	DiskState   string
 	Replication string
@@ -150,6 +160,8 @@ type ResourceManager struct {
 	// resLocks keeps a delete and a diskless attach or detach of the same
 	// resource from interleaving; see resourceLocks.
 	resLocks resourceLocks
+	// live is the live moves of HA guests in progress; see ha_live.go.
+	live haLiveJobs
 }
 
 // NewResourceManager creates a new resource manager

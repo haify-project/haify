@@ -22,6 +22,8 @@ import { QuorumPill } from './QuorumPill';
 import { Fact } from './Fact';
 import { SelfHaControls } from './SelfHaCard';
 import { TomlEditorSection } from './TomlEditorSection';
+import { LiveMoveButton } from '../guests/LiveMove';
+import { guestOfHaConfig } from '../guests/libvirt';
 
 // ==================== Promoter card ====================
 
@@ -56,6 +58,7 @@ export function PromoterCard({
   const standbys = promoter?.standbys ?? [];
   const outside = promoter?.outside ?? [];
   const outsideMount = config.mountPoint || outside[0]?.mountPoints?.[0] || '';
+  const guest = guestOfHaConfig(config);
 
   return (
     <Card className="gap-4 py-5">
@@ -209,6 +212,10 @@ export function PromoterCard({
               Delete is withheld there too — removing the controller's own HA
               config from a button beside Evict is not an action to offer in
               passing; the self-HA card does it deliberately when disabled. */}
+          {!controlPlane && guest ? (
+            <LiveMoveButton resource={config.resource} guest={guest} runsOn={isRunning ? activeNode : undefined} />
+          ) : null}
+
           {controlPlane ? (
             <SelfHaControls status={controlPlane} />
           ) : (
@@ -231,9 +238,9 @@ export function PromoterCard({
               <AlertDialogHeader>
                 <AlertDialogTitle>Evict "{config.resource}"?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This triggers a failover to another node. The VIP moves and
-                  clients will briefly lose connectivity until the resource is
-                  promoted elsewhere.
+                  {guest
+                    ? `${guest} is shut down here and started on another node. To move it without stopping it, use Move live.`
+                    : 'This triggers a failover to another node. The VIP moves and clients will briefly lose connectivity until the resource is promoted elsewhere.'}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

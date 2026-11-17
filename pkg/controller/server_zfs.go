@@ -148,7 +148,14 @@ func (s *Server) CreateZFSSnapshot(ctx context.Context, req *haifypb.CreateZFSSn
 	log := s.serverLog()
 	log.Debug("CreateZFSSnapshot: taking", zap.String("dataset", req.Dataset), zap.String("snapshot", req.SnapshotName),
 		zap.String("node", req.Node))
-	err := s.storage.ZFSSnapshot(ctx, req.Dataset, req.SnapshotName, req.Node)
+	// A libvirt guest's volume is snapshotted with the guest frozen
+	// (snapshot_consistency.go).
+	dataset := normalizeManagedZFSPath(req.Dataset)
+	pool, backing := parseVolumePath(dataset)
+	note, err := s.ctrl.snapshotVolumeQuiesced(ctx, pool, backing, s.ctrl.ResolveHost(req.Node),
+		dataset+"@"+req.SnapshotName, true, func() error {
+			return s.storage.ZFSSnapshot(ctx, req.Dataset, req.SnapshotName, req.Node)
+		})
 	if err != nil {
 		log.Debug("CreateZFSSnapshot: failed", zap.String("dataset", req.Dataset), zap.Error(err))
 		return &haifypb.CreateZFSSnapshotResponse{
@@ -159,7 +166,7 @@ func (s *Server) CreateZFSSnapshot(ctx context.Context, req *haifypb.CreateZFSSn
 	log.Debug("CreateZFSSnapshot: taken", zap.String("dataset", req.Dataset), zap.String("snapshot", req.SnapshotName))
 	return &haifypb.CreateZFSSnapshotResponse{
 		Success: true,
-		Message: "ZFS snapshot created successfully",
+		Message: withNote("ZFS snapshot created successfully", note),
 	}, nil
 }
 
@@ -197,11 +204,12 @@ func (s *Server) ListZFSSnapshots(ctx context.Context, req *haifypb.ListZFSSnaps
 	for _, snap := range snapshots {
 		log.Debug("ListZFSSnapshots: snapshot", zap.String("snapshot", snap.Name), zap.String("volume", snap.Volume))
 		pbSnapshots = append(pbSnapshots, &haifypb.SnapshotInfo{
-			Name:      snap.Name,
-			Volume:    snap.Volume,
-			SizeGb:    snap.SizeGB,
-			CreatedAt: snap.CreatedAt,
-			Origin:    snap.Origin,
+			Name:        snap.Name,
+			Volume:      snap.Volume,
+			SizeGb:      snap.SizeGB,
+			CreatedAt:   snap.CreatedAt,
+			Origin:      snap.Origin,
+			Consistency: snap.Consistency,
 		})
 	}
 

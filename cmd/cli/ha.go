@@ -54,6 +54,9 @@ func haCommand() *cobra.Command {
 
 	cmd.AddCommand(haCreate())
 	cmd.AddCommand(haEvict())
+	cmd.AddCommand(haMigration())
+	cmd.AddCommand(haVMSync())
+	cmd.AddCommand(haVMStatus())
 	cmd.AddCommand(haSetTiebreaker())
 	cmd.AddCommand(haSetPreferredCommand())
 	cmd.AddCommand(haDelete())
@@ -70,6 +73,7 @@ func haCreate() *cobra.Command {
 	var fsType string
 	var vip string
 	var vm string
+	var vmFrom string
 
 	cmd := &cobra.Command{
 		Use:   "create <resource>",
@@ -77,9 +81,10 @@ func haCreate() *cobra.Command {
 		Long: "Create a drbd-reactor promoter for a resource: its mount, services and virtual IP\n" +
 			"start on the node where the resource is Primary, and on another replica when that\n" +
 			"node fails.\n\n" +
-			"--vm runs a libvirt guest instead: define it under that name on every diskful\n" +
-			"replica first (virsh define, autostart off), with its disks on\n" +
-			"/dev/drbd/by-res/<resource>/<volume>.",
+			"--vm runs a libvirt guest instead, with its disks on\n" +
+			"/dev/drbd/by-res/<resource>/<volume>. Define it on one replica; Haify defines it on\n" +
+			"the others under the same UUID and turns autostart off. --vm-from names the node\n" +
+			"to take the definition from when replicas already hold different ones.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log := zap.L()
@@ -87,7 +92,9 @@ func haCreate() *cobra.Command {
 				zap.String("mount", mountPoint), zap.String("fs_type", fsType), zap.String("vip", vip), zap.String("vm", vm))
 			resource := args[0]
 
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// A guest's definition is read from and defined on every replica
+			// first, which is a few SSH rounds per node.
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 
 			haifyClient, err := newHaifyClient()
@@ -115,7 +122,12 @@ func haCreate() *cobra.Command {
 				agents = append(agents, agent)
 			}
 
-			configPath, err := haifyClient.MakeHa(ctx, resource, serviceList, mountPoint, fsType, vip, agents, nil)
+			if vmFrom != "" && vm == "" {
+				log.Debug("haCreate: --vm-from without --vm")
+				return fmt.Errorf("--vm-from names where to take a guest's definition from; it needs --vm")
+			}
+			configPath, err := haifyClient.MakeHaWith(ctx, &haifypb.MakeHaRequest{Resource: resource, Services: serviceList,
+				MountPoint: mountPoint, Fstype: fsType, Vip: vip, OcfAgents: agents, VmDefinitionNode: vmFrom})
 			if err != nil {
 				log.Debug("haCreate: MakeHa failed", zap.Error(err))
 				return fmt.Errorf("failed to create HA config: %w", err)
@@ -144,7 +156,7 @@ func haCreate() *cobra.Command {
 				fmt.Printf("  VIP:       %s\n", vip)
 			}
 			if vm != "" {
-				fmt.Printf("  VM:        %s (libvirt)\n", vm)
+				fmt.Printf("  VM:        %s (libvirt), defined on every replica\n", vm)
 			}
 			fmt.Printf("\nConfiguration distributed to all nodes and drbd-reactor reloaded\n")
 
@@ -157,7 +169,8 @@ func haCreate() *cobra.Command {
 	cmd.Flags().StringVar(&mountPoint, "mount", "", "Mount point for filesystem")
 	cmd.Flags().StringVar(&fsType, "fstype", "ext4", "Filesystem type (ext4, xfs, etc.)")
 	cmd.Flags().StringVar(&vip, "vip", "", "Virtual IP (CIDR, e.g., 192.168.1.100/24)")
-	cmd.Flags().StringVar(&vm, "vm", "", "libvirt guest to run where the resource is Primary (defined on every replica)")
+	cmd.Flags().StringVar(&vm, "vm", "", "libvirt guest to run where the resource is Primary")
+	cmd.Flags().StringVar(&vmFrom, "vm-from", "", "Node to take the guest's definition from (default: where it runs, or any replica when they agree)")
 
 	return cmd
 }
@@ -192,42 +205,6 @@ func haDelete() *cobra.Command {
 			fmt.Printf("  Resource: %s\n", resource)
 
 			log.Debug("haDelete: done")
-			return nil
-		},
-	}
-
-	return cmd
-}
-
-func haEvict() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "evict <resource>",
-		Short: "Evict an HA resource from the current active node",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			log := zap.L()
-			log.Debug("haEvict: running command", zap.Strings("args", args))
-			resource := args[0]
-
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-
-			haifyClient, err := newHaifyClient()
-			if err != nil {
-				log.Debug("haEvict: newHaifyClient failed", zap.Error(err))
-				return fmt.Errorf("failed to connect to controller: %w", err)
-			}
-			defer closeClient(haifyClient)
-
-			if err := haifyClient.EvictHa(ctx, resource); err != nil {
-				log.Debug("haEvict: EvictHa failed", zap.Error(err))
-				return fmt.Errorf("failed to evict HA resource: %w", err)
-			}
-
-			fmt.Printf("HA resource evicted successfully\n")
-			fmt.Printf("  Resource: %s\n", resource)
-
-			log.Debug("haEvict: done")
 			return nil
 		},
 	}

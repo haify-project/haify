@@ -177,6 +177,54 @@ class Migration(HookTest):
             self.handle(ctl2, "prepare", "begin")
 
 
+class ControllerDrivenMove(HookTest):
+    """`haify ha evict --live`: the controller moves an HA guest itself, with
+    the promoter config disabled for the time, and marks the resource."""
+
+    def mark(self, deadline):
+        d = os.path.join(self.state, "controlled")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "vm1"), "w") as f:
+            f.write(f"{deadline}\n")
+
+    def disable_promoter(self):
+        with open(os.path.join(self.reactor, "haify-ha-vm1.toml.disabled"), "w") as f:
+            f.write("[[promoter]]\n[promoter.resources.vm1]\nstart = []\n")
+
+    def test_a_marked_resource_is_left_to_the_controller(self):
+        self.disable_promoter()
+        self.mark(int(hook.time.time()) + 600)
+        ctl = FakeController(primary_on="k1")
+        self.handle(ctl, "migrate", "begin")
+        self.handle(ctl, "prepare", "begin")
+        self.handle(ctl, "release", "end")
+        self.assertEqual(ctl.calls, [])
+        self.assertFalse(os.path.exists(hook.incoming_marker("vm1")), "no migration of its own is noted")
+
+    def test_a_marker_past_its_time_counts_for_nothing(self):
+        self.disable_promoter()
+        self.mark(int(hook.time.time()) - 1)
+        ctl = FakeController()
+        self.handle(ctl, "prepare", "begin")
+        self.assertIn(("/v1/resources/vm1/primary", {"resource": "vm1", "node": "k2", "quorumGuarded": True}), ctl.posts())
+
+    def test_an_unreadable_marker_counts_for_nothing(self):
+        self.mark("soon")
+        self.assertFalse(hook.controller_driven("vm1"))
+
+    def test_a_disabled_promoter_alone_does_not_hold_the_hook_back(self):
+        self.disable_promoter()
+        ctl = FakeController()
+        self.handle(ctl, "prepare", "begin")
+        self.assertIn(("/v1/resources/vm1/primary", {"resource": "vm1", "node": "k2", "quorumGuarded": True}), ctl.posts())
+
+    def test_only_the_marked_resource_is_skipped(self):
+        self.mark(int(hook.time.time()) + 600)
+        ctl = FakeController()
+        self.handle(ctl, "prepare", "begin", xml=domain("/dev/drbd/by-res/vm1/0", "/dev/drbd/by-res/other/0"))
+        self.assertEqual([p for p, _ in ctl.posts() if p.endswith("/primary")], ["/v1/resources/other/primary"])
+
+
 class Stop(HookTest):
     def test_demotes_and_closes_the_window(self):
         ctl = FakeController()

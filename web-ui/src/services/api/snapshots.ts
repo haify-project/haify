@@ -27,6 +27,8 @@ export interface Snapshot {
   volume: string;
   sizeGb: number;
   createdAt: string;
+  /** "filesystem" or "crash" for a snapshot of a guest's volume; unset for any other. */
+  consistency?: string;
 }
 
 export interface SnapshotsResponse extends ApiResponse {

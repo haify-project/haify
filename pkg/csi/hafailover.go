@@ -230,6 +230,12 @@ func (h *HAFailover) findLosses(ctx context.Context, view *haClusterView, haifyN
 		if node == nil {
 			continue
 		}
+		if drainComplete(node) {
+			// Taken down on purpose, with nothing left on it to move
+			// (nodedrain_support.go).
+			h.log.Debug("HAFailover.findLosses: node was drained for maintenance, skipped", zap.String("node", nodeName))
+			continue
+		}
 		id := haIdentityFor(node, haifyNodes)
 		verdicts := map[string]haLossVerdict{}
 		var affected []haPodUse

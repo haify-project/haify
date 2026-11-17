@@ -73,6 +73,9 @@ type BackupManifest struct {
 	// carry, so an import knows a backup cannot be deleted before then.
 	LockMode    string `json:"lock_mode,omitempty"`
 	RetainUntil string `json:"retain_until,omitempty"`
+	// Consistency is "filesystem" or "crash" for a backup of a guest's
+	// resource, so an import on another cluster still knows which.
+	Consistency string `json:"consistency,omitempty"`
 }
 
 // BackupManifestVolume describes one raw image in the manifest.
@@ -354,14 +357,15 @@ func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName,
 	// the next incremental's base are left out of the cleanup.
 	keep := map[uint32]bool{}
 	var snaps map[uint32]string
+	var consistency string
 	if from != "" {
 		// The caller's snapshot is the caller's: never removed here.
-		snaps, err = bm.useSnapshot(ctx, host, info, from)
+		snaps, consistency, err = bm.useSnapshot(ctx, host, info, from)
 		for id := range snaps {
 			keep[id] = true
 		}
 	} else {
-		snaps, err = bm.snapshotVolumes(ctx, host, info, started)
+		snaps, consistency, err = bm.snapshotVolumes(ctx, host, info, started)
 	}
 	defer func() {
 		drop := make(map[uint32]string, len(snaps))
@@ -383,7 +387,7 @@ func (bm *BackupManager) createBackup(ctx context.Context, resource, targetName,
 		ID: id, Resource: resource, Target: targetName, Node: node,
 		Backend: bm.backend.Name(), State: database.BackupStateRunning,
 		Prefix: backup.ObjectPath(resource, id), StartedAt: started,
-		Kind: database.BackupKindFull, Schedule: schedule,
+		Kind: database.BackupKindFull, Schedule: schedule, Consistency: consistency,
 	}
 	if parent != nil {
 		rec.Kind, rec.Parent = database.BackupKindIncremental, parent.ID
@@ -502,10 +506,11 @@ func (bm *BackupManager) renderManifest(rec *database.Backup, info *ResourceInfo
 	m := BackupManifest{
 		Version: manifestVersion, ID: rec.ID, Resource: rec.Resource, Node: rec.Node,
 		Backend: rec.Backend, Kind: rec.Kind, Parent: rec.Parent, Schedule: rec.Schedule,
-		CreatedAt:  rec.StartedAt.UTC().Format(time.RFC3339),
-		FinishedAt: time.Now().UTC().Format(time.RFC3339),
-		TotalBytes: rec.TotalBytes,
-		LockMode:   rec.LockMode,
+		CreatedAt:   rec.StartedAt.UTC().Format(time.RFC3339),
+		FinishedAt:  time.Now().UTC().Format(time.RFC3339),
+		TotalBytes:  rec.TotalBytes,
+		LockMode:    rec.LockMode,
+		Consistency: rec.Consistency,
 		Note: "Raw full images of each DRBD volume, bounded by the DRBD device size " +
 			"(smaller than the backing LV, whose tail holds DRBD metadata). Restore with " +
 			"`haify backup restore`, or by writing each image to a device of at least that size. " +

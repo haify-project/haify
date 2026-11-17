@@ -10,6 +10,22 @@ export interface Node {
   labels?: Record<string, string>;
   /** Reached through its Haify CSI node plugin, not over SSH. */
   localAgent?: boolean;
+  /** For a node in maintenance: who drained it, why, and when (Unix seconds). */
+  maintenanceBy?: string;
+  maintenanceReason?: string;
+  maintenanceSince?: string;
+  /** When the node stopped answering (Unix seconds); "0" or absent while it answers. */
+  offlineSince?: string;
+}
+
+/**
+ * Whether the controller can reach the node. A drained node keeps the state
+ * "maintenance" whether it answers or not, so for it the answer is in
+ * offlineSince.
+ */
+export function nodeReachable(node: Pick<Node, 'state' | 'offlineSince'>): boolean {
+  if (node.state === 'online') return true;
+  return node.state === 'maintenance' && (!node.offlineSince || node.offlineSince === '0');
 }
 
 export interface NodesResponse extends ApiResponse {

@@ -50,3 +50,40 @@ volumeBindingMode: WaitForFirstConsumer
 # reclaimPolicy: Delete
 # allowVolumeExpansion: true
 # volumeBindingMode: WaitForFirstConsumer
+
+# Replicas in different zones: the node plugins copy each node's
+# topology.kubernetes.io/zone onto the Haify node as the label "zone", and
+# faultDomainLabel spreads the replicas across its values. The Pod's node gets
+# the first replica; the others go to other zones. See "Zones" in README.md.
+# ---
+# apiVersion: storage.k8s.io/v1
+# kind: StorageClass
+# metadata:
+#   name: haify-zones
+# provisioner: haify.csi.liliang-cn.com
+# parameters:
+#   pool: "vg0"
+#   replicas: "3"
+#   faultDomainLabel: "zone"
+# reclaimPolicy: Delete
+# allowVolumeExpansion: true
+# volumeBindingMode: WaitForFirstConsumer
+
+# Shared filesystems (ReadWriteMany): every volume gets a Haify NFS gateway
+# with an address from nfsServiceIPs, and Pods on any node mount it. Write the
+# range with the prefix length of its network, and keep the addresses free of
+# other uses. See "Shared filesystems (ReadWriteMany)" in README.md.
+# ---
+# apiVersion: storage.k8s.io/v1
+# kind: StorageClass
+# metadata:
+#   name: haify-shared
+# provisioner: haify.csi.liliang-cn.com
+# parameters:
+#   pool: "vg0"
+#   replicas: "2"
+#   sharedFilesystem: "nfs"
+#   nfsServiceIPs: "192.168.1.200-192.168.1.220/24"
+# reclaimPolicy: Delete
+# allowVolumeExpansion: true
+# volumeBindingMode: Immediate

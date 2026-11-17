@@ -20,11 +20,12 @@ func (s *Server) CreateSnapshotGroup(ctx context.Context, req *haifypb.CreateSna
 		members = append(members, SnapshotGroupMember{Resource: m.GetResource(), Volume: m.GetVolume(),
 			Name: m.GetSnapshotName(), Node: m.GetNode()})
 	}
-	if err := s.resources.CreateSnapshotGroup(ctx, members); err != nil {
+	note, err := s.resources.CreateSnapshotGroupNoted(ctx, members)
+	if err != nil {
 		log.Debug("CreateSnapshotGroup: failed", zap.Error(err))
 		return &haifypb.CreateSnapshotGroupResponse{Success: false, Message: err.Error()}, nil
 	}
 	log.Debug("CreateSnapshotGroup: taken", zap.Int("members", len(members)))
 	return &haifypb.CreateSnapshotGroupResponse{Success: true,
-		Message: fmt.Sprintf("%d snapshots taken at one instant", len(members))}, nil
+		Message: withNote(fmt.Sprintf("%d snapshots taken at one instant", len(members)), note)}, nil
 }

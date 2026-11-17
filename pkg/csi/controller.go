@@ -23,6 +23,9 @@ type controllerServer struct {
 	// ops tracks uploads to and restores from backup targets that outlast
 	// the call that started them (async_ops.go).
 	ops asyncOps
+	// shared holds the service addresses being handed out to shared
+	// (ReadWriteMany filesystem) volumes (shared.go).
+	shared sharedState
 }
 
 // NewControllerServer returns the CSI Controller service.
@@ -50,7 +53,7 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	// Refuse what cannot work here, where the message reaches the PVC's events,
 	// rather than provisioning a volume that kubelet fails to attach later.
 	for _, c := range req.GetVolumeCapabilities() {
-		if reason := unsupportedCapability(c); reason != "" {
+		if reason := capabilityProblem(c, sharedRequested(req.GetParameters())); reason != "" {
 			s.log.Debug("controllerServer.CreateVolume: rejected capability", zap.String("name", req.GetName()),
 				zap.String("reason", reason))
 			return nil, status.Error(codes.InvalidArgument, reason)
@@ -60,6 +63,11 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	sizeGB := bytesToGiB(req.GetCapacityRange().GetRequiredBytes())
 	s.log.Debug("controllerServer.CreateVolume: resolved name and size", zap.String("resource", name),
 		zap.Uint32("size_gb", sizeGB))
+	sharedDone, err := s.beginShared(req.GetParameters(), name)
+	if err != nil {
+		return nil, err
+	}
+	defer sharedDone()
 
 	// Idempotency: if the resource already exists, check capacity range compatibility.
 	start := time.Now()
@@ -95,6 +103,9 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		if err != nil {
 			return nil, err
 		}
+		if vc, err = s.reconcileShared(ctx, existing, req, vc); err != nil {
+			return nil, err
+		}
 		s.log.Debug("controllerServer.CreateVolume: already exists, returning it (idempotent)", zap.String("resource", name),
 			zap.Strings("nodes", existing.GetNodes()))
 		resp := existingVolumeResponse(req, existing, sizeGB)
@@ -118,6 +129,9 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	if err != nil {
 		s.log.Debug("controllerServer.CreateVolume: invalid DR parameters", zap.String("resource", name), zap.Error(err))
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.checkSharedRequest(ctx, req, params, dr, sizeGB); err != nil {
+		return nil, err
 	}
 	if params.ResourceProfile != "" {
 		s.log.Debug("controllerServer.CreateVolume: applying resource profile", zap.String("resource", name),
@@ -200,6 +214,11 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 	}
 	candidates := nodesWithPool(nodes, pools, params.Pool, params.FaultDomainLabel)
 	pinned := requisiteNodes(req.GetAccessibilityRequirements())
+	if params.Shared.Enabled {
+		// Its Pods mount NFS wherever they run; a replica on the node the
+		// scheduler picked buys them nothing, so placement goes by free space.
+		pinned = nil
+	}
 	if source != nil && source.node != "" {
 		// Put the source's node first so a replica lands there and the copy is
 		// local; without this the new volume could be placed entirely elsewhere.
@@ -222,6 +241,17 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		if candidates, err = placeAwayFromDR(dr, nodes, candidates, pinned, params.Pool); err != nil {
 			s.log.Debug("controllerServer.CreateVolume: DR node unusable", zap.String("resource", name), zap.Error(err))
 			return nil, err
+		}
+	}
+	if !params.Shared.Enabled {
+		// allowedTopologies naming zones (topology_zone.go). A remote-access
+		// volume is usable everywhere, so for it the zones only say where
+		// the data should preferably live.
+		candidates, pinned, err = placeInZones(candidates, pinned, zoneTerms(req.GetAccessibilityRequirements()), nodes,
+			params.Replicas, uint64(sizeGB)*giB, !params.AllowRemoteVolumeAccess)
+		if err != nil {
+			s.log.Debug("controllerServer.CreateVolume: zone placement failed", zap.String("resource", name), zap.Error(err))
+			return nil, status.Errorf(codes.ResourceExhausted, "pool %q: %v", params.Pool, err)
 		}
 	}
 	replicaNodes, err := selectReplicaNodes(candidates, pinned, params.Replicas, uint64(sizeGB)*giB)
@@ -250,6 +280,11 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		labels[pvcLabel] = params.PVC
 	}
 	sourceLabels(labels, source)
+	released, err := s.reserveShared(ctx, name, params.Shared, labels)
+	if err != nil {
+		return nil, err
+	}
+	defer released()
 	start = time.Now()
 	if backend, ok := s.backend.(interface {
 		CreateResourceRequest(context.Context, *haifypb.CreateResourceRequest) error
@@ -306,13 +341,18 @@ func (s *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolu
 		}
 	}
 
+	vc, err := s.exportShared(ctx, name, params, labels,
+		securityContext(volumeContextFor(params.AllowRemoteVolumeAccess, params.QoS), params.Encryption, params.ReplicationTLS))
+	if err != nil {
+		return nil, err
+	}
 	s.log.Debug("controllerServer.CreateVolume: done", zap.String("resource", name), zap.Strings("nodes", replicaNodes),
 		zap.Uint32("size_gb", sizeGB))
 	return &csi.CreateVolumeResponse{Volume: &csi.Volume{
 		VolumeId:           name,
 		CapacityBytes:      int64(sizeGB) * giB,
 		AccessibleTopology: topologyFor(replicaNodes, params.AllowRemoteVolumeAccess),
-		VolumeContext:      securityContext(volumeContextFor(params.AllowRemoteVolumeAccess, params.QoS), params.Encryption, params.ReplicationTLS),
+		VolumeContext:      vc,
 		ContentSource:      contentSourceOf(req.GetVolumeContentSource()),
 	}}, nil
 }
@@ -367,14 +407,18 @@ func (s *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolu
 		return nil, status.Error(codes.InvalidArgument, "volume id is required")
 	}
 	start := time.Now()
-	if _, err := s.backend.GetResource(ctx, req.GetVolumeId()); err != nil {
+	existing, err := s.backend.GetResource(ctx, req.GetVolumeId())
+	if err != nil {
 		// Not found -> already deleted; idempotent success.
 		s.log.Debug("controllerServer.DeleteVolume: not found, treating as deleted", zap.String("resource", req.GetVolumeId()),
 			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return &csi.DeleteVolumeResponse{}, nil
 	}
+	if err := s.deleteSharedGateway(ctx, existing); err != nil {
+		return nil, err
+	}
 	start = time.Now()
-	err := s.backend.DeleteResource(ctx, req.GetVolumeId())
+	err = s.backend.DeleteResource(ctx, req.GetVolumeId())
 	s.log.Debug("controllerServer.DeleteVolume: delete resource returned", zap.String("resource", req.GetVolumeId()),
 		zap.Duration("took", time.Since(start)), zap.Error(err))
 	if err != nil {
@@ -419,13 +463,14 @@ func (s *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req *
 		return nil, status.Error(codes.InvalidArgument, "volume capabilities are required")
 	}
 	start := time.Now()
-	if _, err := s.backend.GetResource(ctx, req.GetVolumeId()); err != nil {
+	existing, err := s.backend.GetResource(ctx, req.GetVolumeId())
+	if err != nil {
 		s.log.Debug("controllerServer.ValidateVolumeCapabilities: volume not found", zap.String("resource", req.GetVolumeId()),
 			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return nil, status.Errorf(codes.NotFound, "volume %q not found", req.GetVolumeId())
 	}
 	for _, c := range req.GetVolumeCapabilities() {
-		if reason := unsupportedCapability(c); reason != "" {
+		if reason := capabilityProblem(c, isSharedVolume(existing)); reason != "" {
 			s.log.Debug("controllerServer.ValidateVolumeCapabilities: unsupported", zap.String("resource", req.GetVolumeId()),
 				zap.String("reason", reason))
 			return &csi.ValidateVolumeCapabilitiesResponse{Message: reason}, nil // unsupported -> empty Confirmed
@@ -435,32 +480,6 @@ func (s *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req *
 	return &csi.ValidateVolumeCapabilitiesResponse{Confirmed: &csi.ValidateVolumeCapabilitiesResponse_Confirmed{
 		VolumeCapabilities: req.GetVolumeCapabilities(),
 	}}, nil
-}
-
-// ControllerExpandVolume resizes the backing DRBD+LVM/ZFS volume on all
-// replica nodes. The node plugin follows up with NodeExpandVolume to grow
-// the filesystem online.
-func (s *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
-	s.log.Debug("controllerServer.ControllerExpandVolume: start", zap.String("resource", req.GetVolumeId()),
-		zap.Int64("required_bytes", req.GetCapacityRange().GetRequiredBytes()))
-	if req.GetVolumeId() == "" {
-		s.log.Debug("controllerServer.ControllerExpandVolume: rejected, no volume id")
-		return nil, status.Error(codes.InvalidArgument, "volume id is required")
-	}
-	newSizeGB := bytesToGiB(req.GetCapacityRange().GetRequiredBytes())
-
-	start := time.Now()
-	err := s.backend.ResizeVolume(ctx, req.GetVolumeId(), 0, newSizeGB)
-	s.log.Debug("controllerServer.ControllerExpandVolume: resize returned", zap.String("resource", req.GetVolumeId()),
-		zap.Uint32("size_gb", newSizeGB), zap.Duration("took", time.Since(start)), zap.Error(err))
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "resize volume: %v", err)
-	}
-
-	return &csi.ControllerExpandVolumeResponse{
-		CapacityBytes:         int64(newSizeGB) * giB,
-		NodeExpansionRequired: true, // filesystem resize needed on the node
-	}, nil
 }
 
 // bytesToGiB converts a byte count to whole GiB, rounding up; minimum 1.
@@ -481,8 +500,10 @@ func bytesToGiB(b int64) uint32 {
 // on a raw block volume, for the live migration of a virtual machine: the node
 // plugin lets two nodes be Primary while both have it staged
 // (node_multiwriter.go). A filesystem would be corrupted by two writers, so
-// ReadWriteMany stays refused for filesystem volumes, and the read-only and
-// single-writer multi-node modes are refused as before. Before this check
+// ReadWriteMany stays refused for filesystem volumes here, and the read-only
+// and single-writer multi-node modes are refused as before; a StorageClass
+// with sharedFilesystem serves those through NFS instead (capabilityProblem
+// in shared.go). Before this check
 // CreateVolume looked at no access mode at all: a ReadWriteMany PVC was
 // provisioned, and failed only when a second node tried to promote.
 func unsupportedCapability(c *csi.VolumeCapability) string {
@@ -495,7 +516,7 @@ func unsupportedCapability(c *csi.VolumeCapability) string {
 		csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER:
 	case csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER:
 		if c.GetBlock() == nil {
-			return "access mode MULTI_NODE_MULTI_WRITER (ReadWriteMany) is supported only with volumeMode: Block, for the live migration of a virtual machine; a filesystem cannot be written from two nodes"
+			return "access mode MULTI_NODE_MULTI_WRITER (ReadWriteMany) is supported only with volumeMode: Block, for the live migration of a virtual machine; a filesystem cannot be written from two nodes (a StorageClass with sharedFilesystem: nfs provides ReadWriteMany filesystem volumes)"
 		}
 	case csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY,
 		csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER:

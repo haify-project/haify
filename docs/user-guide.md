@@ -239,6 +239,20 @@ A resource that cannot move (no qualifying replica, a mounted volume, a
 failed eviction) stays Primary where it is; the drain moves the rest and
 names each one it left, with the reason. The node stays drained either way.
 
+**A node that still runs workloads.** `haify node drain node1 --keep-in-use`
+takes the node out of placement just the same, and moves only what Haify
+itself keeps Primary: gateways, HA services, apps and haify-meta. A volume
+that Proxmox VE, the Kubernetes CSI driver, OpenStack Cinder, XCP-ng or
+OpenNebula holds Primary for a running VM or Pod is left where it is, and so
+is any other resource whose device is open. The command lists each of them
+with the reason. They move when the platform moves what uses them; drain
+again without the option once the node is empty.
+
+`haify node list` shows who drained a node and why next to its state, for
+example `maintenance (admin: replacing a disk)`. `--reason` sets the reason;
+the name is the user who ran the drain, or `kubernetes drain` when the CSI
+driver did it for a node Kubernetes is taking down.
+
 Unregistering is for a node that is never coming back:
 
 ```bash
@@ -757,6 +771,22 @@ haify resource remove-volume db 1
 haify resource move-volume db --volume 0 --pool fast
 ```
 
+`resize-volume` grows the volume on every replica, and says what else it did:
+
+- **An NFS or SMB gateway on the resource.** The gateway's filesystem is
+  grown with the volume, on the node serving it, and clients see the new size
+  on their mounts. While the gateway is moving to another node, or stopped,
+  the filesystem is mounted nowhere and cannot be grown: the command then
+  fails saying that the volume is grown and its filesystem is not. Run it
+  again once the gateway is up; it grows only the filesystem.
+- **A running libvirt guest on the resource.** The guest is shown the new
+  size of its disk. When that fails, the output names the `virsh blockresize`
+  command to run, and a `resource.guest_resize_failed` event is raised.
+- **Any other filesystem** (`resource mount`, an `ha create` service, an
+  iSCSI client) is grown where it is mounted, with `resize2fs` or
+  `xfs_growfs`. `--grow-fs` has the controller do it for a filesystem mounted
+  from the volume on the node where the resource is Primary.
+
 `move-volume` rebuilds the volume in the target pool one node at a time,
 secondaries first. On each node, the controller waits until the peers are
 UpToDate and creates the new backing volume. It then detaches the old one,
@@ -921,6 +951,89 @@ is no longer a member of, and deletes the resource's config, its promoter
 configs and the volumes Haify named after it. `node lost` removes every replica the node still holds the `--lost`
 way and keeps it evicted. Both are on the two-person approval list.
 
+**Data follows its user.** A node without a replica can use a volume as a
+diskless client: a Pod scheduled there with `allowRemoteVolumeAccess`, a VM a
+hypervisor started there, or `resource diskless attach`. All of its I/O then
+goes over the replication network for as long as it stays. With `[self_heal]
+auto_diskful = "on"`, a node that has used a volume that way for
+`auto_diskful_after_minutes` (default 60, at least 10) gets a replica of its
+own, and one of the old replicas is removed, so the replica count stays the
+same and the data is where it is used:
+
+1. The node gets its disk in place. Whatever it has open stays open while
+   the new disk syncs from the other replicas.
+2. When the new replica is UpToDate, one old replica is removed the way
+   `resource remove-replica` removes one. Until then the resource has one
+   replica more than before, never one fewer.
+
+"Used" means the node is the resource's only Primary and connected, at every
+reading, one a minute. A Pod restart, a live migration passing through (two
+Primaries, or `allow-two-primaries` set) or a status that cannot be read
+starts the count again. The count continues across a controller restart or
+failover; after a gap of more than five minutes it starts again.
+
+The replica that is removed is never the new one, never a Primary's, and
+never one whose removal would leave fewer than two UpToDate copies. Among
+the rest, a replica that is itself behind goes first; then the choice that
+keeps the replicas in the most fault domains; then the replica on the fullest
+pool. On a resource of two replicas where the client was the third vote, the
+node that gave up its replica stays in the resource as the tiebreaker, so
+it still has three votes.
+
+Each move is a full sync of the volume, so one runs at a time, and none
+starts while a `move-replica`, a rebalance or an auto-evict replacement is
+syncing. After a move, the same resource does not move again for 24 hours.
+A client is left as it is, with a `resource.replica_moved` event saying why,
+when:
+
+- the node has no pool of the resource's name, the pool has less free space
+  than the volume's size, or the overcommit limit would be passed;
+- the node is drained, in maintenance, not answering, or a local-agent node;
+- the resource is WAN-replicated, the controller's own metadata, or run by a
+  drbd-reactor promoter (`ha create`, a gateway, an app);
+- the resource has one replica, a replica that is not UpToDate, a replica
+  already moving, or snapshots a schedule still locks;
+- a live migration is under way;
+- it is a CSI volume without `allowRemoteVolumeAccess`, whose Pods are tied
+  to the nodes that hold its replicas;
+- the resource or the node is labelled `haify.io/auto-diskful=false`.
+
+If the removal fails, the resource keeps the extra replica, a warning event
+names the replica and the command that removes it, and the controller tries
+again, first after 5 minutes and then at growing intervals up to 6 hours. It
+never adds another replica meanwhile. `"dry-run"` makes the same decisions and
+only reports them. Every change appears in the audit trail under the user
+`self-heal/auto-diskful`.
+
+```bash
+haify resource label db haify.io/auto-diskful=false   # leave this one alone
+haify event list --type resource.replica_moved
+```
+
+**What it is doing now.** The events say each decision once. `haify self-heal
+status` shows where things stand at this moment:
+
+```bash
+haify self-heal status
+haify self-heal status --json
+```
+
+- **Auto-evict:** each node that does not answer, for how long, and how long
+  until its replicas are replaced; a node that is exempt (drained, or opted
+  out) and why; and what holds an eviction back when one is due.
+- **Replica moves:** each `move-replica` or rebalance move under way, and how
+  far the new replica has synced.
+- **Auto-diskful:** each node using a volume as a diskless client, for how
+  long without a break, and how long is left before it gets a replica of its
+  own. A client that is due and passed over shows the reason, the same one
+  the event gave. Swaps in progress show whether the new replica is still
+  syncing (with its progress), waiting for an old replica to be removed, or
+  keeping the third vote, and why a step is waiting. Resources whose replica
+  already moved are listed with the time before which they will not move
+  again.
+
+The same is at `GET /v1/self-heal/status`.
+
 ---
 
 ## 8. Snapshots
@@ -941,6 +1054,14 @@ overrides). Use the same `--node` for `list`, `restore` and
 `delete`. On a thin volume it is a thin snapshot; on a thick one it reserves a
 copy-on-write area of `--size` (default `1G`). A ZFS resource needs
 `--storage-type zfs` on each of these commands.
+
+When a libvirt guest uses the resource, its filesystems are frozen while a
+snapshot is taken. `snapshot create` then says whether the snapshot is
+filesystem-consistent, or crash-consistent and why (the guest has no agent,
+the freeze timed out). `snapshot list` and `snapshot replicated list` show
+that for each snapshot of a guest's volume. For every other volume the column
+is empty: such a snapshot holds what a power cut at that instant would have
+left.
 
 `restore` is refused while the resource is Primary on any node, so unmount and
 demote it first. Stop a gateway with `gateway stop`. For an `ha create`
@@ -1111,6 +1232,12 @@ haify backup list
 haify backup restore <backup-id> --node node1
 haify backup delete <backup-id>
 ```
+
+A backup of a resource a libvirt guest uses is taken with the guest's
+filesystems frozen while the snapshots are made. `backup create` and `backup
+list` show `consistency` for it: `filesystem` when the freeze held, `crash`
+when the guest could not be frozen. Backups of other resources show nothing
+there.
 
 **Incremental after the first.** The first backup of a resource to a target is
 a full image. On thin pools every later one carries only the blocks that changed
@@ -1586,15 +1713,26 @@ these hold up the unmount. It works for gateway and app resources too.
 `ha create` makes a filesystem of `--fstype` on the device when it finds none,
 and refuses when a `--services` unit is missing on any of the resource's nodes.
 
-`--vm <guest>` runs a libvirt guest instead of services. Define the guest
-under that name, with the same UUID, on every diskful replica, with autostart
-off and its disks on `/dev/drbd/by-res/<resource>/<volume>`. When the node
-running it fails, another replica restarts it. When you start, stop or
-live-migrate guests by hand with `virsh`, the libvirt hook handles the DRBD
-side. Both are described in `deploy/libvirt/README.md`.
+`--vm <guest>` runs a libvirt guest instead of services, with its disks on
+`/dev/drbd/by-res/<resource>/<volume>`. Define the guest on one replica; Haify
+takes that definition, keeps it, and defines the guest on every other diskful
+replica under the same UUID, with autostart off. When the node running it
+fails, another replica restarts it. When you start, stop or live-migrate guests
+that are not under HA with `virsh`, the libvirt hook handles the DRBD side.
+Both are described in `deploy/libvirt/README.md`.
 
 ```bash
 haify ha create web1 --vm web1
+haify ha create web1 --vm web1 --vm-from kvm2   # when replicas hold different definitions
+```
+
+A replica added later is given the definition, and a replica that is removed
+loses the one Haify placed there. After changing the guest on one node (more
+memory, another disk), give the other replicas the change:
+
+```bash
+haify ha vm-status web1     # each replica: defined, not defined, differs, another UUID
+haify ha vm-sync web1       # take the one edited copy; --from <node> names it
 ```
 
 `ha create` and the gateways put a drbd-reactor promoter on the resource. They
@@ -1609,6 +1747,27 @@ To move it deliberately, for maintenance or to test that failover works:
 ```bash
 haify ha evict db
 ```
+
+For a resource that runs a libvirt guest, that shuts the guest down on one
+node and starts it on another. `--live` moves the guest while it runs:
+
+```bash
+haify ha evict web1 --live             # to a replica Haify picks
+haify ha evict web1 --live --to kvm3   # to the node you name
+haify ha migration web1                # the move in progress, or the last one
+```
+
+The target must hold an UpToDate, connected copy with quorum and have the
+guest's definition; a target that does not is refused before anything changes,
+and so is a resource that runs no guest. The command prints each step and how
+much memory has been copied, and ends with where the guest runs. If the
+migration fails, or its memory is not copied within `--timeout` (30 minutes by
+default), the guest stays on the node it was on, still running, and
+drbd-reactor manages it there as before. `haify ha evict`, with or without
+`--live`, first checks that every replica has the guest's definition: a
+replica that lacks it is given it, and when a copy differs the command stops
+and names `haify ha vm-sync`. The whole procedure is in
+`deploy/libvirt/README.md`.
 
 **Test your failover before you need it.** Evicting moves the resource
 gracefully. Pulling the power on the active node shows what a real failure
@@ -2150,6 +2309,15 @@ A **warning** is raised only once its condition has lasted `warning_hold_sec`:
 a replica link that drops and reconnects within it is not reported. Critical
 conditions (a full pool, a lost Primary, an unreachable node) are never held.
 
+A **replica that is being added** syncs for as long as the volume is large,
+and that sync is not a `resource.degraded`: `resource add-replica`,
+`move-replica`, a rebalance, and auto-diskful all add a copy before they take
+one away. The sync is raised like any other as soon as fewer replicas are
+`UpToDate` and connected than the resource had before the addition, which is
+also the case for the replacement of a replica that auto-evict removed. A
+replica that disconnects, loses its disk or falls out of date is raised
+whether or not another one is being added.
+
 A **failover loop** is a resource whose Primary moves `failover_loop_count`
 times within `failover_loop_window_sec`. Each move alone is a
 `resource.failover` warning, and a node that fails now and then is exactly what
@@ -2187,7 +2355,13 @@ what DRBD does not report, such as a thin pool filling up.
 
 Events: `resource.degraded`, `resource.failover`, `resource.failover_loop`
 (the Primary moving repeatedly, see above), `ha.service_failing` (a service
-of an HA chain not running or restarting, see above), `resource.no_primary`,
+of an HA chain not running or restarting, see above), `ha.guest_moved` and
+`ha.guest_move_failed` (how an `ha evict --live` ended: `warning` when the
+guest stayed where it was, `critical` when something is left to put back by
+hand, which the message lists), `resource.guest_resize_failed` (a volume was
+grown and its running guest still sees the old size; the message says what to
+run), `resource.guest_thaw_failed` (a guest frozen for a snapshot did not thaw
+when asked and is thawed by the node's watchdog), `resource.no_primary`,
 `resource.promoted`, `node.unreachable`, `wan.degraded`, `resource.out_of_sync`,
 `pool.data_near_full`, `pool.data_full`, `pool.metadata_near_full`,
 `pool.metadata_full`, `pool.out_of_space` (LVM already refused writes),
@@ -2334,7 +2508,7 @@ Each node is probed once over SSH per run; a node that does not answer is a
 
 | Area | Checks |
 | ---- | ------ |
-| resources | a resource under `haify ha create` has exactly one Primary; on every node: replica Outdated, Inconsistent with no resync, Diskless where it should hold data, not up, quorum lost; a peer StandAlone; a peer no node can reach, reported once per peer: fail for a diskful peer, warn for a tiebreaker or diskless client (the data is still fully redundant); a Connected peer stuck in WFBitMapS/WFBitMapT/WFSyncUUID (or Off between two diskful nodes), judged from every node's own view, because a handshake can be stuck on one side only; two-node quorum risk (warn); single-failure-domain risk (one warn per domain, listing its resources); an HA promoter config missing on a primary-site diskful node (warn), present on a diskless one (warn: it works as a diskless Primary, over the network) or present on a WAN resource's DR node (warn: it could fail over to the asynchronous copy unasked) |
+| resources | a resource under `haify ha create` has exactly one Primary; on every node: replica Outdated, Inconsistent with no resync, Diskless where it should hold data, not up, quorum lost; a peer StandAlone; a peer no node can reach, reported once per peer: fail for a diskful peer, warn for a tiebreaker or diskless client (the data is still fully redundant); a Connected peer stuck in WFBitMapS/WFBitMapT/WFSyncUUID (or Off between two diskful nodes), judged from every node's own view, because a handshake can be stuck on one side only; two-node quorum risk (warn); single-failure-domain risk (one warn per domain, listing its resources); an HA promoter config missing on a primary-site diskful node (warn), present on a diskless one (warn: it works as a diskless Primary, over the network) or present on a WAN resource's DR node (warn: it could fail over to the asynchronous copy unasked); for a libvirt guest under HA (`ha create --vm`), asked of every replica that may run it: the guest not defined there (fail: a takeover there starts nothing), defined under another UUID (fail), its definition differing from the last sync (warn), no definition kept by Haify (warn), each with `haify ha vm-sync` as the fix; a live move that was interrupted and not put back (fail) |
 | gateways | every gateway not `stopped` has exactly one Primary; its promoter config on every diskful node (warn when missing, and when present on a diskless node) |
 | nodes | SSH reachable; clock skew against the controller (warn > 2 s, fail > 30 s; SSH latency is not counted), NTP synchronised; root filesystem (warn ≥ 85 %, fail ≥ 95 %); the registered address present on an interface (a public address answering as the registered host is taken as NAT, not drift), and the address answering as the registered host; drbd module loaded; drbd-reactor running; DRBD module, drbd-utils, drbd-reactor and `haify-controller` binary the same on every node, the binary compared only between nodes of one architecture (a differing binary fails under Self-HA); `/etc/hosts` mapping a node name to an address it is not registered at |
 | pools | thin pool data and metadata against `[alert] pool_near_full_percent` / `pool_full_percent`; growth since the previous report, warn when full within 14 days, fail within 3; on a thick pool, free space below the copy-on-write area a snapshot of a volume reserves (20 % of it, at least 256 MiB), naming the volumes whose snapshots and backups will fail (warn); each disk under a pool, by SMART or the NVMe health log: warn on wear past 90 %, media errors, reallocated or pending sectors, fail on a failed SMART verdict, an NVMe critical warning, a worn-out NVMe drive (100 %) or uncorrectable sectors (`disk.health`; no check without `smartctl`) |
@@ -2614,7 +2788,8 @@ controller, node registration, the pool, Self-HA, the plugin and the
 (`/dev/drbd/by-res/<resource>/0`), and the qemu hook in `deploy/libvirt` makes
 them Primary when the guest starts and handles live migration.
 `haify ha create --vm <guest>` restarts the guest on another host when its host
-fails ([High availability](#11-high-availability)). See
+fails, and `haify ha evict <resource> --live` moves it to another host without
+stopping it ([High availability](#11-high-availability)). See
 [deploy/libvirt/README.md](../deploy/libvirt/README.md).
 
 **OpenStack** uses the Cinder driver in `deploy/openstack`: each Cinder volume is
@@ -2679,7 +2854,9 @@ haify resource status <each affected resource>   # wait for UpToDate everywhere
 
 ```bash
 haify resource resize-volume db 0 200G
-# then grow the filesystem on the Primary
+# an NFS or SMB gateway's filesystem is grown with it; any other filesystem:
+haify resource resize-volume db 0 200G --grow-fs
+# or, on the Primary
 ssh <primary> sudo resize2fs /dev/drbd<minor>
 ```
 

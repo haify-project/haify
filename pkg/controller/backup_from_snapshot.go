@@ -99,7 +99,7 @@ func (bm *BackupManager) assertBackupIDFree(ctx context.Context, resource, id, f
 // the snapshot of the resource's one volume. A thin snapshot is created with
 // activation skipped and has no device to read until it is activated; a
 // snapshot that does not exist fails here, before anything is recorded.
-func (bm *BackupManager) useSnapshot(ctx context.Context, host string, info *ResourceInfo, snapshot string) (map[uint32]string, error) {
+func (bm *BackupManager) useSnapshot(ctx context.Context, host string, info *ResourceInfo, snapshot string) (map[uint32]string, string, error) {
 	log := bm.controller.traceLogger()
 	v := info.Volumes[0]
 	device := fmt.Sprintf("/dev/%s/%s", v.Pool, snapshot)
@@ -112,8 +112,27 @@ func (bm *BackupManager) useSnapshot(ctx context.Context, host string, info *Res
 		log.Debug("BackupManager.useSnapshot: activated", zap.String("host", host), zap.String("device", device),
 			zap.Duration("took", time.Since(start)), zap.Error(err))
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
-	return map[uint32]string{v.VolumeID: snapshot}, nil
+	return map[uint32]string{v.VolumeID: snapshot}, bm.snapshotMark(ctx, host, v.Pool, snapshot), nil
+}
+
+// snapshotMark reads the consistency an existing LVM snapshot was marked
+// with when it was taken, so a backup read from it says the same. It is ""
+// for a snapshot that carries no mark and when the tags cannot be read: the
+// backup does not depend on it.
+func (bm *BackupManager) snapshotMark(ctx context.Context, host, pool, snapshot string) string {
+	log := bm.controller.traceLogger()
+	start := time.Now()
+	res, err := bm.controller.deployment.Exec(ctx, []string{host},
+		fmt.Sprintf("sudo lvs --noheadings -o lv_tags %s/%s 2>/dev/null", pool, snapshot))
+	out, ok := appHostOutput(res, host)
+	mark := ""
+	if err == nil && ok {
+		mark = consistencyOfTags(out)
+	}
+	log.Debug("BackupManager.snapshotMark: read tags", zap.String("host", host), zap.String("snapshot", pool+"/"+snapshot),
+		zap.String("consistency", mark), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return mark
 }

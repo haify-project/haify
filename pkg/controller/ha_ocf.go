@@ -485,6 +485,10 @@ func (rm *ResourceManager) SyncHaToml(ctx context.Context, resource, content str
 		log.Debug("ResourceManager.SyncHaToml: no deployment client", zap.String("resource", resource))
 		return "", fmt.Errorf("deployment client not set")
 	}
+	if m := rm.liveMigrationRunning(resource); m != "" {
+		log.Debug("ResourceManager.SyncHaToml: live move in progress", zap.String("resource", resource))
+		return "", fmt.Errorf("%s", m)
+	}
 	if strings.TrimSpace(content) == "" {
 		log.Debug("ResourceManager.SyncHaToml: content empty, refusing", zap.String("resource", resource))
 		return "", fmt.Errorf("toml content is empty")

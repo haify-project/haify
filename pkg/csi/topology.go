@@ -41,6 +41,9 @@ type replicaCandidate struct {
 	// domain is the node's fault domain: its value of the fault-domain label,
 	// or the node itself when it has none.
 	domain string
+	// outside is set on a node that lies in none of the zones the CO asked
+	// for (placeInZones); such a node is taken only after the ones inside.
+	outside bool
 }
 
 // poolFreeBytes is how much room a pool has left on its node, or 0 when the
@@ -176,7 +179,8 @@ func (c replicaCandidate) fits(needBytes uint64) bool {
 // breaks on node name so two provisioners racing over identical cluster state
 // reach the same answer. Nodes in a fault domain no replica uses yet are taken
 // before any that would share one: two copies on one physical host are one
-// failure away from none.
+// failure away from none. When the CO asked for zones (placeInZones), nodes
+// inside them are taken before any outside, and spread within each group.
 //
 // Pass needBytes 0 to place without a capacity requirement.
 func selectReplicaNodes(candidates []replicaCandidate, pinned []string, replicas int, needBytes uint64) ([]string, error) {
@@ -235,19 +239,24 @@ func selectReplicaNodes(candidates []replicaCandidate, pinned []string, replicas
 		}
 		return roomy[i].node < roomy[j].node
 	})
-	for _, apart := range []bool{true, false} {
-		for _, c := range roomy {
-			if len(picked) >= replicas {
-				break
+	// Nodes inside the zones the CO asked for go first; without a zone
+	// requirement no candidate is outside and the second round finds nothing.
+	for _, outside := range []bool{false, true} {
+		for _, apart := range []bool{true, false} {
+			for _, c := range roomy {
+				if len(picked) >= replicas {
+					break
+				}
+				if c.outside != outside || used[c.node] || (apart && c.domain != "" && domains[c.domain]) {
+					continue
+				}
+				log.Debug("selectReplicaNodes: picked by free space", zap.String("node", c.node),
+					zap.Uint64("free_bytes", c.freeBytes), zap.String("domain", c.domain), zap.Bool("new_domain", apart),
+					zap.Bool("outside_requested_zones", outside))
+				picked = append(picked, c.node)
+				used[c.node] = true
+				domains[c.domain] = true
 			}
-			if used[c.node] || (apart && c.domain != "" && domains[c.domain]) {
-				continue
-			}
-			log.Debug("selectReplicaNodes: picked by free space", zap.String("node", c.node),
-				zap.Uint64("free_bytes", c.freeBytes), zap.String("domain", c.domain), zap.Bool("new_domain", apart))
-			picked = append(picked, c.node)
-			used[c.node] = true
-			domains[c.domain] = true
 		}
 	}
 
@@ -262,6 +271,12 @@ func selectReplicaNodes(candidates []replicaCandidate, pinned []string, replicas
 }
 
 // accessibleTopology builds one CSI topology segment per replica node.
+//
+// The segments name nodes and never zones, although the node plugin publishes
+// both. A volume is usable exactly where it has a replica, and the node says
+// that in full. A zone-wide segment would promise the volume on nodes of the
+// zone that hold no replica; a zone beside the node would add nothing while
+// tying the PV's node affinity, which cannot be changed, to a label that can.
 func accessibleTopology(nodes []string) []*csi.Topology {
 	out := make([]*csi.Topology, 0, len(nodes))
 	for _, n := range nodes {

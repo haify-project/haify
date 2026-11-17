@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.uber.org/zap"
 )
@@ -42,6 +43,8 @@ type volumeResizeIn struct {
 	Resource string `json:"resource" jsonschema:"DRBD resource name"`
 	VolumeID uint32 `json:"volume_id" jsonschema:"volume ID within the resource"`
 	SizeGB   uint32 `json:"size_gb" jsonschema:"new size in GiB (must be larger than current)"`
+	// GrowFilesystem is not needed for a gateway's filesystem.
+	GrowFilesystem bool `json:"grow_filesystem,omitempty" jsonschema:"also grow the filesystem mounted from the volume on the Primary; always done for an NFS or SMB gateway"`
 }
 
 type filesystemIn struct {
@@ -135,17 +138,21 @@ func (s *Server) registerResourceVolumeTools(srv *mcp.Server) {
 		})
 
 	addWrite(s, srv, writeTool("haify_resource_resize_volume", "Resize volume",
-		"Grow a DRBD volume on all nodes. Shrinking is not supported. The space is not usable "+
-			"until the filesystem on the Primary is grown too (resize2fs/xfs_growfs) — this tool "+
-			"does not do that."),
+		"Grow a DRBD volume on all nodes. Shrinking is not supported. The filesystem of an NFS or SMB "+
+			"gateway on the resource is grown with it, and a running libvirt guest is shown the new size; "+
+			"the result says what was done. Any other filesystem on the volume is grown where it is mounted "+
+			"(resize2fs/xfs_growfs), or by this tool with grow_filesystem. An error saying the volume is grown "+
+			"but its filesystem is not means the gateway was failing over or stopped: call the tool again later."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in volumeResizeIn) (*mcp.CallToolResult, opResult, error) {
 			s.logger.Debug("haify_resource_resize_volume: resizing volume", zap.String("resource", in.Resource), zap.Uint32("volume", in.VolumeID), zap.Uint32("size_gb", in.SizeGB))
-			if err := s.client.ResizeVolume(ctx, in.Resource, in.VolumeID, in.SizeGB); err != nil {
+			note, err := s.client.ResizeVolumeWith(ctx, &haifypb.ResizeVolumeRequest{
+				Resource: in.Resource, VolumeId: in.VolumeID, SizeGb: in.SizeGB, GrowFilesystem: in.GrowFilesystem})
+			if err != nil {
 				s.logger.Debug("haify_resource_resize_volume: failed", zap.String("resource", in.Resource), zap.Uint32("volume", in.VolumeID), zap.Uint32("size_gb", in.SizeGB), zap.Error(err))
 				return nil, opResult{}, err
 			}
 			s.logger.Debug("haify_resource_resize_volume: done", zap.String("resource", in.Resource), zap.Uint32("volume", in.VolumeID), zap.Uint32("size_gb", in.SizeGB))
-			return nil, ok(fmt.Sprintf("volume %d of resource %s resized to %d GiB", in.VolumeID, in.Resource, in.SizeGB)), nil
+			return nil, ok(withControllerNote(fmt.Sprintf("volume %d of resource %s resized to %d GiB", in.VolumeID, in.Resource, in.SizeGB), note)), nil
 		})
 
 	addWrite(s, srv, destructiveTool("haify_resource_create_filesystem", "Create filesystem",

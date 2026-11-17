@@ -2721,6 +2721,26 @@
             "in": "path",
             "required": true,
             "type": "string"
+          },
+          {
+            "name": "keepInUse",
+            "description": "keep_in_use puts the node in maintenance, so it takes no new replicas,\nand moves only the resources whose Primary Haify itself decides: the\ngateways, HA services, apps and the controller's own metadata. A\nresource another system keeps Primary (Proxmox VE, the CSI driver,\nOpenStack Cinder, XCP-ng, OpenNebula) and a device that is open stay\nwhere they are and are listed in resources_left.",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "requestedBy",
+            "description": "requested_by and reason say who put the node in maintenance and why, for\nNodeInfo (for example \"kubernetes drain\"). Empty requested_by is the\ncaller's user name.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": false,
+            "type": "string"
           }
         ],
         "tags": [
@@ -4642,6 +4662,37 @@
         ]
       }
     },
+    "/v1/resources/{resource}/ha/migration": {
+      "get": {
+        "summary": "The live migration of an HA guest that EvictHa started with live set:\nthe one running, or the last one that ran.",
+        "operationId": "HaifyController_GetHaMigration",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetHaMigrationResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "resource",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
     "/v1/resources/{resource}/ha/preferred-nodes": {
       "post": {
         "summary": "Orders where drbd-reactor starts an HA resource (preferred-nodes). A\npreference, not a fence; DRBD quorum is what prevents split brain.",
@@ -4711,6 +4762,76 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/HaifyControllerSetTiebreakerBody"
+            }
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
+    "/v1/resources/{resource}/ha/vm-definition": {
+      "get": {
+        "summary": "The libvirt definition of an HA guest: what the controller keeps and how\neach replica's own copy compares with it.",
+        "operationId": "HaifyController_GetVmDefinition",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1VmDefinitionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "resource",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
+    "/v1/resources/{resource}/ha/vm-definition/sync": {
+      "post": {
+        "summary": "Takes the guest's definition from one node and defines it on every\nother replica.",
+        "operationId": "HaifyController_SyncVmDefinition",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1VmDefinitionResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "resource",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/HaifyControllerSyncVmDefinitionBody"
             }
           }
         ],
@@ -5504,6 +5625,29 @@
             }
           }
         ],
+        "tags": [
+          "HaifyController"
+        ]
+      }
+    },
+    "/v1/self-heal/status": {
+      "get": {
+        "summary": "GetSelfHealStatus reports what self-healing is doing and waiting for:\nauto-evict's offline nodes, the replica moves under way, and for\nauto-diskful every client it watches, why one is passed over, the swaps\nin progress and the resources in their cooldown.",
+        "operationId": "HaifyController_GetSelfHealStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetSelfHealStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
         "tags": [
           "HaifyController"
         ]
@@ -7316,7 +7460,22 @@
       "description": "DRFailbackRequest returns a WAN resource from its DR node to the primary site\nafter a DR failover. Run it again until phase is \"done\": it rejoins the\nprimary site (discarding what those nodes wrote after they were cut off),\nwaits for them to resync from the DR, then moves the Primary role back."
     },
     "HaifyControllerEvictHaBody": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "live": {
+          "type": "boolean",
+          "description": "live moves the libvirt guest of an `ha create --vm` resource to another\nreplica without stopping it. The call returns once the move has started;\nGetHaMigration follows it. Refused for a resource that runs no guest."
+        },
+        "targetNode": {
+          "type": "string",
+          "description": "target_node is where a live move goes. Empty picks a replica that is\nUpToDate, connected and has the guest's definition."
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "format": "int64",
+          "description": "timeout_seconds bounds the memory copy of a live move; past it the move\nis aborted and the guest stays where it was. 0 means 30 minutes."
+        }
+      }
     },
     "HaifyControllerFailoverAppBody": {
       "type": "object"
@@ -7384,6 +7543,10 @@
             "$ref": "#/definitions/v1HaStartItem"
           },
           "description": "start_items, when non-empty, defines the promoter start[] list verbatim and\nin order (systemd units and OCF agents interleaved). The legacy fields\n2/3/5/6 above are then used only for provisioning side effects (mount unit\ngeneration, VIP service-ip precondition) and NOT for start[] ordering."
+        },
+        "vmDefinitionNode": {
+          "type": "string",
+          "description": "vm_definition_node names the node to take a libvirt guest's definition\nfrom when the start list runs a VirtualDomain agent. Empty takes it from\nthe node the guest runs on, or from the replicas when they agree."
         }
       }
     },
@@ -7474,6 +7637,10 @@
           "type": "string",
           "format": "uint64",
           "description": "size_bytes grows the device to exactly this many bytes; size_gb is then\nignored."
+        },
+        "growFilesystem": {
+          "type": "boolean",
+          "description": "grow_filesystem also grows, online, the filesystem mounted from the\nvolume on the node where the resource is Primary. It is implied for a\nresource with an NFS or SMB gateway, whose filesystem the gateway mounts\non a storage node. When the filesystem is not mounted at that moment (a\nfailover is under way, the gateway is stopped) the reply has success\nfalse and retryable true."
         }
       }
     },
@@ -7791,6 +7958,15 @@
       "properties": {
         "content": {
           "type": "string"
+        }
+      }
+    },
+    "HaifyControllerSyncVmDefinitionBody": {
+      "type": "object",
+      "properties": {
+        "fromNode": {
+          "type": "string",
+          "description": "from_node names the node whose definition is the one to keep. Empty\ntakes the one node whose copy changed, or repairs the others from the\ncopy the controller keeps."
         }
       }
     },
@@ -8387,6 +8563,220 @@
         }
       }
     },
+    "v1AutoDiskfulClient": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "inUseSince": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix seconds"
+        },
+        "inUseSeconds": {
+          "type": "string",
+          "format": "int64"
+        },
+        "remainingSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "remaining_seconds of uninterrupted use until it is due a replica of its\nown; 0 when it is due."
+        },
+        "state": {
+          "type": "string",
+          "description": "state is \"counting\" (not in use long enough yet), \"due\" (next in line),\n\"skipped\" (gets no replica, see reason), \"waiting\" (another self-healing\nsync runs first), \"planned\" (dry run: it would get one) or \"failed\" (the\nlast attempt failed; retried at retry_at)."
+        },
+        "skip": {
+          "type": "string",
+          "description": "skip names the kind of reason (\"pinned\", \"cooldown\", \"pool\", ...)."
+        },
+        "reason": {
+          "type": "string"
+        },
+        "retryAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix seconds, 0 when not waiting to retry"
+        }
+      },
+      "description": "AutoDiskfulClient is a diskless client in use that auto-diskful watches."
+    },
+    "v1AutoDiskfulCooldown": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "movedAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix seconds"
+        },
+        "until": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix seconds"
+        }
+      }
+    },
+    "v1AutoDiskfulStatus": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "title": "off, dry-run or on"
+        },
+        "afterMinutes": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "cooldownHours": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "clients": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1AutoDiskfulClient"
+          }
+        },
+        "swaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1AutoDiskfulSwap"
+          }
+        },
+        "cooldowns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1AutoDiskfulCooldown"
+          }
+        }
+      }
+    },
+    "v1AutoDiskfulSwap": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string",
+          "title": "the former client, now a replica"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix seconds"
+        },
+        "phase": {
+          "type": "string",
+          "description": "phase is \"syncing\" (the new replica is not UpToDate yet), \"removing\" (it\nis, and an old replica is to go) or \"tiebreaker\" (the old replica is\ngone and its node is being kept as the third vote)."
+        },
+        "syncPercent": {
+          "type": "number",
+          "format": "double",
+          "description": "sync_percent of the new replica while syncing; unset when DRBD did not\nreport it."
+        },
+        "replicasNow": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "replicasTarget": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "removed": {
+          "type": "string",
+          "title": "the replica that was removed, once it was"
+        },
+        "attempts": {
+          "type": "integer",
+          "format": "int64",
+          "title": "failed tries of the current step"
+        },
+        "nextTry": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix seconds, 0 when none is scheduled"
+        },
+        "detail": {
+          "type": "string",
+          "title": "why the current step waits, when known"
+        }
+      },
+      "description": "AutoDiskfulSwap is a client that was given a replica, and the removal of\nan old replica that follows."
+    },
+    "v1AutoEvictNode": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "offlineSince": {
+          "type": "string",
+          "format": "int64",
+          "title": "Unix seconds"
+        },
+        "remainingSeconds": {
+          "type": "string",
+          "format": "int64",
+          "description": "remaining_seconds until its replicas are replaced; 0 when that is due."
+        },
+        "state": {
+          "type": "string",
+          "description": "state is \"waiting\", \"due\", \"exempt\" (in maintenance or opted out) or\n\"evicted\"."
+        },
+        "reason": {
+          "type": "string"
+        },
+        "replicas": {
+          "type": "integer",
+          "format": "int64",
+          "description": "replicas is how many resources still hold a replica on it."
+        }
+      },
+      "description": "AutoEvictNode is one node that does not answer."
+    },
+    "v1AutoEvictStatus": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "title": "off, dry-run or on"
+        },
+        "afterMinutes": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "maxOfflinePercent": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "gate": {
+          "type": "string",
+          "description": "gate says why nothing is evicted now although a node is due; empty when\nthe gate is open."
+        },
+        "syncing": {
+          "type": "string",
+          "description": "syncing is the resource whose replacement replica is still syncing; the\nnext replacement waits for it."
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1AutoEvictNode"
+          }
+        }
+      }
+    },
     "v1BackupInfo": {
       "type": "object",
       "properties": {
@@ -8454,6 +8844,10 @@
         "readAt": {
           "type": "string",
           "description": "read_at (RFC3339) is the time its objects are read as of, for a backup\nimported with as_of."
+        },
+        "consistency": {
+          "type": "string",
+          "description": "consistency of the snapshots the backup was read from: \"filesystem\" when\nthe guest using the resource was frozen while they were taken, \"crash\"\nwhen it could not be, and empty for a resource that belongs to no guest."
         }
       }
     },
@@ -9737,6 +10131,17 @@
         }
       }
     },
+    "v1DrainLeftResource": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
     "v1DrainNodeResponse": {
       "type": "object",
       "properties": {
@@ -9752,6 +10157,14 @@
             "type": "string"
           },
           "description": "resources_moved lists the DRBD resources whose Primary was moved off the node."
+        },
+        "resourcesLeft": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1DrainLeftResource"
+          },
+          "description": "resources_left lists, for a keep_in_use drain, the resources that are\nstill Primary on the node and why each was not moved."
         }
       }
     },
@@ -9858,6 +10271,16 @@
           "type": "boolean"
         },
         "message": {
+          "type": "string"
+        },
+        "started": {
+          "type": "boolean",
+          "description": "Set for a live move: it runs on after this response."
+        },
+        "sourceNode": {
+          "type": "string"
+        },
+        "targetNode": {
           "type": "string"
         }
       }
@@ -10176,6 +10599,20 @@
         }
       }
     },
+    "v1GetHaMigrationResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "migration": {
+          "$ref": "#/definitions/v1HaMigration"
+        }
+      }
+    },
     "v1GetHaResponse": {
       "type": "object",
       "properties": {
@@ -10458,6 +10895,35 @@
         }
       }
     },
+    "v1GetSelfHealStatusResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "autoEvict": {
+          "$ref": "#/definitions/v1AutoEvictStatus"
+        },
+        "autoDiskful": {
+          "$ref": "#/definitions/v1AutoDiskfulStatus"
+        },
+        "moves": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ReplicaMoveStatus"
+          },
+          "description": "moves are the replica moves under way (move-replica, rebalance)."
+        },
+        "observedUnix": {
+          "type": "string",
+          "format": "int64"
+        }
+      }
+    },
     "v1GetWanSizingResponse": {
       "type": "object",
       "properties": {
@@ -10590,6 +11056,63 @@
           "title": "the explicit start list, when one was given"
         }
       }
+    },
+    "v1HaMigration": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "sourceNode": {
+          "type": "string"
+        },
+        "targetNode": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string",
+          "description": "checking, releasing, window, migrating, settling, done."
+        },
+        "message": {
+          "type": "string",
+          "description": "What the current phase is doing, or how the move ended."
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "type": "string",
+          "description": "moved, stayed (the guest runs on where it was, untouched), restarted\n(the guest was found stopped and HA started it again), attention (the\ncontroller could not put everything back; message says what is left)."
+        },
+        "activeNode": {
+          "type": "string",
+          "description": "The node the guest runs on once the move is done."
+        },
+        "progressPercent": {
+          "type": "integer",
+          "format": "int64",
+          "description": "Memory copied so far, 0-100, while phase is migrating."
+        },
+        "startedUnix": {
+          "type": "string",
+          "format": "int64"
+        },
+        "updatedUnix": {
+          "type": "string",
+          "format": "int64"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Each step taken, in order."
+        }
+      },
+      "description": "HaMigration is one live move of an HA guest."
     },
     "v1HaOutsideService": {
       "type": "object",
@@ -11440,6 +11963,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "snapshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ResourceSnapshotInfo"
+          },
+          "description": "snapshots carries the same snapshots as names, in the same order, with\nwhat is known about each."
         }
       }
     },
@@ -11936,6 +12467,17 @@
         "localAgent": {
           "type": "boolean",
           "description": "local_agent: the controller does not reach this node over SSH; its CSI\nnode plugin applies DRBD changes there (see RegisterNodeRequest)."
+        },
+        "maintenanceBy": {
+          "type": "string",
+          "description": "For a node in maintenance: who put it there (\"admin\", \"kubernetes\ndrain\"), why, and when (Unix seconds). Empty and 0 otherwise."
+        },
+        "maintenanceReason": {
+          "type": "string"
+        },
+        "maintenanceSince": {
+          "type": "string",
+          "format": "int64"
         }
       }
     },
@@ -11985,6 +12527,10 @@
         "receivedKib": {
           "type": "string",
           "format": "uint64"
+        },
+        "joining": {
+          "type": "boolean",
+          "description": "joining: this replica was added to the resource and is still in its\nfirst sync (see ResourceInfo.joining_nodes). Its sync is a copy being\nadded, not one that fell behind."
         }
       }
     },
@@ -12824,6 +13370,29 @@
       },
       "description": "ReplicaHealth is one member of a resource in ResourceHealth."
     },
+    "v1ReplicaMoveStatus": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "syncPercent": {
+          "type": "number",
+          "format": "double",
+          "description": "sync_percent of the new replica; unset when DRBD did not report it."
+        },
+        "state": {
+          "type": "string",
+          "title": "disk state of the new replica"
+        }
+      }
+    },
     "v1ReplicationCounts": {
       "type": "object",
       "properties": {
@@ -12887,6 +13456,10 @@
         },
         "message": {
           "type": "string"
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "retryable: the volume itself is grown, and a step after it (growing the\nfilesystem) could not run now. Sending the same request again finishes\nit."
         }
       }
     },
@@ -13095,6 +13668,18 @@
         },
         "usedBy": {
           "type": "string"
+        },
+        "joiningNodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "joining_nodes are the nodes whose replica was added to the resource and\nis still in its first sync: a copy on top of the ones the resource\nalready had, not one of them that fell behind. A node leaves the list for\ngood the first time its replica is seen UpToDate."
+        },
+        "committedReplicas": {
+          "type": "integer",
+          "format": "int64",
+          "description": "committed_replicas is how many UpToDate replicas the resource has to keep\nwhile joining_nodes is not empty: the number it had before the first of\nthem was added, or the number it is being brought back to. 0 when no\nreplica is joining."
         }
       }
     },
@@ -13156,6 +13741,18 @@
           "additionalProperties": {
             "type": "string"
           }
+        }
+      }
+    },
+    "v1ResourceSnapshotInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "consistency": {
+          "type": "string",
+          "description": "consistency is \"filesystem\" when the guest using the resource was frozen\nwhile the snapshot was taken, \"crash\" when it could not be, and empty for\na resource that belongs to no guest."
         }
       }
     },
@@ -13782,6 +14379,10 @@
         "origin": {
           "type": "string",
           "description": "The logical volume this snapshot was taken from. A pool holds the snapshots\nof every resource on its node, and the snapshot name alone does not say\nwhich one it belongs to."
+        },
+        "consistency": {
+          "type": "string",
+          "description": "consistency is \"filesystem\" when the guest using the volume was frozen\nwhile the snapshot was taken, \"crash\" when it could not be, and empty for\na volume that belongs to no guest."
         }
       }
     },
@@ -14169,6 +14770,66 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        }
+      }
+    },
+    "v1VmDefinitionNode": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "description": "ok, missing, changed (edited on this node since the last sync),\nuuid_mismatch, unreachable."
+        },
+        "uuid": {
+          "type": "string"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "description": "VmDefinitionNode is one replica's copy of a guest's definition."
+    },
+    "v1VmDefinitionResponse": {
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "uuid": {
+          "type": "string"
+        },
+        "sourceNode": {
+          "type": "string",
+          "description": "The node the kept definition was taken from."
+        },
+        "updatedUnix": {
+          "type": "string",
+          "format": "int64"
+        },
+        "consistent": {
+          "type": "boolean"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1VmDefinitionNode"
           }
         }
       }

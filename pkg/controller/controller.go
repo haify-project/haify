@@ -78,6 +78,11 @@ type Controller struct {
 	// dashboard and the resource list.
 	view    *clusterView
 	history *clusterHistory
+	// evictor and follower are the self-healing loops ([self_heal] auto_evict
+	// and auto_diskful); nil when off. They are kept here because each must
+	// know what the other, and the planners, have in flight.
+	evictor  *autoEvictor
+	follower *dataFollower
 }
 
 // SetLogRing attaches the buffer the log view reads from. The ring has to exist
@@ -325,8 +330,12 @@ func (c *Controller) Start() error {
 	c.startAuditShipper(c.ctx)
 	go c.watchLockClock(c.ctx)
 	c.startAutoEvict(c.ctx)
+	c.startAutoDiskful(c.ctx)
 	if c.resources != nil {
 		c.resources.resumeMoves(c.ctx)
+		// A live move of an HA guest that a previous controller did not
+		// finish has left the guest's promoter disabled; put it back.
+		c.resources.resumeLiveMigrations(c.ctx)
 	}
 	c.startStorageUpkeep(c.ctx)
 

@@ -51,6 +51,8 @@ spec:
             - --endpoint=unix:///csi/csi.sock
             - --haify-controller=haify-controller:{{ .Values.controller.port }}
             - --qos-interval={{ .Values.nodePlugin.qosInterval | default "30s" }}
+            - --zone-topology={{ .Values.nodePlugin.zoneTopology }}
+            - --zone-sync-interval={{ .Values.nodePlugin.zoneSyncInterval | default "5m" }}
           securityContext: { privileged: true }
           env:
             {{- include "haify-csi.tokenEnv" . | nindent 12 }}

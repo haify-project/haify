@@ -71,6 +71,7 @@ func (c *Controller) startAutoEvict(ctx context.Context) {
 		return
 	}
 	e := &autoEvictor{c: c, log: c.logger.Named("auto-evict"), announced: map[string]bool{}}
+	c.evictor = e
 	e.log.Info("Auto-evict enabled", zap.String("mode", c.config.SelfHeal.AutoEvict),
 		zap.Int("after_minutes", c.config.SelfHeal.AfterMinutes))
 	go func() {
@@ -189,6 +190,18 @@ func (e *autoEvictor) syncInFlight(ctx context.Context) bool {
 	return false
 }
 
+// syncing names the resource whose replacement replica is still syncing, or
+// "" when none is (or auto-evict is off): the other self-healing loop starts
+// no sync of its own meanwhile.
+func (e *autoEvictor) syncing(ctx context.Context) string {
+	if e == nil || !e.syncInFlight(ctx) {
+		return ""
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.inflight
+}
+
 // evictOne replaces node's next replica; it reports whether it started one.
 func (e *autoEvictor) evictOne(ctx context.Context, n *NodeInfo) bool {
 	log := e.evictLog()
@@ -234,7 +247,10 @@ func (e *autoEvictor) evictOne(ctx context.Context, n *NodeInfo) bool {
 			e.announceOnce(n.Name+"/"+r.Name+"/refused", fmt.Sprintf("%s's replica of %s is not replaced: %v", n.Name, r.Name, err))
 			continue
 		}
-		if err := rm.AddReplica(ctx, r.Name, picked[0]); err != nil {
+		// The replacement brings the resource back to the replicas it had
+		// with the lost node; until it is in sync the resource is one short,
+		// and its sync is reported as that.
+		if err := rm.AddReplicaWith(ctx, r.Name, picked[0], AddReplicaOpts{Committed: len(survivors) + 1}); err != nil {
 			log.Debug("autoEvictor.evictOne: new replica failed", zap.String("resource", r.Name), zap.String("to", picked[0]), zap.Error(err))
 			e.publish(r.Name, event.SeverityCritical, fmt.Sprintf("%s's replica of %s was removed, but the new one on %s "+
 				"failed: %v; add one with `haify resource add-replica %s --node <node>`", n.Name, r.Name, picked[0], err, r.Name))

@@ -43,10 +43,50 @@ type AddReplicaOpts struct {
 	// AllowUnreachable adds the replica while a minority of the resource's
 	// members do not answer (addreplica_unreachable.go).
 	AllowUnreachable bool
+	// Committed is how many UpToDate replicas the resource is committed to
+	// keeping while the new one syncs (resource_joining.go). 0 is the number
+	// of replicas it has before the add, which is right for an addition; a
+	// replica that replaces one already removed passes the number from
+	// before the removal, so that its sync is still reported as the rebuild
+	// of a missing copy.
+	Committed int
 }
 
 // AddReplicaWith is AddReplica with options.
+//
+// The new replica is recorded as joining once it is a replica, so that its
+// first sync can be told from a replica falling behind. That is done here,
+// around every way a node becomes a replica, and also when the add fails
+// late: a replica that exists and syncs is joining whether or not the
+// promoters could be placed on its node afterwards.
 func (rm *ResourceManager) AddReplicaWith(ctx context.Context, resource, node string, opts AddReplicaOpts) error {
+	before := 0
+	if rm.controller != nil && rm.controller.db != nil {
+		if r, gerr := rm.controller.db.GetResource(ctx, resource); gerr == nil && r != nil {
+			before = len(splitCSV(r.Nodes))
+			if contains(splitCSV(r.Nodes), strings.TrimSpace(node)) {
+				// Already a replica: the add is refused below, and the
+				// replica that is there is not a new one.
+				before = 0
+			}
+		}
+	}
+	// Announced before the add, not after it: turning a diskless client into
+	// a replica starts the sync while the add is still running, and a health
+	// check landing in that window would otherwise see a replica syncing that
+	// nothing had declared to be new.
+	if before > 0 {
+		rm.announceJoining(ctx, resource, strings.TrimSpace(node), before, opts.Committed)
+	}
+	err := rm.addReplica(ctx, resource, node, opts)
+	if before > 0 {
+		rm.markJoining(ctx, resource, strings.TrimSpace(node), before, opts.Committed)
+	}
+	return err
+}
+
+// addReplica is AddReplicaWith without the joining record.
+func (rm *ResourceManager) addReplica(ctx context.Context, resource, node string, opts AddReplicaOpts) error {
 	ignoreFreeSpace := opts.IgnoreFreeSpace
 	log := rm.controller.traceLogger()
 	log.Debug("AddReplicaWith: start", zap.String("resource", resource), zap.String("node", node),

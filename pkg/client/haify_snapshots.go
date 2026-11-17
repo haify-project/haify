@@ -10,6 +10,13 @@ import (
 
 // CreateSnapshot creates a snapshot
 func (c *HaifyClient) CreateSnapshot(ctx context.Context, volume, snapshotName, node string) error {
+	_, err := c.CreateSnapshotNoted(ctx, volume, snapshotName, node)
+	return err
+}
+
+// CreateSnapshotNoted is CreateSnapshot, and returns what the controller said
+// about the snapshot: for a guest's volume, its consistency and why.
+func (c *HaifyClient) CreateSnapshotNoted(ctx context.Context, volume, snapshotName, node string) (string, error) {
 	log := zap.L()
 	log.Debug("HaifyClient.CreateSnapshot: sending request", zap.String("volume", volume), zap.String("snapshot_name", snapshotName), zap.String("node", node))
 	req := &haifypb.CreateSnapshotRequest{
@@ -21,16 +28,16 @@ func (c *HaifyClient) CreateSnapshot(ctx context.Context, volume, snapshotName, 
 	resp, err := c.client.CreateSnapshot(ctx, req)
 	if err != nil {
 		log.Debug("HaifyClient.CreateSnapshot: CreateSnapshot failed", zap.Error(err))
-		return err
+		return "", err
 	}
 
 	if !resp.Success {
 		log.Debug("HaifyClient.CreateSnapshot: controller reported failure", zap.String("message", resp.Message))
-		return fmt.Errorf("%s", resp.Message)
+		return "", fmt.Errorf("%s", resp.Message)
 	}
 
-	log.Debug("HaifyClient.CreateSnapshot: done")
-	return nil
+	log.Debug("HaifyClient.CreateSnapshot: done", zap.String("message", resp.Message))
+	return resp.Message, nil
 }
 
 // DeleteSnapshot deletes a snapshot
@@ -261,6 +268,14 @@ func (c *HaifyClient) RestoreSnapshot(ctx context.Context, volume, snapshotName,
 
 // CreateLvmSnapshot creates an LVM snapshot
 func (c *HaifyClient) CreateLvmSnapshot(ctx context.Context, pool, lvName, snapshotName, node, size string) error {
+	_, err := c.CreateLvmSnapshotNoted(ctx, pool, lvName, snapshotName, node, size)
+	return err
+}
+
+// CreateLvmSnapshotNoted is CreateLvmSnapshot, and returns what the
+// controller said about the snapshot: for a guest's volume, its consistency
+// and why.
+func (c *HaifyClient) CreateLvmSnapshotNoted(ctx context.Context, pool, lvName, snapshotName, node, size string) (string, error) {
 	log := zap.L()
 	log.Debug("HaifyClient.CreateLvmSnapshot: sending request", zap.String("pool", pool), zap.String("lv_name", lvName), zap.String("snapshot_name", snapshotName), zap.String("node", node), zap.String("size", size))
 	req := &haifypb.CreateLvmSnapshotRequest{
@@ -274,16 +289,16 @@ func (c *HaifyClient) CreateLvmSnapshot(ctx context.Context, pool, lvName, snaps
 	resp, err := c.client.CreateLvmSnapshot(ctx, req)
 	if err != nil {
 		log.Debug("HaifyClient.CreateLvmSnapshot: CreateLvmSnapshot failed", zap.Error(err))
-		return err
+		return "", err
 	}
 
 	if !resp.Success {
 		log.Debug("HaifyClient.CreateLvmSnapshot: controller reported failure", zap.String("message", resp.Message))
-		return fmt.Errorf("%s", resp.Message)
+		return "", fmt.Errorf("%s", resp.Message)
 	}
 
-	log.Debug("HaifyClient.CreateLvmSnapshot: done")
-	return nil
+	log.Debug("HaifyClient.CreateLvmSnapshot: done", zap.String("message", resp.Message))
+	return resp.Message, nil
 }
 
 // DeleteLvmSnapshot deletes an LVM snapshot

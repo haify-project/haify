@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Server, Plus, Loader2, Activity } from 'lucide-react';
 import { api, type Node } from '@/services/api';
+import { nodeReachable } from '@/services/api/nodes';
 import { toast } from 'sonner';
 import { cn, copyToClipboard } from '@/lib/utils';
 import { PageHeader } from '@/components/PageHeader';
@@ -99,6 +100,9 @@ export function NodesPage() {
     },
     onSettled: (_data, _error, nodeName) => {
       setChecking((c) => c.filter((n) => n !== nodeName));
+      // A check is also what the controller records "last seen" and
+      // online/offline from, so the list is stale until it is read again.
+      queryClient.invalidateQueries({ queryKey: ['nodes'] });
     },
   });
 
@@ -118,7 +122,7 @@ export function NodesPage() {
   useEffect(() => {
     if (!expanded || autoChecked.current.has(expanded)) return;
     const node = nodes?.nodes.find((n) => n.name === expanded);
-    if (!node || node.state !== 'online') return;
+    if (!node || !nodeReachable(node)) return;
     autoChecked.current.add(expanded);
     runCheck(expanded);
   }, [expanded, nodes, runCheck]);
@@ -133,7 +137,7 @@ export function NodesPage() {
   });
 
   const list = nodes?.nodes ?? [];
-  const online = list.filter((n) => n.state === 'online');
+  const reachable = list.filter(nodeReachable);
 
   // The same template as Resources: counts that filter, a search, a sort and
   // pages. Nodes number in the tens, so this happens here, not on the server.
@@ -163,7 +167,7 @@ export function NodesPage() {
   const visible = filtered.slice(offset, offset + PAGE);
   const counts = {
     '': list.length,
-    online: online.length,
+    online: list.filter((n) => n.state === 'online').length,
     offline: list.filter((n) => n.state !== 'online' && n.state !== 'maintenance').length,
     maintenance: list.filter((n) => n.state === 'maintenance').length,
   };
@@ -193,12 +197,12 @@ export function NodesPage() {
     else toast.error('Could not copy address');
   };
 
-  // N read-only GETs, one per online node. Offline nodes are excluded for the
+  // N read-only GETs, one per node that answers. Offline nodes are excluded for the
   // same reason the per-row button is disabled for them. Each check is an SSH
   // round-trip on the controller, so they go a few at a time rather than all
   // at once on a large cluster.
   const checkAll = async () => {
-    const names = online.map((n) => n.name);
+    const names = reachable.map((n) => n.name);
     const CONCURRENCY = 4;
     for (let i = 0; i < names.length; i += CONCURRENCY) {
       await Promise.allSettled(
@@ -214,11 +218,11 @@ export function NodesPage() {
   // is pressed.
   const checkedOnOpen = useRef(false);
   useEffect(() => {
-    if (checkedOnOpen.current || online.length === 0 || online.length > 12) return;
+    if (checkedOnOpen.current || reachable.length === 0 || reachable.length > 12) return;
     checkedOnOpen.current = true;
     void checkAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [online.length]);
+  }, [reachable.length]);
 
   return (
     // A container, so the table-or-cards switch below follows the width this
@@ -240,7 +244,7 @@ export function NodesPage() {
             <Button
               variant="outline"
               onClick={checkAll}
-              disabled={!online.length || checking.length > 0}
+              disabled={!reachable.length || checking.length > 0}
             >
               {checking.length > 0 ? (
                 <Loader2 className="animate-spin" />
@@ -332,7 +336,7 @@ export function NodesPage() {
         <div className="@min-[760px]:hidden">
           <RecordCards className="md:flex">
             {visible.map((node) => {
-              const isOnline = node.state === 'online';
+              const isOnline = nodeReachable(node);
               const isChecking = checking.includes(node.name);
               const result = health[node.name];
               const readiness = result ? readinessOf(result.info) : null;
@@ -439,7 +443,7 @@ export function NodesPage() {
               </TableHeader>
               <TableBody>
                 {visible.map((node) => {
-                  const isOnline = node.state === 'online';
+                  const isOnline = nodeReachable(node);
                   const isChecking = checking.includes(node.name);
                   const isDeleting =
                     unregisterMutation.isPending &&

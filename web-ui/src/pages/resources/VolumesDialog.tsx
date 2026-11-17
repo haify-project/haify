@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, Resource, Volume } from '../../services/api';
+import { replyNote } from '../../services/api/client';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -136,10 +137,18 @@ function VolumeRow({
   const [newSize, setNewSize] = useState(String(volume.sizeGb));
 
   const resizeMutation = useMutation({
-    mutationFn: (sizeGb: number) =>
-      api.resizeVolume(resourceName, volume.volumeId, sizeGb),
-    onSuccess: () => {
-      toast.success(`Volume ${volume.volumeId} resized`);
+    mutationFn: async (sizeGb: number) => {
+      const res = await api.resizeVolume(resourceName, volume.volumeId, sizeGb);
+      // A resize can grow the volume and still be unfinished, when a
+      // gateway's filesystem could not be grown at that moment.
+      if (!res.success) throw new Error(res.message);
+      return res;
+    },
+    onSuccess: (res) => {
+      // What happened to a gateway's filesystem or a running guest.
+      toast.success(`Volume ${volume.volumeId} resized`, {
+        description: replyNote(res.message, 'Volume resized successfully'),
+      });
       onChanged();
       setResizing(false);
     },

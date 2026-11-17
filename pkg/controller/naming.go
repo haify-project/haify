@@ -126,6 +126,11 @@ func parseLVMPoolLine(line string) (name string, total, free uint64, pv string, 
 // in any other form is passed through whole.
 func parseZFSSnapshotLine(line string) (string, string, string, bool) {
 	fields := strings.Fields(strings.TrimSpace(line))
+	// -H separates the columns with tabs, and what follows the creation time
+	// (the consistency mark) is not part of it.
+	if tabbed := strings.Split(strings.TrimSpace(line), "\t"); len(tabbed) > 4 {
+		fields = tabbed[:4]
+	}
 	if len(fields) < 4 {
 		zap.L().Debug("parseZFSSnapshotLine: skipped, too few fields", zap.Int("fields", len(fields)))
 		return "", "", "", false
@@ -142,4 +147,13 @@ func parseZFSSnapshotLine(line string) (string, string, string, bool) {
 		created = time.Unix(secs, 0).UTC().Format("2006-01-02 15:04:05 -0700")
 	}
 	return parts[1], parts[0], created, true
+}
+
+// zfsSnapshotConsistency reads the consistency mark from a line of the same
+// listing: its fifth tab-separated column. "" when the snapshot carries none.
+func zfsSnapshotConsistency(line string) string {
+	if tabbed := strings.Split(strings.TrimSpace(line), "\t"); len(tabbed) > 4 {
+		return knownConsistency(tabbed[4])
+	}
+	return ""
 }

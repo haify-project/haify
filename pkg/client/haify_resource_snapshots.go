@@ -11,19 +11,27 @@ import (
 // CreateResourceSnapshot snapshots every volume of resource on every replica,
 // at one instant, as name.
 func (c *HaifyClient) CreateResourceSnapshot(ctx context.Context, resource, name string) error {
+	_, err := c.CreateResourceSnapshotNoted(ctx, resource, name)
+	return err
+}
+
+// CreateResourceSnapshotNoted is CreateResourceSnapshot, and returns what the
+// controller said about the snapshot: for a resource that belongs to a guest,
+// whether it is filesystem or crash consistent and why.
+func (c *HaifyClient) CreateResourceSnapshotNoted(ctx context.Context, resource, name string) (string, error) {
 	log := zap.L()
 	log.Debug("HaifyClient.CreateResourceSnapshot: sending request", zap.String("resource", resource), zap.String("name", name))
 	resp, err := c.client.CreateResourceSnapshot(ctx, &haifypb.CreateResourceSnapshotRequest{Resource: resource, Name: name})
 	if err != nil {
 		log.Debug("HaifyClient.CreateResourceSnapshot: CreateResourceSnapshot failed", zap.Error(err))
-		return err
+		return "", err
 	}
 	if !resp.Success {
 		log.Debug("HaifyClient.CreateResourceSnapshot: controller reported failure", zap.String("message", resp.Message))
-		return fmt.Errorf("%s", resp.Message)
+		return "", fmt.Errorf("%s", resp.Message)
 	}
-	log.Debug("HaifyClient.CreateResourceSnapshot: done")
-	return nil
+	log.Debug("HaifyClient.CreateResourceSnapshot: done", zap.String("message", resp.Message))
+	return resp.Message, nil
 }
 
 // ListResourceSnapshots names the snapshots CreateResourceSnapshot took of
@@ -81,17 +89,6 @@ func (c *HaifyClient) DeleteResourceSnapshot(ctx context.Context, resource, name
 
 // ResizeVolumeBytes grows a volume to exactly sizeBytes.
 func (c *HaifyClient) ResizeVolumeBytes(ctx context.Context, resource string, volumeID uint32, sizeBytes uint64) error {
-	log := zap.L()
-	log.Debug("HaifyClient.ResizeVolumeBytes: sending request", zap.String("resource", resource), zap.Uint32("volume_id", volumeID), zap.Uint64("size_bytes", sizeBytes))
-	resp, err := c.client.ResizeVolume(ctx, &haifypb.ResizeVolumeRequest{Resource: resource, VolumeId: volumeID, SizeBytes: sizeBytes})
-	if err != nil {
-		log.Debug("HaifyClient.ResizeVolumeBytes: ResizeVolume failed", zap.Error(err))
-		return err
-	}
-	if !resp.Success {
-		log.Debug("HaifyClient.ResizeVolumeBytes: controller reported failure", zap.String("message", resp.Message))
-		return fmt.Errorf("%s", resp.Message)
-	}
-	log.Debug("HaifyClient.ResizeVolumeBytes: done")
-	return nil
+	_, err := c.ResizeVolumeWith(ctx, &haifypb.ResizeVolumeRequest{Resource: resource, VolumeId: volumeID, SizeBytes: sizeBytes})
+	return err
 }

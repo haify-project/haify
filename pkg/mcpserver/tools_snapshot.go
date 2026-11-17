@@ -56,6 +56,8 @@ type snapshotOut struct {
 	// Origin is the volume the snapshot was taken from, which is what says
 	// which resource it belongs to when a pool holds several.
 	Origin string `json:"origin,omitempty"`
+	// Consistency is set for a snapshot of a guest's volume only.
+	Consistency string `json:"consistency,omitempty" jsonschema:"filesystem (the guest using the volume was frozen while it was taken) or crash (it could not be); absent for a volume that belongs to no guest"`
 }
 
 type snapshotListOut struct {
@@ -66,15 +68,21 @@ type snapshotListOut struct {
 func (s *Server) registerSnapshotTools(srv *mcp.Server) {
 	addWrite(s, srv, writeTool("haify_snapshot_create", "Create snapshot",
 		"Create a point-in-time snapshot of a DRBD resource's data volume. "+
-			"LVM uses copy-on-write snapshots (reserve enough COW space via size_gib); ZFS uses native snapshots."),
+			"LVM uses copy-on-write snapshots (reserve enough COW space via size_gib); ZFS uses native snapshots. "+
+			"When a libvirt guest uses the volume it is frozen for the snapshot; the result says whether the snapshot "+
+			"is filesystem-consistent or crash-consistent and why."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, in snapshotCreateIn) (*mcp.CallToolResult, opResult, error) {
 			s.logger.Debug("haify_snapshot_create: creating snapshot", zap.String("resource", in.Resource),
 				zap.String("name", in.Name), zap.String("node", in.Node), zap.String("pool", in.Pool),
 				zap.String("storage_type", in.StorageType), zap.Uint32("size_gib", in.SizeGiB))
+			// note is the controller's reply: for a guest's volume it says
+			// which consistency the snapshot has.
+			var note string
 			if in.StorageType == "zfs" {
 				dataset := zfsDataset(in.Pool, in.Resource)
 				s.logger.Debug("haify_snapshot_create: zfs snapshot", zap.String("dataset", dataset))
-				if err := s.client.CreateZFSSnapshot(ctx, dataset, in.Name, in.Node); err != nil {
+				var err error
+				if note, err = s.client.CreateZFSSnapshotNoted(ctx, dataset, in.Name, in.Node); err != nil {
 					s.logger.Debug("haify_snapshot_create: zfs snapshot failed", zap.String("dataset", dataset), zap.Error(err))
 					return nil, opResult{}, err
 				}
@@ -86,7 +94,8 @@ func (s *Server) registerSnapshotTools(srv *mcp.Server) {
 				}
 				s.logger.Debug("haify_snapshot_create: lvm snapshot", zap.String("pool", in.Pool),
 					zap.String("lv", lvmDataLV(in.Resource)), zap.Uint32("size_gib", size))
-				err := s.client.CreateLvmSnapshot(ctx, in.Pool, lvmDataLV(in.Resource), in.Name,
+				var err error
+				note, err = s.client.CreateLvmSnapshotNoted(ctx, in.Pool, lvmDataLV(in.Resource), in.Name,
 					in.Node, fmt.Sprintf("%dG", size))
 				if err != nil {
 					s.logger.Debug("haify_snapshot_create: lvm snapshot failed", zap.String("pool", in.Pool), zap.Error(err))
@@ -94,7 +103,7 @@ func (s *Server) registerSnapshotTools(srv *mcp.Server) {
 				}
 			}
 			s.logger.Debug("haify_snapshot_create: created", zap.String("resource", in.Resource), zap.String("name", in.Name))
-			return nil, ok(fmt.Sprintf("snapshot %s created for resource %s on %s", in.Name, in.Resource, in.Node)), nil
+			return nil, ok(withControllerNote(fmt.Sprintf("snapshot %s created for resource %s on %s", in.Name, in.Resource, in.Node), note)), nil
 		})
 
 	addRead(s, srv, readOnlyTool("haify_snapshot_list", "List snapshots",
@@ -122,11 +131,12 @@ func (s *Server) registerSnapshotTools(srv *mcp.Server) {
 				s.logger.Debug("haify_snapshot_list: snapshot", zap.String("name", sn.Name), zap.String("volume", sn.Volume),
 					zap.String("origin", sn.Origin), zap.Uint64("size_gb", sn.SizeGb))
 				out.Snapshots = append(out.Snapshots, snapshotOut{
-					Name:      sn.Name,
-					Volume:    sn.Volume,
-					SizeGB:    sn.SizeGb,
-					CreatedAt: sn.CreatedAt,
-					Origin:    sn.Origin,
+					Name:        sn.Name,
+					Volume:      sn.Volume,
+					SizeGB:      sn.SizeGb,
+					CreatedAt:   sn.CreatedAt,
+					Origin:      sn.Origin,
+					Consistency: sn.Consistency,
 				})
 			}
 			s.logger.Debug("haify_snapshot_list: listed", zap.Int("count", len(out.Snapshots)))

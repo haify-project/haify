@@ -131,12 +131,29 @@ func (sm *ScheduleManager) snapshotResource(ctx context.Context, res *ResourceIn
 	locked := s.LockDays > 0 || !scheduleFrozenUntil(s, lockNow()).IsZero()
 	log.Debug("snapshotResource: snapshotting", zap.String("resource", res.Name), zap.Strings("nodes", res.Nodes),
 		zap.Int("volumes", len(res.Volumes)), zap.Time("ts", ts), zap.Bool("locked", locked))
+	// A libvirt guest's volumes are snapshotted with the guest frozen
+	// (guest_quiesce.go); finish thaws it and marks the snapshots.
+	q := sm.controller.resources.quiesceGuests(ctx, res.Name)
+	defer func() {
+		q.finish()
+		if note := q.note(res.Name); note != "" {
+			sm.controller.logger.Info("Snapshot schedule: consistency of the snapshots taken",
+				zap.String("resource", res.Name), zap.String("consistency", note))
+		}
+	}()
 	for _, node := range res.Nodes {
 		host := sm.controller.ResolveHost(node)
 		for _, vol := range res.Volumes {
 			log.Debug("snapshotResource: volume", zap.String("node", node), zap.String("host", host),
 				zap.String("pool", vol.Pool), zap.String("volume", vol.BackingVolume))
 			sm.snapshotVolume(ctx, host, node, vol, ts)
+			// A snapshot that was not taken has nothing to mark; the mark
+			// then fails on the node and is logged.
+			if isZFSDevice(vol.Device) {
+				q.took(res.Name, host, fmt.Sprintf("%s/%s@%s", vol.Pool, vol.BackingVolume, buildSnapName(vol.BackingVolume, ts)), true)
+			} else {
+				q.took(res.Name, host, vol.Pool+"/"+buildSnapName(vol.BackingVolume, ts), false)
+			}
 			if (s.LockDays > 0 || !scheduleFrozenUntil(s, lockNow()).IsZero()) && isZFSDevice(vol.Device) {
 				sm.controller.holdLockedZFSSnapshot(ctx, host,
 					fmt.Sprintf("%s/%s@%s", vol.Pool, vol.BackingVolume, buildSnapName(vol.BackingVolume, ts)))

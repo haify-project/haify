@@ -159,6 +159,7 @@ func (s *Server) MCPServer() *mcp.Server {
 	s.registerHATools(srv)
 	s.registerDBAppTools(srv)
 	s.registerObservabilityTools(srv)
+	s.registerSelfHealTools(srv)
 	s.registerDiagnoseTools(srv)
 	s.registerInspectTools(srv)
 	s.registerNotifyTools(srv)
@@ -209,6 +210,18 @@ type opResult struct {
 
 func ok(detail string) opResult {
 	return opResult{Status: "ok", Detail: detail}
+}
+
+// withControllerNote adds what the controller said about an operation to a
+// tool's own summary of it. The controller's reply can carry what the caller
+// has to know and cannot see otherwise: that a snapshot is crash-consistent
+// and why, or that a running guest was not shown its grown disk and what to
+// run for it.
+func withControllerNote(detail, note string) string {
+	if note = strings.TrimSpace(note); note == "" {
+		return detail
+	}
+	return detail + ". Controller: " + note
 }
 
 // Annotation helpers. Hints follow the MCP spec defaults: DestructiveHint

@@ -21,6 +21,9 @@ type SnapshotInfo struct {
 	// attributes a snapshot to a DRBD resource: a pool holds the snapshots of
 	// every resource on that node, and the name alone does not say which.
 	Origin string
+	// Consistency is "filesystem" or "crash" for a snapshot of a guest's
+	// volume (snapshot_consistency.go) and "" for any other.
+	Consistency string
 }
 
 // SnapshotManager manages volume snapshots
@@ -74,10 +77,34 @@ func (sm *SnapshotManager) zfsVolumeDataset(ctx context.Context, volume string) 
 // CreateSnapshot creates a snapshot of volume on node: an LVM snapshot, or a
 // ZFS one ("<dataset>@<name>") when the volume is a zvol.
 func (sm *SnapshotManager) CreateSnapshot(ctx context.Context, volume, snapshotName, node string) error {
-	log := sm.controller.traceLogger()
-	log.Debug("CreateSnapshot: taking", zap.String("volume", volume), zap.String("snapshot", snapshotName), zap.String("node", node))
+	_, err := sm.CreateSnapshotNoted(ctx, volume, snapshotName, node)
+	return err
+}
+
+// CreateSnapshotNoted is CreateSnapshot with the guest of the volume's
+// resource frozen around it when there is one to freeze, and says which
+// consistency the snapshot has (snapshot_consistency.go); "" for a volume
+// that belongs to no libvirt guest.
+func (sm *SnapshotManager) CreateSnapshotNoted(ctx context.Context, volume, snapshotName, node string) (string, error) {
+	sm.controller.traceLogger().Debug("CreateSnapshotNoted: start", zap.String("volume", volume),
+		zap.String("snapshot", snapshotName), zap.String("node", node))
+	pool, backing := parseVolumePath(volume)
+	name, zfs := pool+"/"+snapshotName, false
 	if dataset, ok := sm.zfsVolumeDataset(ctx, volume); ok {
-		log.Debug("CreateSnapshot: zvol, taking a ZFS snapshot", zap.String("dataset", dataset))
+		name, zfs = dataset+"@"+snapshotName, true
+	}
+	return sm.controller.snapshotVolumeQuiesced(ctx, pool, backing, sm.controller.ResolveHost(node), name, zfs,
+		func() error { return sm.takeSnapshot(ctx, volume, snapshotName, node) })
+}
+
+// takeSnapshot takes the snapshot and freezes nothing: for CreateSnapshot,
+// and for a snapshot group, which freezes the guests of all its members
+// itself.
+func (sm *SnapshotManager) takeSnapshot(ctx context.Context, volume, snapshotName, node string) error {
+	log := sm.controller.traceLogger()
+	log.Debug("takeSnapshot: taking", zap.String("volume", volume), zap.String("snapshot", snapshotName), zap.String("node", node))
+	if dataset, ok := sm.zfsVolumeDataset(ctx, volume); ok {
+		log.Debug("takeSnapshot: zvol, taking a ZFS snapshot", zap.String("dataset", dataset))
 		return sm.controller.storage.ZFSSnapshot(ctx, dataset, snapshotName, node)
 	}
 	address := sm.controller.ResolveHost(node)
@@ -91,22 +118,34 @@ func (sm *SnapshotManager) CreateSnapshot(ctx context.Context, volume, snapshotN
 	vg, lv := parseVolumePath(volume)
 	originPath := fmt.Sprintf("/dev/%s/%s", vg, lv)
 
-	// Create snapshot using lvcreate. Thick LVM snapshots require a COW
-	// size or they are rejected outright ("Please specify either size or
-	// extents"); 20% of the origin is a sane default for the
-	// backup-then-delete workflow this API serves. Callers needing exact
-	// sizing use the LVM-specific RPC, which takes an explicit size.
+	// A thin origin gets a thin snapshot, which takes no size and shares the
+	// pool. Given a size, lvcreate makes a thick COW snapshot of it instead:
+	// carved from the VG's free space, a COW copy on every write to the
+	// origin, and invalid once the origin has changed by more than that size
+	// (measured 2026-11-17: a snapshot taken from the web UI of a 3 GiB thin
+	// volume came out as a 632 MiB COW snapshot).
+	//
+	// A thick origin needs a COW size or lvcreate refuses ("Please specify
+	// either size or extents"); 20% of the origin suits the backup-then-
+	// delete use this API serves. The LVM-specific RPC takes an exact size.
+	thinStart := time.Now()
+	thin, thinErr := sm.controller.deployment.LVIsThin(ctx, address, vg, lv)
+	log.Debug("takeSnapshot: origin checked", zap.String("host", address), zap.String("origin", originPath),
+		zap.Bool("thin", thin), zap.Duration("took", time.Since(thinStart)), zap.Error(thinErr))
 	cmd := fmt.Sprintf("sudo lvcreate -s -l 20%%ORIGIN -n %s %s", snapshotName, originPath)
+	if thin {
+		cmd = fmt.Sprintf("sudo lvcreate -s -n %s %s", snapshotName, originPath)
+	}
 	start := time.Now()
 	result, err := sm.controller.deployment.Exec(ctx, []string{address}, cmd)
 	if err != nil {
-		log.Debug("CreateSnapshot: lvcreate errored", zap.String("host", address), zap.String("origin", originPath),
+		log.Debug("takeSnapshot: lvcreate errored", zap.String("host", address), zap.String("origin", originPath),
 			zap.Duration("took", time.Since(start)), zap.Error(err))
 		return fmt.Errorf("failed to create snapshot: %w", err)
 	}
 
 	if !result.AllSuccess() {
-		log.Debug("CreateSnapshot: lvcreate failed", zap.String("host", address), zap.Strings("failed_hosts", result.FailedHosts()),
+		log.Debug("takeSnapshot: lvcreate failed", zap.String("host", address), zap.Strings("failed_hosts", result.FailedHosts()),
 			zap.Duration("took", time.Since(start)))
 		for host, hr := range result.Hosts {
 			if !hr.Success {
@@ -115,7 +154,7 @@ func (sm *SnapshotManager) CreateSnapshot(ctx context.Context, volume, snapshotN
 		}
 		return fmt.Errorf("failed to create snapshot: %s", result.FailureDetails())
 	}
-	log.Debug("CreateSnapshot: lvcreate done", zap.String("host", address), zap.Duration("took", time.Since(start)))
+	log.Debug("takeSnapshot: lvcreate done", zap.String("host", address), zap.Duration("took", time.Since(start)))
 
 	sm.controller.logger.Info("Snapshot created successfully",
 		zap.String("volume", volume),
@@ -186,7 +225,7 @@ func (sm *SnapshotManager) ListSnapshots(ctx context.Context, volume, node strin
 	address := sm.controller.ResolveHost(node)
 
 	// List snapshots using lvs
-	cmd := fmt.Sprintf("sudo lvs --noheadings --separator '|' -o lv_name,lv_size,origin %s", vg)
+	cmd := fmt.Sprintf("sudo lvs --noheadings --separator '|' -o lv_name,lv_size,origin,lv_tags %s", vg)
 	start := time.Now()
 	result, err := sm.controller.deployment.Exec(ctx, []string{address}, cmd)
 	if err != nil {
@@ -216,12 +255,16 @@ func (sm *SnapshotManager) ListSnapshots(ctx context.Context, volume, node strin
 						sizeStr = strings.TrimSuffix(sizeStr, "g")
 						sizeStr = strings.TrimSuffix(sizeStr, "G")
 						sizeFloat, _ := strconv.ParseFloat(sizeStr, 64)
-						snapshots = append(snapshots, &SnapshotInfo{
+						snap := &SnapshotInfo{
 							Name:      lvName,
 							Volume:    volume,
 							SizeGB:    uint64(sizeFloat),
 							CreatedAt: "",
-						})
+						}
+						if len(fields) >= 4 {
+							snap.Consistency = consistencyOfTags(fields[3])
+						}
+						snapshots = append(snapshots, snap)
 					}
 				}
 			}

@@ -247,6 +247,13 @@ notify_min = "warn"
 auto_evict = "off"
 after_minutes = 60
 max_offline_percent = 34
+# Data follows its user: a node that has used a volume as a diskless client
+# (Primary, without a break) for auto_diskful_after_minutes gets a replica of
+# its own, and one of the old replicas is removed once the new one is in sync.
+# "off" (default), "dry-run" or "on". Each such move is a full sync of the
+# volume; one runs at a time. At least 10 minutes.
+auto_diskful = "off"
+auto_diskful_after_minutes = 60
 
 # Quotas. max_overcommit_ratio caps a thin pool's promised size (its thin
 # volumes' sizes) at that many times its real size; 0 = unlimited. A

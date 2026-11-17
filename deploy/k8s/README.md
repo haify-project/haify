@@ -17,6 +17,7 @@ namespace `haify-ai`).
 | `30-node.yaml` | DaemonSet `haify-csi-node`: node-driver-registrar, plugin (`csi-node`, privileged) |
 | `40-storageclass.yaml` | StorageClass `haify-drbd` |
 | `50-volumesnapshotclass.yaml` | VolumeSnapshotClass `haify-drbd-snapshot` (needs the snapshot CRDs, see below) |
+| `examples/shared-filesystem.yaml` | StorageClass `haify-shared`, a `ReadWriteMany` PVC and a Deployment whose three Pods share it; not applied with the rest (set `nfsServiceIPs` first, see [Shared filesystems](#shared-filesystems-readwritemany)) |
 | `examples/volumegroupsnapshotclass.yaml` | VolumeGroupSnapshotClass `haify-group-snapshot`; not applied with the rest (needs the group snapshot CRDs, see below) |
 | `60-haify-ai-apps-rbac.yaml` | ServiceAccount + token Secret for the Haify Copilot's `haify_k8s_app_create` tool |
 
@@ -108,7 +109,7 @@ Then:
 | `replicas` | `2` | Number of replicas that hold the data (diskful) |
 | `storageType` | `lvm` | `lvm` or `zfs` |
 | `allowRemoteVolumeAccess` | `false` | `true` lets a Pod run on a node with no replica. The node plugin attaches a diskless DRBD client there when the volume is staged, and detaches it when the volume is unstaged. Otherwise Pods run only on nodes that hold a replica |
-| `faultDomainLabel` | `host` | Haify node label used to spread replicas: replicas go to nodes with different values of it when possible (`haify node label <node> host=<name>`). A node without the label counts as its own domain |
+| `faultDomainLabel` | `host` | Haify node label used to spread replicas: replicas go to nodes with different values of it when possible (`haify node label <node> host=<name>`). A node without the label counts as its own domain. `zone` spreads across Kubernetes zones without labelling anything by hand, see [Zones](#zones) |
 | `resourceProfile` | none | Haify resource profile. Its pool, replica count and storage type are used for any of the three the StorageClass does not set |
 | `resourceLabels` | none | Labels put on the Haify resource, written `key=value,key=value`. The driver always adds `haify.csi/managed-by=csi`, and `haify.csi/pvc=<namespace>/<name>` to name the claim (external-provisioner passes the claim with `--extra-create-metadata`, which `20-controller.yaml` sets) |
 | `readBytesPerSecond`, `writeBytesPerSecond` | none | Read and write bandwidth limit for the Pod on this volume, as a size per second (`200Mi`, `1G`) |
@@ -118,6 +119,9 @@ Then:
 | `drNode` | none | Haify node at another site that gets an asynchronous DR replica of every volume. See [Cross-site disaster recovery](#cross-site-disaster-recovery) |
 | `drEndpoint` | required with `drNode` | The DR site's public address or host name, without a port |
 | `drEgressAddress` | none | Source address the primary site's proxy uses to reach the DR site |
+| `sharedFilesystem` | none | `nfs` makes every volume of the class a filesystem that many nodes mount at once (`ReadWriteMany`), served by a Haify NFS gateway. See [Shared filesystems](#shared-filesystems-readwritemany) |
+| `nfsServiceIPs` | required with `sharedFilesystem` | The floating addresses the driver may give to shared volumes, one per volume: a comma-separated list of addresses and ranges, each with the prefix length of its network, such as `192.168.1.200-192.168.1.220/24,192.168.1.240/24` |
+| `nfsAllowedClients` | every client | Networks or addresses allowed to mount the shared volumes, comma-separated (`10.42.0.0/16,192.168.1.0/24`) |
 
 The four limits are written into the Pod's cgroup `io.max` when the volume is
 published. They need cgroup v2 with the `io` controller enabled for pod
@@ -133,6 +137,84 @@ node for the Pod.
 
 The filesystem is `ext4` unless the StorageClass sets
 `csi.storage.k8s.io/fstype` (the image ships `e2fsprogs` and `xfsprogs`).
+
+## Zones
+
+On a cluster whose nodes carry `topology.kubernetes.io/zone` (and
+`topology.kubernetes.io/region`), the node plugin publishes both as CSI
+topology beside its own per-node key, and copies them onto the Haify node as
+labels. A cluster without those labels behaves as before.
+
+**Replicas in different zones.** Set `faultDomainLabel: zone` on the
+StorageClass. Nothing has to be labelled by hand:
+
+```yaml
+parameters:
+  pool: "vg0"
+  replicas: "3"
+  faultDomainLabel: "zone"
+```
+
+The first replica still goes on the node the scheduler picked for the Pod. The
+others go to nodes in zones that have no replica yet, the ones with the most
+free pool space first. When there are fewer zones than replicas, the rest share
+a zone rather than fail.
+
+**The labels on the Haify node.** Each Haify node gets two labels per value
+(`haify node list` shows them):
+
+| Haify node label | Value |
+| ---------------- | ----- |
+| `topology.kubernetes.io/zone`, `topology.kubernetes.io/region` | Always what the Kubernetes node says. The driver owns these two: a value set by hand is overwritten at the next sync |
+| `zone`, `region` | The same value, unless you set the label yourself |
+
+A `zone` or `region` label that you set with `haify node label` to something
+other than the Kubernetes value is yours: the driver never changes or removes
+it, and the node plugin logs a warning that names both values. Placement with
+`faultDomainLabel: zone` then uses your value for that node. To spread by the
+Kubernetes zone no matter what `zone` says, use
+`faultDomainLabel: topology.kubernetes.io/zone`. To hand `zone` back to the
+driver, remove your label (`haify node label <node> zone=`).
+
+**When a Kubernetes label changes.** The node plugin compares the labels every
+`--zone-sync-interval` (default `5m`) and when it starts, so a changed or
+removed zone reaches the Haify node within that time, and a Haify controller
+that was unreachable is caught up with later. Volumes that already exist keep
+their replicas where they are. The topology Kubernetes holds for the node is
+read when the kubelet registers the plugin, so after changing a node's zone
+or region label, restart the plugin's pod on that node:
+
+    kubectl -n kube-system delete pod -l app=haify-csi-node --field-selector spec.nodeName=<node>
+
+**Where Pods can run.** A volume's PersistentVolume names the nodes that hold a
+replica, not their zones, so a Pod runs on exactly those nodes, in whichever
+zones they are. A volume with replicas in two zones can be used in both. With
+`allowRemoteVolumeAccess: "true"` the volume has no node restriction and a Pod
+can use it from any node in any zone.
+
+**`allowedTopologies` with zones.** A StorageClass may list zones:
+
+```yaml
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.kubernetes.io/zone
+        values: ["east-1a", "east-1b"]
+```
+
+With `volumeBindingMode: WaitForFirstConsumer` the scheduler keeps the Pod, and
+with it the first replica, in those zones. With `Immediate` binding the driver
+puts one replica in a listed zone, and the others on nodes in the listed zones
+before any outside them. If no node in the listed zones hosts the pool with
+enough room, provisioning fails with `ResourceExhausted`.
+
+**Capacity.** The `CSIStorageCapacity` objects stay one per node; each now
+also carries the node's zone and region.
+
+**Turning it off.** `--zone-topology=false` on the node plugin
+(`30-node.yaml`), or `nodePlugin.zoneTopology: false` in the chart. The plugin
+then publishes the node alone and leaves the Haify node's labels as they are.
+Reading the Node needs the `haify-csi-node` ClusterRole in `10-rbac.yaml`;
+without it the plugin logs a warning and works as on a cluster with no zones.
 
 ## Encrypted volumes
 
@@ -354,6 +436,133 @@ A node without a replica takes part as a diskless client when the
 StorageClass sets `allowRemoteVolumeAccess: "true"`. Resources replicated
 over WAN (protocol A) are refused two Primaries.
 
+## Shared filesystems (ReadWriteMany)
+
+A StorageClass with `sharedFilesystem: nfs` provisions filesystems that Pods on
+several nodes mount at the same time:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: haify-shared
+provisioner: haify.csi.liliang-cn.com
+parameters:
+  pool: "vg0"
+  replicas: "2"
+  sharedFilesystem: "nfs"
+  nfsServiceIPs: "192.168.1.200-192.168.1.220/24"
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: shared-data}
+spec:
+  storageClassName: haify-shared
+  accessModes: [ReadWriteMany]
+  resources: {requests: {storage: 20Gi}}
+```
+
+Each volume is a replicated Haify resource with an NFS gateway of its own in
+front of it. The gateway runs on one of the volume's replica nodes and serves
+the filesystem on a floating address; every node with a Pod using the volume
+mounts it from that address. When the node serving it fails, the gateway and
+its address move to another replica, and the Pods keep their mounts: their I/O
+waits for the few seconds the move takes and then continues. `haify gateway
+list` shows the gateways, named after their volumes.
+
+### Service addresses
+
+Every shared volume takes one address from `nfsServiceIPs` for as long as it
+exists, so the pool sets how many shared volumes the class can hold. A PVC
+that finds the pool used up stays `Pending` with `ResourceExhausted` until an
+address is freed by deleting a volume or the pool is widened.
+
+- Write each entry with the prefix length of the network the address is in
+  (`/24` for a node network of `192.168.1.0/24`), not the size of the range.
+- The addresses must be in a network the Haify storage nodes are attached to,
+  reachable from every Kubernetes node, and used by nothing else: keep them out
+  of DHCP ranges, MetalLB pools and kube-vip.
+- Addresses already held by another shared volume, by a gateway created with
+  `haify gateway`, or by a Haify node are skipped.
+- Several StorageClasses may name the same pool.
+- Editing the pool of a StorageClass affects new volumes only. A volume keeps
+  its address for life; it is recorded on the Haify resource as the label
+  `haify.csi/nfs-service-ip`.
+
+### Requirements
+
+- The storage nodes need what any Haify NFS gateway needs: the NFS server and
+  the OCF resource agents (`nfs-kernel-server` on Debian and Ubuntu,
+  `nfs-utils` on RHEL and Rocky; `resource-agents-extra` on Ubuntu,
+  `resource-agents` on Debian, RHEL and Rocky). Provisioning fails with the
+  name of the missing piece otherwise.
+- Kubernetes nodes need the NFS client. The driver's image carries it. When it
+  is missing, the Pod's event says so: `the NFS client is missing: mount.nfs
+  was not found`.
+- Kubernetes nodes need not be Haify nodes to mount a shared volume, and Pods
+  are not tied to the nodes that hold the replicas.
+
+### Mount options
+
+Volumes are mounted with NFSv4. The StorageClass's `mountOptions` are passed to
+the mount, and a version given there (`vers=4.1`, `nfsvers=4.2`) is used
+instead:
+
+```yaml
+mountOptions: ["nfsvers=4.2", "noatime"]
+```
+
+The mount is a hard mount unless `soft` is given; with `soft`, I/O in flight
+during a failover returns an error to the application instead of waiting.
+
+### What differs from other volumes
+
+| | Shared volume |
+| --- | --- |
+| `volumeMode: Block` | Refused: the volume is a filesystem. |
+| `csi.storage.k8s.io/fstype` | The filesystem is `ext4`, formatted on the storage node. Another value is refused. |
+| Expansion | With `allowVolumeExpansion: true`, raising the PVC's request grows the volume and its filesystem while the Pods keep their mounts; see [Expanding a shared volume](#expanding-a-shared-volume). |
+| Snapshots, group snapshots | Work as for other volumes. |
+| Restore and clone | A shared volume can be created from a snapshot or a clone of another shared volume, at the same size; expand it afterwards for a larger one. Other sources, other sizes and snapshots kept on a backup target are refused. |
+| Restore and clone into another class | A snapshot or clone of a shared volume can become a `ReadWriteOnce` volume of an `ext4` class. |
+| I/O limits (`readIOPS`, ...) | Refused in the StorageClass and in a VolumeAttributesClass. |
+| `replicas`, `resourceProfile` (VolumeAttributesClass) | Work as for other volumes. |
+| `encryption`, `replicationTLS` | Work as for other volumes. The NFS traffic between the Pods' nodes and the service address is not encrypted by either. |
+| `drNode` | Refused: the NFS service does not move to the DR site with the data. |
+| `allowRemoteVolumeAccess` | Not needed: every node can mount a shared volume. |
+| File ownership | Every client writes as `root`; the files of all Pods are readable and writable by all of them. |
+| Node failover ("When a node dies") | Pods are not moved when a replica node drops out: the volume stays available to them through the gateway. |
+
+Deleting the PVC removes the gateway, frees its address and deletes the
+resource.
+
+### Expanding a shared volume
+
+Raise the PVC's `spec.resources.requests.storage`, as for any other volume.
+The volume grows on every replica, and the filesystem is grown on the storage
+node that is serving the volume's NFS gateway. The Pods see the new size on
+their existing mounts and are not restarted; no node of the cluster has
+anything to do.
+
+```bash
+kubectl patch pvc shared-data -p '{"spec":{"resources":{"requests":{"storage":"40Gi"}}}}'
+kubectl get pvc shared-data          # CAPACITY shows 40Gi once it is done
+```
+
+The filesystem can only be grown where it is mounted. If the gateway is
+moving to another node at that moment, the PVC keeps its old capacity, shows
+a `VolumeResizeFailed` event saying the filesystem is mounted nowhere, and
+the resize is repeated by itself until it goes through, usually within the
+minute. Nothing has to be done by hand, and the PVC never reports a size its
+Pods do not see.
+
+`haify resource resize-volume <volume> 0 <size>` on the Haify side grows the
+filesystem in the same way, but does not change what the PVC reports; resize
+through the PVC.
+
 ## OpenShift and MicroShift
 
 The Helm chart works on OpenShift and MicroShift as it is. Where the cluster
@@ -413,7 +622,8 @@ attached to one, because the controller cannot install its certificate there.
 
 - Expansion: with `allowVolumeExpansion: true` and the `csi-resizer` sidecar,
   raising a PVC's request grows the LV, the DRBD device and the filesystem
-  while the volume stays in use.
+  while the volume stays in use. That includes shared (`ReadWriteMany`)
+  volumes, whose filesystem is grown on the storage node serving them.
 - Changing a volume in place: replicas, resource profile and I/O limits through
   a VolumeAttributesClass (Kubernetes 1.34+), see above.
 - Capacity-aware scheduling: with `storageCapacity: true` and the provisioner's
@@ -425,9 +635,13 @@ attached to one, because the controller cannot install its certificate there.
 - Raw block: `volumeMode: Block` hands the Pod the DRBD device itself.
 - Access modes: `ReadWriteOnce` and `ReadWriteOncePod`, and `ReadWriteMany`
   with `volumeMode: Block` for live migration of virtual machines (see
-  below). `ReadWriteMany` filesystems and the other multi-node modes are
+  above). A StorageClass with `sharedFilesystem: nfs` adds `ReadWriteMany`,
+  `ReadOnlyMany` and `ReadWriteOnce` filesystems that Pods on any number of
+  nodes mount at once (see
+  [Shared filesystems](#shared-filesystems-readwritemany)). From any other
+  class, `ReadWriteMany` filesystems and the other multi-node modes are
   refused at provisioning: a DRBD resource has one Primary, and a filesystem
-  cannot be written from two nodes.
+  on it cannot be written from two nodes.
 - Replica health on the PVC and its Pods: the controller plugin checks each
   volume's replicas every `--health-interval` (default `1m`). When a replica
   disconnects, loses its disk, falls out of date or resyncs, it posts a
@@ -436,7 +650,19 @@ attached to one, because the controller cannot install its certificate there.
   at that moment, with the claim's name in front of the message
   (`PVC data: ...`), so `kubectl describe pod` shows it too. Events are posted
   only when the state changes, not every check. The first sync of a new volume
-  is not reported. Kubernetes keeps events for an hour by default.
+  is not reported. Neither is the sync of a replica that is being added to a
+  volume which keeps all the replicas it had: one that moves to the node
+  where the volume is used (`[self_heal] auto_diskful`), a replica move or
+  rebalance, or a VolumeAttributesClass that raises `replicas`. Such a volume
+  is reported as soon as fewer replicas are up to date and connected than it
+  had before the addition, or any replica disconnects, loses its disk or
+  falls out of date. Kubernetes keeps events for an hour by default.
+- Zones: each node's `topology.kubernetes.io/zone` and `region` are published
+  as topology and copied onto the Haify node, so `faultDomainLabel: zone`
+  spreads replicas across zones (see [Zones](#zones)).
+- Node maintenance: a node taken down for maintenance is drained in Haify
+  first and returned to service afterwards (see
+  [Draining a node for maintenance](#draining-a-node-for-maintenance)).
 - Node failover: when a node dies, the controller plugin moves the pods using
   its volumes to a node with a replica in about half a minute, rather than
   after Kubernetes' 5 minutes (see "When a node dies").
@@ -861,6 +1087,102 @@ When the primary site is back:
    Pod starts: `haify resource secondary <volume> <node>`.
 4. Start the workload at the primary site, and delete the static PV and PVC
    in the DR cluster (`Retain` keeps the volume).
+
+## Draining a node for maintenance
+
+`kubectl drain` moves the Pods off a node, and Haify needs to know about the
+maintenance too: otherwise the node is still offered new replicas, and a
+gateway, an HA service or the controller's own metadata that is Primary on it
+stays there until the node is switched off and only then fails over. The
+controller plugin's drain controller drains the node in Haify as well, which
+is what `haify node drain <node>` does, and returns it to service afterwards.
+It is on by default.
+
+**Which nodes it drains.** A cordon alone does not say that a node is going
+down, so by default the controller acts on a node only when it is told:
+
+- the node has the annotation or label `haify.csi/drain: "true"`;
+- or the node carries a maintenance taint: `medik8s.io/drain` (Node Maintenance
+  Operator) or `kubevirt.io/drain`. `--node-drain-taints` changes the list.
+
+```bash
+kubectl annotate node worker-2 haify.csi/drain=true
+kubectl drain worker-2 --ignore-daemonsets --delete-emptydir-data
+# ... maintenance ...
+kubectl uncordon worker-2
+kubectl annotate node worker-2 haify.csi/drain-
+```
+
+With `--node-drain-on-cordon` every cordoned node is treated the same way, and
+`kubectl drain` and `kubectl uncordon` are all it takes. Use it when nodes in
+your cluster are cordoned only to take them down. `haify.csi/drain: "false"` on
+a node keeps the controller away from it in either mode.
+
+**When it acts.** The node must have asked for `--node-drain-delay` (default
+`30s`) without a break. From then on the drain has two steps.
+
+**What it does first.** As soon as the delay is over, while Pods may still be
+leaving, the node is put in maintenance in Haify: it takes no new replicas
+from that moment. Every gateway, HA service, database app and the
+controller's metadata that is Primary there moves to another node. The
+volumes of the Pods still on the node are not touched: such a volume is
+Primary where its Pod runs and moves with the Pod. The node gets a
+`Normal HaifyNodeDrainWaiting` event saying that it takes no new replicas,
+what moved, and which Pods the drain still waits for. Pods on
+[shared filesystems](#shared-filesystems-readwritemany) are not waited for:
+they mount NFS, and the volume's gateway is among what moved.
+
+**What it does when the Pods are gone.** Once no Pod on the node uses a Haify
+volume any more, the drain is finished: whatever is still Primary on the node
+moves to another node, and the node gets a `Normal HaifyNodeDrained` event
+listing what moved. The replicas on the node stay and resync by themselves
+once the node is back.
+
+If something could not be moved in either step, the event is
+`Warning HaifyNodeDrainFailed` with the controller's reason, and the step is
+tried again every minute.
+
+`haify node list` shows the node in maintenance with who drained it and why,
+for example `maintenance (kubernetes drain: taint medik8s.io/drain)`.
+
+**Afterwards.** When the node stops asking (the annotation or taint is gone,
+or with `--node-drain-on-cordon` the node is uncordoned), the controller
+returns it to service in Haify and posts `HaifyNodeUndrained`. Nothing is
+moved back; `haify ha evict` moves a service if you want it elsewhere.
+
+**One node at a time.** While one node is drained in Haify, another that asks
+waits (`--node-drain-max-nodes`, default `1`), with an event saying which node
+it waits for. A node drained with `haify node drain` counts.
+
+**What it leaves alone.**
+
+- A node that was drained in Haify by hand (`haify node drain`). It stays
+  drained after an uncordon until `haify node undrain`.
+- A node Kubernetes reports `NotReady`, or that still has the
+  `haify.csi/lost-quorum` taint: it is down, its services have failed over, and
+  the HA controller moves its Pods (see [When a node dies](#when-a-node-dies)).
+  If it comes back still asking to be drained, it is drained then.
+- A Kubernetes node that is not a Haify node.
+
+**Maintenance and node failure.** A node whose drain has finished and that is
+still cordoned is switched off on purpose, so the HA controller does not taint
+it or delete Pods on it. A node that goes down before its drain finished,
+with Pods still on it, is treated as any dead node.
+
+The controller records what it did in the node's `haify.csi/drain-state`
+annotation (`draining` from the first step, `drained` after the second) and
+removes it when the node is back in service. A restarted plugin, or another replica taking over, continues from it
+and repeats nothing. Do not edit it by hand.
+
+**Tuning and turning it off.** The flags are on the controller plugin
+(`20-controller.yaml`): `--node-drain=false` turns it off;
+`--node-drain-on-cordon`, `--node-drain-taints`, `--node-drain-delay`,
+`--node-drain-interval` and `--node-drain-max-nodes` tune it. With the Helm
+chart, set `nodeDrain.enabled`, `nodeDrain.onCordon`, `nodeDrain.taints`,
+`nodeDrain.delay`, `nodeDrain.interval` and `nodeDrain.maxNodes`. With more
+than one controller plugin replica, only the one holding the
+`haify-csi-node-drain` Lease acts. Its permissions are the
+`haify-csi-node-drain` ClusterRole in `10-rbac.yaml`.
 
 ## When a node dies
 

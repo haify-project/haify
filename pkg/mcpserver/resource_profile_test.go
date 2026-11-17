@@ -51,9 +51,9 @@ func (m *profileMockClient) RemoveVolume(_ context.Context, resource string, vol
 	return nil
 }
 
-func (m *profileMockClient) ResizeVolume(_ context.Context, resource string, volumeID, size uint32) error {
-	m.operations = append(m.operations, "resize:"+resource)
-	return nil
+func (m *profileMockClient) ResizeVolumeWith(_ context.Context, req *haifypb.ResizeVolumeRequest) (string, error) {
+	m.operations = append(m.operations, "resize:"+req.GetResource())
+	return "Volume resized successfully", nil
 }
 
 func (m *profileMockClient) CreateFilesystem(_ context.Context, resource string, volumeID uint32, node, fstype string) error {

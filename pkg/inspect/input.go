@@ -24,7 +24,10 @@ type Input struct {
 	ProbeStart, ProbeEnd time.Time
 
 	Resources []Resource
-	Gateways  []Gateway
+	// Guests is the libvirt guests under HA, with their definition on each
+	// replica; see check_guests.go.
+	Guests   []GuestDefinition
+	Gateways []Gateway
 
 	// Pool thresholds in percent, from [alert].
 	PoolNearFull, PoolFull float64

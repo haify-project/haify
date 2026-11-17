@@ -92,6 +92,12 @@ func (rm *ResourceManager) SyncPromoters(ctx context.Context, resource string, f
 		return err
 	}
 	var errs []error
+	// The guest's definition goes to a new replica before the promoter that
+	// would start the guest there.
+	if err := rm.syncVMDefinitionPlacement(ctx, resource, run, former); err != nil {
+		log.Debug("ResourceManager.SyncPromoters: guest definition placement failed", zap.String("resource", resource), zap.Error(err))
+		errs = append(errs, err)
+	}
 	if err := rm.syncHaPlacement(ctx, resource, run, former); err != nil {
 		log.Debug("ResourceManager.SyncPromoters: HA placement failed", zap.String("resource", resource), zap.Error(err))
 		errs = append(errs, err)

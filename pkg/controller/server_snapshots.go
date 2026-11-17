@@ -13,7 +13,7 @@ import (
 func (s *Server) CreateSnapshot(ctx context.Context, req *haifypb.CreateSnapshotRequest) (*haifypb.CreateSnapshotResponse, error) {
 	log := s.serverLog()
 	log.Debug("CreateSnapshot: taking", zap.String("volume", req.Volume), zap.String("snapshot", req.SnapshotName), zap.String("node", req.Node))
-	err := s.snapshots.CreateSnapshot(ctx, req.Volume, req.SnapshotName, req.Node)
+	note, err := s.snapshots.CreateSnapshotNoted(ctx, req.Volume, req.SnapshotName, req.Node)
 	if err != nil {
 		log.Debug("CreateSnapshot: failed", zap.String("volume", req.Volume), zap.Error(err))
 		return &haifypb.CreateSnapshotResponse{
@@ -24,7 +24,7 @@ func (s *Server) CreateSnapshot(ctx context.Context, req *haifypb.CreateSnapshot
 	log.Debug("CreateSnapshot: taken", zap.String("volume", req.Volume), zap.String("snapshot", req.SnapshotName))
 	return &haifypb.CreateSnapshotResponse{
 		Success: true,
-		Message: "Snapshot created successfully",
+		Message: withNote("Snapshot created successfully", note),
 	}, nil
 }
 
@@ -121,11 +121,12 @@ func (s *Server) ListSnapshots(ctx context.Context, req *haifypb.ListSnapshotsRe
 	for _, snap := range snapshots {
 		log.Debug("ListSnapshots: snapshot", zap.String("snapshot", snap.Name), zap.String("volume", snap.Volume))
 		pbSnapshots = append(pbSnapshots, &haifypb.SnapshotInfo{
-			Name:      snap.Name,
-			Volume:    snap.Volume,
-			SizeGb:    snap.SizeGB,
-			CreatedAt: snap.CreatedAt,
-			Origin:    snap.Origin,
+			Name:        snap.Name,
+			Volume:      snap.Volume,
+			SizeGb:      snap.SizeGB,
+			CreatedAt:   snap.CreatedAt,
+			Origin:      snap.Origin,
+			Consistency: snap.Consistency,
 		})
 	}
 
@@ -283,7 +284,13 @@ func (s *Server) CreateLvmSnapshot(ctx context.Context, req *haifypb.CreateLvmSn
 	log := s.serverLog()
 	log.Debug("CreateLvmSnapshot: taking", zap.String("resource", req.Resource), zap.String("lv", req.LvName),
 		zap.String("snapshot", req.SnapshotName), zap.String("node", req.Node), zap.String("size", req.Size))
-	err := s.storage.CreateLvmSnapshot(ctx, req.Resource, req.LvName, req.SnapshotName, req.Node, req.Size)
+	// req.Resource is the pool. A libvirt guest's volume is snapshotted with
+	// the guest frozen (snapshot_consistency.go).
+	pool := normalizeManagedName(req.Resource)
+	note, err := s.ctrl.snapshotVolumeQuiesced(ctx, pool, req.LvName, s.ctrl.ResolveHost(req.Node),
+		pool+"/"+req.SnapshotName, false, func() error {
+			return s.storage.CreateLvmSnapshot(ctx, req.Resource, req.LvName, req.SnapshotName, req.Node, req.Size)
+		})
 	if err != nil {
 		log.Debug("CreateLvmSnapshot: failed", zap.String("lv", req.LvName), zap.Error(err))
 		return &haifypb.CreateLvmSnapshotResponse{
@@ -294,7 +301,7 @@ func (s *Server) CreateLvmSnapshot(ctx context.Context, req *haifypb.CreateLvmSn
 	log.Debug("CreateLvmSnapshot: taken", zap.String("lv", req.LvName), zap.String("snapshot", req.SnapshotName))
 	return &haifypb.CreateLvmSnapshotResponse{
 		Success: true,
-		Message: "LVM snapshot created successfully",
+		Message: withNote("LVM snapshot created successfully", note),
 	}, nil
 }
 
@@ -333,11 +340,12 @@ func (s *Server) ListLvmSnapshots(ctx context.Context, req *haifypb.ListLvmSnaps
 	for _, snap := range snapshots {
 		log.Debug("ListLvmSnapshots: snapshot", zap.String("snapshot", snap.Name), zap.String("volume", snap.Volume))
 		protoSnapshots = append(protoSnapshots, &haifypb.SnapshotInfo{
-			Name:      snap.Name,
-			Volume:    snap.Volume,
-			SizeGb:    snap.SizeGB,
-			CreatedAt: snap.CreatedAt,
-			Origin:    snap.Origin,
+			Name:        snap.Name,
+			Volume:      snap.Volume,
+			SizeGb:      snap.SizeGB,
+			CreatedAt:   snap.CreatedAt,
+			Origin:      snap.Origin,
+			Consistency: snap.Consistency,
 		})
 	}
 	log.Debug("ListLvmSnapshots: listed", zap.Int("count", len(protoSnapshots)))

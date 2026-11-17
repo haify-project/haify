@@ -14,14 +14,30 @@ import (
 // the backing devices they are taken of.
 
 // snapshotVolumes takes one storage-native snapshot per volume and returns the
-// snapshot name per volume id. A partial result is returned alongside the error
-// so the caller's deferred cleanup removes what did get created.
-func (bm *BackupManager) snapshotVolumes(ctx context.Context, host string, info *ResourceInfo, ts time.Time) (map[uint32]string, error) {
+// snapshot name per volume id, and the consistency of what they hold: that of
+// a guest's resource, "" for any other (snapshot_consistency.go). A partial
+// result is returned alongside the error so the caller's deferred cleanup
+// removes what did get created.
+func (bm *BackupManager) snapshotVolumes(ctx context.Context, host string, info *ResourceInfo, ts time.Time) (_ map[uint32]string, consistency string, _ error) {
 	log := bm.controller.traceLogger()
 	log.Debug("BackupManager.snapshotVolumes: start", zap.String("resource", info.Name), zap.String("host", host),
 		zap.Int("volumes", len(info.Volumes)))
 	snaps := make(map[uint32]string, len(info.Volumes))
 	dep := bm.controller.deployment
+	// A libvirt guest's volumes are snapshotted with the guest frozen, for as
+	// long as taking the snapshots takes and no longer: the upload reads the
+	// snapshots, with the guest running again (guest_quiesce.go).
+	q := bm.controller.resources.quiesceGuests(ctx, info.Name)
+	defer func() {
+		// Known only once the guest has thawed: a thaw that failed may mean
+		// the freeze did not hold for the whole of the snapshots.
+		q.finish()
+		consistency = q.recorded(info.Name)
+		if note := q.note(info.Name); note != "" {
+			bm.controller.logger.Info("Backup: consistency of the snapshots the backup is read from",
+				zap.String("resource", info.Name), zap.String("node", bm.controller.NodeName(host)), zap.String("consistency", note))
+		}
+	}()
 	for _, v := range info.Volumes {
 		name := v.BackingVolume + backupSnapMarker + ts.Format(backupIDLayout)
 		start := time.Now()
@@ -45,7 +61,7 @@ func (bm *BackupManager) snapshotVolumes(ctx context.Context, host string, info 
 		if execErr != nil {
 			log.Debug("BackupManager.snapshotVolumes: snapshot command failed", zap.String("host", host),
 				zap.String("snapshot", name), zap.Duration("took", time.Since(start)), zap.Error(execErr))
-			return snaps, fmt.Errorf("snapshot volume %d of %q: %w", v.VolumeID, info.Name, execErr)
+			return snaps, "", fmt.Errorf("snapshot volume %d of %q: %w", v.VolumeID, info.Name, execErr)
 		}
 		if res == nil || !res.AllSuccess() {
 			details := ""
@@ -54,9 +70,10 @@ func (bm *BackupManager) snapshotVolumes(ctx context.Context, host string, info 
 			}
 			log.Debug("BackupManager.snapshotVolumes: snapshot failed on host", zap.String("host", host),
 				zap.String("snapshot", name), zap.Duration("took", time.Since(start)))
-			return snaps, fmt.Errorf("snapshot volume %d of %q failed on %s%s", v.VolumeID, info.Name, host, details)
+			return snaps, "", fmt.Errorf("snapshot volume %d of %q failed on %s%s", v.VolumeID, info.Name, host, details)
 		}
 		snaps[v.VolumeID] = name
+		q.took(info.Name, host, v.Pool+"/"+name, false)
 		log.Debug("BackupManager.snapshotVolumes: snapshot taken", zap.String("host", host),
 			zap.String("snapshot", name), zap.Duration("took", time.Since(start)))
 		// A thin snapshot is created with activation skipped and has no device
@@ -66,12 +83,12 @@ func (bm *BackupManager) snapshotVolumes(ctx context.Context, host string, info 
 			if err := bm.controller.resources.execAllSuccess(ctx, []string{host}, cmd,
 				fmt.Sprintf("activate the backup snapshot %s/%s", v.Pool, name)); err != nil {
 				log.Debug("BackupManager.snapshotVolumes: activation failed", zap.String("snapshot", name), zap.Error(err))
-				return snaps, err
+				return snaps, "", err
 			}
 		}
 	}
 	log.Debug("BackupManager.snapshotVolumes: done", zap.String("resource", info.Name), zap.Int("count", len(snaps)))
-	return snaps, nil
+	return snaps, "", nil
 }
 
 // removeSnapshots drops the temporary backup snapshots. Failures are logged

@@ -170,9 +170,10 @@ func (sm *StorageManager) ZFSListSnapshots(ctx context.Context, dataset, node st
 					continue
 				}
 				snapshots = append(snapshots, &SnapshotInfo{
-					Name:      name,
-					Volume:    volume,
-					CreatedAt: createdAt,
+					Name:        name,
+					Volume:      volume,
+					CreatedAt:   createdAt,
+					Consistency: zfsSnapshotConsistency(line),
 				})
 			}
 		} else {

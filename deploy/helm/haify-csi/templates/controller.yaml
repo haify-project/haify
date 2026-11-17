@@ -83,6 +83,12 @@ spec:
             - --ha-failover-interval={{ .Values.haFailover.interval }}
             - --ha-failover-grace={{ .Values.haFailover.grace }}
             - --ha-failover-max-lost-fraction={{ .Values.haFailover.maxLostFraction }}
+            - --node-drain={{ .Values.nodeDrain.enabled }}
+            - --node-drain-on-cordon={{ .Values.nodeDrain.onCordon }}
+            - --node-drain-taints={{ join "," .Values.nodeDrain.taints }}
+            - --node-drain-delay={{ .Values.nodeDrain.delay }}
+            - --node-drain-interval={{ .Values.nodeDrain.interval }}
+            - --node-drain-max-nodes={{ .Values.nodeDrain.maxNodes }}
           env:
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }

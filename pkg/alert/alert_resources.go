@@ -67,6 +67,11 @@ func (m *Monitor) checkReplicas(res ResourceStatusInfo, sc *pollScope) {
 	stranded := strandedOutdated(res)
 	for node, state := range res.NodeStates {
 		degraded, reason := isDegraded(state)
+		if degraded && joiningSync(res, state) {
+			m.log.Debug("Monitor.checkReplicas: first sync of an added replica with the committed copies in place, not degraded",
+				zap.String("resource", res.Name), zap.String("node", node), zap.Int("committed_replicas", res.CommittedReplicas))
+			degraded, reason = false, ""
+		}
 		severity := event.SeverityWarning
 		m.log.Debug("Monitor.checkReplicas: checking replica",
 			zap.String("resource", res.Name), zap.String("node", node),
@@ -98,6 +103,41 @@ func (m *Monitor) checkReplicas(res ResourceStatusInfo, sc *pollScope) {
 			fmt.Sprintf("resource %s on %s degraded: %s", res.Title(), node, reason),
 			fmt.Sprintf("resource %s on %s recovered to normal state", res.Title(), node))
 	}
+}
+
+// joiningSync reports whether a replica's Inconsistent disk is the first sync
+// of a replica that was added to the resource, with the resource as redundant
+// meanwhile as it is committed to being.
+//
+// Moving a replica, rebalancing and raising the replica count all add a copy
+// before anything is taken away, and that copy syncs for as long as the
+// volume is large. Nothing is missing while it does. Raising it as degraded
+// put a warning on every volume self-healing touched, for hours, and taught
+// people to ignore the one event that says a volume has fewer copies than it
+// should.
+//
+// The exception is narrow on purpose. The replica has to be the one the
+// controller recorded as joining, connected, and actually syncing; and the
+// other replicas that are UpToDate and connected have to number at least what
+// the resource is committed to. A joining replica beside one that is missing
+// is the rebuild of a lost copy, which is exactly what a degraded resource
+// is, and is raised as before. So is everything else about the joining
+// replica itself: disconnected, Outdated, Failed, or Inconsistent without a
+// sync running.
+func joiningSync(res ResourceStatusInfo, st NodeStateInfo) bool {
+	if !st.Joining || !st.connected() || st.DiskState != "Inconsistent" || res.CommittedReplicas <= 0 {
+		return false
+	}
+	if r := st.ReplicationState; !strings.HasPrefix(r, "Sync") && !strings.HasPrefix(r, "PausedSync") {
+		return false
+	}
+	upToDate := 0
+	for _, o := range res.NodeStates {
+		if !o.ExpectedDiskless && !o.Joining && o.connected() && o.DiskState == "UpToDate" {
+			upToDate++
+		}
+	}
+	return upToDate >= res.CommittedReplicas
 }
 
 // strandedOutdated reports whether the resource has replicas that are all
@@ -189,7 +229,7 @@ func (m *Monitor) checkPrimary(res ResourceStatusInfo, sc *pollScope) {
 		zap.String("resource", res.Name), zap.String("primary", cur), zap.String("previous", prev),
 		zap.Bool("known", known), zap.String("last_primary", demoted), zap.Bool("expect_primary", expectPrimary),
 		zap.Bool("partial_view", partialView), zap.Bool("recovering", recovering),
-		zap.Bool("idle_without_primary", res.IdleWithoutPrimary))
+		zap.Bool("idle_without_primary", res.IdleWithoutPrimary), zap.Bool("live_move", res.LiveMove))
 
 	m.level(noPrimary, sc, sourceResources, expectPrimary && cur == "" && !partialView && !res.IdleWithoutPrimary,
 		fmt.Sprintf("resource %s has no Primary: %s was demoted and nothing took over", res.Title(), demoted),
@@ -228,14 +268,20 @@ func (m *Monitor) checkPrimary(res ResourceStatusInfo, sc *pollScope) {
 			Message:  fmt.Sprintf("resource %s promoted on %s", res.Title(), cur),
 			Details:  map[string]string{"to": cur},
 		})
-	case res.IdleWithoutPrimary:
+	case res.IdleWithoutPrimary, res.LiveMove && (res.LiveMoveEndedOn == "" || cur == res.LiveMoveEndedOn):
 		// Proxmox VE, Kubernetes or OpenStack decides where this resource is
 		// Primary, and moving it is their everyday business: a live migration,
 		// a pod rescheduled, an instance started elsewhere. Calling that a
 		// failover, at warning, would put one for every migration in the feed.
 		// A node failure behind a move is reported by its own alerts.
-		m.log.Debug("Monitor.checkPrimary: externally managed resource moved, reported as info",
-			zap.String("resource", res.Name), zap.String("from", prev), zap.String("to", cur))
+		//
+		// `haify ha evict --live` is the same thing done by Haify: the guest's
+		// replicas pass through two Primaries and back to one. Counted as
+		// failovers, two such moves in 15 minutes raised a critical
+		// resource.failover_loop (2026-11-17, on a guest that never stopped).
+		m.log.Debug("Monitor.checkPrimary: moved by its manager or a live move, reported as info",
+			zap.String("resource", res.Name), zap.String("from", prev), zap.String("to", cur),
+			zap.Bool("live_move", res.LiveMove), zap.String("live_move_ended_on", res.LiveMoveEndedOn))
 		m.publish(event.Event{
 			Type:     event.TypeResourcePromoted,
 			Severity: event.SeverityInfo,

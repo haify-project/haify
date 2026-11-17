@@ -111,6 +111,15 @@ func haJudgeNodeLoss(r *haifypb.ResourceInfo, id haNodeIdentity) haLossVerdict {
 		log.Debug("haJudgeNodeLoss: no resource")
 		return haLossVerdict{reason: "no view of the volume"}
 	}
+	if isSharedVolume(r) {
+		// Its Pods mount NFS from the gateway's floating address, and the
+		// gateway moves to a surviving replica by itself. A node dropping out
+		// of the DRBD resource says nothing about the Pods on it: they need
+		// not move for the volume to stay available, so taking them down
+		// would be the only outage there is.
+		log.Debug("haJudgeNodeLoss: shared volume, served over NFS", zap.String("resource", r.GetName()))
+		return haLossVerdict{reason: "the volume is shared over NFS and its gateway fails over by itself"}
+	}
 	states := r.GetNodeStates()
 	v := haLossVerdict{voters: len(states)}
 

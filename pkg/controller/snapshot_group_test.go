@@ -110,3 +110,21 @@ func TestSnapshotGroupValidation(t *testing.T) {
 		})
 	}
 }
+
+// A thin origin gets a thin snapshot. Given a size, lvcreate makes a thick COW
+// snapshot of it, which goes invalid once the origin has changed by that much.
+func TestTakeSnapshotOfAThinOriginTakesNoSize(t *testing.T) {
+	ctrl, cmds := snapshotGroupFixture(t, "")
+	dep := ctrl.deployment.(*fakeDeploymentClient)
+	dep.lvIsThinFunc = func(_ context.Context, _, vg, lv string) (bool, error) {
+		return vg == "vg0" && lv == "db_data", nil
+	}
+	sm := ctrl.snapshots
+	require.NoError(t, sm.takeSnapshot(context.Background(), "vg0/db_data", "s_thin", "10.0.0.1"))
+	require.NoError(t, sm.takeSnapshot(context.Background(), "vg0/wal_data", "s_thick", "10.0.0.1"))
+
+	joined := strings.Join(*cmds, "\n")
+	assert.Contains(t, joined, "sudo lvcreate -s -n s_thin /dev/vg0/db_data")
+	assert.NotContains(t, joined, "-n s_thin -l", "no COW size for a thin origin")
+	assert.Contains(t, joined, "sudo lvcreate -s -l 20%ORIGIN -n s_thick /dev/vg0/wal_data")
+}

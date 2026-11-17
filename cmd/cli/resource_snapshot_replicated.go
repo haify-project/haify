@@ -81,7 +81,17 @@ func resourceSnapshotReplicated() *cobra.Command {
 				return fmt.Errorf("%s", r.Message)
 			}
 			zap.L().Debug("resourceSnapshotReplicated: snapshots", zap.String("resource", resource), zap.Int("count", len(r.Names)))
+			// A controller that reports no details still reports the names.
+			consistency := map[string]string{}
+			for _, s := range r.Snapshots {
+				consistency[s.GetName()] = s.GetConsistency()
+			}
 			for _, n := range r.Names {
+				// Only a guest's snapshot records a consistency.
+				if c := consistency[n]; c != "" {
+					fmt.Printf("%s\t%s-consistent\n", n, c)
+					continue
+				}
 				fmt.Println(n)
 			}
 			return nil

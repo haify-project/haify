@@ -17,6 +17,7 @@ type checker struct {
 
 var checkers = []checker{
 	{AreaResources, checkResources},
+	{AreaResources, checkGuests},
 	{AreaGateways, checkGateways},
 	{AreaNodes, checkNodes},
 	{AreaPools, checkPools}, {AreaPools, checkDisks},

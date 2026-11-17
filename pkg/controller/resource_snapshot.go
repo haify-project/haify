@@ -91,16 +91,36 @@ func (rm *ResourceManager) resourceSnapshotTargets(ctx context.Context, resource
 // CreateResourceSnapshot snapshots every volume of resource on every diskful
 // replica, with I/O suspended across all of them.
 func (rm *ResourceManager) CreateResourceSnapshot(ctx context.Context, resource, name string) error {
+	_, err := rm.CreateResourceSnapshotNoted(ctx, resource, name)
+	return err
+}
+
+// CreateResourceSnapshotNoted is CreateResourceSnapshot, and also says which
+// consistency the snapshot has when resource belongs to a libvirt guest
+// (snapshot_consistency.go); "" when it belongs to none.
+func (rm *ResourceManager) CreateResourceSnapshotNoted(ctx context.Context, resource, name string) (note string, err error) {
 	log := rm.resourcesLog()
 	log.Debug("CreateResourceSnapshot: start", zap.String("resource", resource), zap.String("snapshot", name))
 	targets, hosts, err := rm.resourceSnapshotTargets(ctx, resource, name)
 	if err != nil {
-		return err
+		return "", err
 	}
+	// The guest is frozen before I/O is suspended and thawed after it has
+	// resumed: freezing flushes the guest's filesystems through DRBD, and a
+	// thaw into suspended I/O would only block again. Deferred calls run in
+	// reverse, so this one, registered first, runs after the resume.
+	q := rm.quiesceGuests(ctx, resource)
+	defer func() {
+		if err != nil {
+			q.discard()
+		}
+		q.finish()
+		note = q.note(resource)
+	}()
 	watchdog, suspended, err := rm.suspendForSnapshot(ctx, resource, hosts)
 	if err != nil {
 		log.Debug("CreateResourceSnapshot: suspend failed", zap.String("resource", resource), zap.Error(err))
-		return err
+		return "", err
 	}
 	defer rm.resumeAfterSnapshot(resource, suspended, watchdog)
 
@@ -116,15 +136,20 @@ func (rm *ResourceManager) CreateResourceSnapshot(ctx context.Context, resource,
 			if err := rm.snapshotOne(ctx, host, t, name); err != nil {
 				log.Debug("CreateResourceSnapshot: snapshot failed", zap.String("volume", t.vol.VolumeName), zap.String("host", host), zap.Error(err))
 				undo()
-				return fmt.Errorf("snapshot %s on %s: %w", t.vol.VolumeName, host, err)
+				return "", fmt.Errorf("snapshot %s on %s: %w", t.vol.VolumeName, host, err)
 			}
 			h, tt := host, t
 			made = append(made, func() { _ = rm.deleteOne(context.Background(), h, tt, name) })
+			if t.zfs {
+				q.took(resource, host, t.zfsName(name), true)
+			} else {
+				q.took(resource, host, t.vol.Pool+"/"+t.lvName(name), false)
+			}
 		}
 	}
 	rm.controller.logger.Info("Resource snapshot taken", zap.String("resource", resource),
 		zap.String("snapshot", name), zap.Strings("hosts", hosts))
-	return nil
+	return "", nil
 }
 
 // suspendForSnapshot arms each node's resume watchdog, then suspends I/O,
@@ -349,19 +374,29 @@ func (rm *ResourceManager) assertSnapshotOnEveryReplica(ctx context.Context, tar
 	return nil
 }
 
-// ListResourceSnapshots names the resource snapshots of resource, from its
-// first diskful node.
-func (rm *ResourceManager) ListResourceSnapshots(ctx context.Context, resource string) ([]string, error) {
+// ResourceSnapshot is one resource snapshot as ListResourceSnapshots reports
+// it.
+type ResourceSnapshot struct {
+	Name string
+	// Consistency is "filesystem" or "crash" for a guest's resource and ""
+	// for any other (snapshot_consistency.go).
+	Consistency string
+}
+
+// ListResourceSnapshots lists the resource snapshots of resource, from its
+// first diskful node. The consistency is the first volume's: every volume of
+// a resource snapshot is taken under the same freeze and marked alike.
+func (rm *ResourceManager) ListResourceSnapshots(ctx context.Context, resource string) ([]ResourceSnapshot, error) {
 	log := rm.resourcesLog()
 	targets, hosts, err := rm.resourceSnapshotTargets(ctx, resource, "x")
 	if err != nil {
 		return nil, err
 	}
 	t := targets[0]
-	cmd := fmt.Sprintf("sudo lvs --noheadings -o lv_name %s 2>/dev/null", t.vol.Pool)
+	cmd := fmt.Sprintf("sudo lvs --noheadings --separator '|' -o lv_name,lv_tags %s 2>/dev/null", t.vol.Pool)
 	prefix := t.vol.VolumeName + "_snap_"
 	if t.zfs {
-		cmd = fmt.Sprintf("sudo zfs list -H -t snapshot -d 1 -o name %s/%s 2>/dev/null", t.vol.Pool, t.vol.VolumeName)
+		cmd = fmt.Sprintf("sudo zfs list -H -t snapshot -d 1 -o name,%s %s/%s 2>/dev/null", consistencyZFSProperty, t.vol.Pool, t.vol.VolumeName)
 		prefix = t.vol.Pool + "/" + t.vol.VolumeName + "@snap_"
 	}
 	start := time.Now()
@@ -371,12 +406,20 @@ func (rm *ResourceManager) ListResourceSnapshots(ctx context.Context, resource s
 	if err != nil {
 		return nil, err
 	}
-	var names []string
+	var snaps []ResourceSnapshot
 	for _, line := range execLines(res, hosts[0]) {
-		if n, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok {
-			names = append(names, n)
+		// "name|tags" from lvs, "name<TAB>property" from zfs.
+		name, mark, _ := strings.Cut(line, "|")
+		if t.zfs {
+			name, mark, _ = strings.Cut(line, "\t")
+			mark = knownConsistency(mark)
+		} else {
+			mark = consistencyOfTags(mark)
+		}
+		if n, ok := strings.CutPrefix(strings.TrimSpace(name), prefix); ok {
+			snaps = append(snaps, ResourceSnapshot{Name: n, Consistency: mark})
 		}
 	}
-	log.Debug("ListResourceSnapshots: found", zap.String("resource", resource), zap.Strings("snapshots", names))
-	return names, nil
+	log.Debug("ListResourceSnapshots: found", zap.String("resource", resource), zap.Int("snapshots", len(snaps)))
+	return snaps, nil
 }

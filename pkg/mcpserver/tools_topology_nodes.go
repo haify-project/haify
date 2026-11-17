@@ -16,9 +16,21 @@ type nodeNameIn struct {
 	Node string `json:"node" jsonschema:"node name"`
 }
 
+type nodeDrainIn struct {
+	Node      string `json:"node" jsonschema:"node name"`
+	KeepInUse bool   `json:"keep_in_use,omitempty" jsonschema:"move only what Haify itself keeps Primary (gateways, HA services, apps, haify-meta); leave resources a hypervisor or the Kubernetes CSI driver holds, and open devices, where they are"`
+	Reason    string `json:"reason,omitempty" jsonschema:"why the node is drained; shown in the node list"`
+}
+
+type drainLeftOut struct {
+	Resource string `json:"resource"`
+	Reason   string `json:"reason"`
+}
+
 type drainOut struct {
-	Status    string   `json:"status"`
-	Evacuated []string `json:"evacuated,omitempty" jsonschema:"resources moved off the node"`
+	Status    string         `json:"status"`
+	Evacuated []string       `json:"evacuated,omitempty" jsonschema:"resources moved off the node"`
+	Left      []drainLeftOut `json:"left,omitempty" jsonschema:"with keep_in_use: resources still Primary on the node and why each was not moved"`
 }
 
 type nodeLabelsIn struct {
@@ -67,16 +79,26 @@ func (s *Server) registerNodeLifecycleTools(srv *mcp.Server) {
 			"and not drained, offline or a WAN DR node; if that promote fails the node is promoted back. A resource "+
 			"that cannot move (no such replica, held open, eviction failed) stays Primary on the node and is named "+
 			"in the error with the reason; the rest still move. Returns the resources it moved; undrain does not "+
-			"move them back."),
-		func(ctx context.Context, _ *mcp.CallToolRequest, in nodeNameIn) (*mcp.CallToolResult, drainOut, error) {
-			s.logger.Debug("haify_node_drain: draining node", zap.String("node", in.Node))
-			moved, err := s.client.DrainNode(ctx, in.Node)
+			"move them back. With keep_in_use the node still stops taking replicas at once, but only what Haify itself "+
+			"keeps Primary is moved: a volume that Proxmox VE, the Kubernetes CSI driver, OpenStack Cinder, XCP-ng or "+
+			"OpenNebula holds Primary for a running VM or Pod, and any device that is open, stays and is returned in "+
+			"left with the reason. Use it for a node that still runs workloads, and drain again without it once they "+
+			"have left."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, in nodeDrainIn) (*mcp.CallToolResult, drainOut, error) {
+			s.logger.Debug("haify_node_drain: draining node", zap.String("node", in.Node), zap.Bool("keep_in_use", in.KeepInUse),
+				zap.String("reason", in.Reason))
+			resp, err := s.client.DrainNodeWith(ctx, &haifypb.DrainNodeRequest{Name: in.Node, KeepInUse: in.KeepInUse, Reason: in.Reason})
 			if err != nil {
 				s.logger.Debug("haify_node_drain: failed", zap.String("node", in.Node), zap.Error(err))
 				return nil, drainOut{}, err
 			}
-			s.logger.Debug("haify_node_drain: drained", zap.String("node", in.Node), zap.Strings("evacuated", moved))
-			return nil, drainOut{Status: "ok", Evacuated: moved}, nil
+			out := drainOut{Status: "ok", Evacuated: resp.GetResourcesMoved()}
+			for _, l := range resp.GetResourcesLeft() {
+				out.Left = append(out.Left, drainLeftOut{Resource: l.GetResource(), Reason: l.GetReason()})
+			}
+			s.logger.Debug("haify_node_drain: drained", zap.String("node", in.Node), zap.Strings("evacuated", out.Evacuated),
+				zap.Int("left", len(out.Left)))
+			return nil, out, nil
 		})
 
 	addWrite(s, srv, writeTool("haify_node_undrain", "Undrain a node",

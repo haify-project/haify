@@ -42,6 +42,10 @@ spec:
             # Re-read the I/O limits of published volumes this often, so a
             # VolumeAttributesClass change reaches running Pods.
             - "--qos-interval=30s"
+            # Publish the node's zone and region and keep the Haify node's
+            # zone and region labels in step with them (see README "Zones").
+            # --zone-topology=false turns it off.
+            - "--zone-sync-interval=5m"
           securityContext:
             privileged: true
           env:

@@ -61,7 +61,8 @@ func (s *Server) RenameResource(ctx context.Context, req *haifypb.RenameResource
 func (s *Server) ResizeVolume(ctx context.Context, req *haifypb.ResizeVolumeRequest) (*haifypb.ResizeVolumeResponse, error) {
 	log := s.serverLog()
 	log.Debug("ResizeVolume: resizing", zap.String("resource", req.Resource), zap.Any("volume", req.VolumeId),
-		zap.Uint64("size_bytes", req.SizeBytes), zap.Any("size_gb", req.SizeGb), zap.Bool("ignore_free_space", req.IgnoreFreeSpace))
+		zap.Uint64("size_bytes", req.SizeBytes), zap.Any("size_gb", req.SizeGb), zap.Bool("ignore_free_space", req.IgnoreFreeSpace),
+		zap.Bool("grow_filesystem", req.GrowFilesystem))
 	var err error
 	if req.SizeBytes > 0 {
 		log.Debug("ResizeVolume: exact size in bytes", zap.Uint64("size_bytes", req.SizeBytes))
@@ -78,10 +79,31 @@ func (s *Server) ResizeVolume(ctx context.Context, req *haifypb.ResizeVolumeRequ
 		}, nil
 	}
 	log.Debug("ResizeVolume: resized", zap.String("resource", req.Resource), zap.Any("volume", req.VolumeId))
-	return &haifypb.ResizeVolumeResponse{
-		Success: true,
-		Message: "Volume resized successfully",
-	}, nil
+	// The volume is grown; whether its running libvirt guest could be shown
+	// the new size only changes what the reply says (resize_guest.go).
+	want := uint64(req.SizeGb) << 30
+	if req.SizeBytes > 0 {
+		want = roundUpSectors(req.SizeBytes)
+	}
+	// A filesystem a storage node has mounted from the volume is grown with
+	// it: always for an NFS or SMB gateway, on request for anything else
+	// (resize_filesystem.go). When that could not be done the reply says the
+	// resize is unfinished, since the export still shows the old size.
+	guestNote := s.resources.TellGuestOfResize(ctx, req.Resource, req.VolumeId, want)
+	fsNote, fsErr := s.resources.GrowFilesystem(ctx, req.Resource, req.VolumeId, want, req.GrowFilesystem)
+	if fsErr != nil {
+		log.Debug("ResizeVolume: volume grown, filesystem not", zap.String("resource", req.Resource), zap.Error(fsErr))
+		msg := resizeIncomplete(req.Resource, fsErr)
+		if guestNote != "" {
+			msg += " (" + guestNote + ")"
+		}
+		return &haifypb.ResizeVolumeResponse{Success: false, Retryable: true, Message: msg}, nil
+	}
+	msg := resizedMessage(guestNote)
+	if fsNote != "" {
+		msg += "; " + fsNote
+	}
+	return &haifypb.ResizeVolumeResponse{Success: true, Message: msg}, nil
 }
 
 func (s *Server) CreateFilesystem(ctx context.Context, req *haifypb.CreateFilesystemRequest) (*haifypb.CreateFilesystemResponse, error) {

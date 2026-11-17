@@ -95,3 +95,13 @@ func (s *Server) SetHaPreferredNodes(ctx context.Context, req *haifypb.SetHaPref
 	return &haifypb.SetHaPreferredNodesResponse{Success: true,
 		Message: fmt.Sprintf("preferred nodes of %s set; the nodes that would take over use them now", req.Resource)}, nil
 }
+
+// GetSelfHealStatus reports what self-healing is doing and waiting for.
+func (s *Server) GetSelfHealStatus(ctx context.Context, _ *haifypb.GetSelfHealStatusRequest) (*haifypb.GetSelfHealStatusResponse, error) {
+	log := s.serverLog()
+	log.Debug("GetSelfHealStatus: reading")
+	resp := s.ctrl.SelfHealStatus(ctx)
+	log.Debug("GetSelfHealStatus: read", zap.Int("clients", len(resp.GetAutoDiskful().GetClients())),
+		zap.Int("swaps", len(resp.GetAutoDiskful().GetSwaps())), zap.Int("moves", len(resp.GetMoves())))
+	return resp, nil
+}

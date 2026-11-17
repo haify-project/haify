@@ -48,6 +48,7 @@ func (im *InspectionManager) gather(ctx context.Context) *inspect.Input {
 	}
 	im.probe(ctx, in)
 	im.gatherResources(ctx, in)
+	im.gatherGuests(ctx, in)
 	im.gatherAlerts(ctx, in)
 	im.gatherBackups(ctx, in)
 	im.gatherTLS(in)

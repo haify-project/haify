@@ -53,6 +53,12 @@ type NodeInfo struct {
 	// plugin there is its agent (node_local_agent.go). It can only be a
 	// diskless client.
 	LocalAgent bool `json:"local_agent,omitempty"`
+	// MaintenanceBy, MaintenanceReason and MaintenanceSince say who put the
+	// node in maintenance, why and when; empty while it is not in it
+	// (node_maintenance.go).
+	MaintenanceBy     string    `json:"maintenance_by,omitempty"`
+	MaintenanceReason string    `json:"maintenance_reason,omitempty"`
+	MaintenanceSince  time.Time `json:"maintenance_since,omitempty"`
 }
 
 // NodeManager manages cluster nodes
@@ -493,6 +499,9 @@ func nodeRecord(n *NodeInfo) *database.Node {
 		Version:            n.Version,
 		OfflineSince:       n.OfflineSince,
 		LocalAgent:         n.LocalAgent,
+		MaintenanceBy:      n.MaintenanceBy,
+		MaintenanceReason:  n.MaintenanceReason,
+		MaintenanceSince:   n.MaintenanceSince,
 	}
 	if len(n.Labels) > 0 {
 		if encoded, err := json.Marshal(n.Labels); err == nil {

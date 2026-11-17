@@ -220,6 +220,21 @@ service HaifyController {
   rpc EvictHa(EvictHaRequest) returns (EvictHaResponse) {
     option (google.api.http) = { post: "/v1/resources/{resource}/ha/evict"; body: "*"; };
   }
+  // The live migration of an HA guest that EvictHa started with live set:
+  // the one running, or the last one that ran.
+  rpc GetHaMigration(GetHaMigrationRequest) returns (GetHaMigrationResponse) {
+    option (google.api.http) = { get: "/v1/resources/{resource}/ha/migration" };
+  }
+  // The libvirt definition of an HA guest: what the controller keeps and how
+  // each replica's own copy compares with it.
+  rpc GetVmDefinition(GetVmDefinitionRequest) returns (VmDefinitionResponse) {
+    option (google.api.http) = { get: "/v1/resources/{resource}/ha/vm-definition" };
+  }
+  // Takes the guest's definition from one node and defines it on every
+  // other replica.
+  rpc SyncVmDefinition(SyncVmDefinitionRequest) returns (VmDefinitionResponse) {
+    option (google.api.http) = { post: "/v1/resources/{resource}/ha/vm-definition/sync"; body: "*"; };
+  }
   // Orders where drbd-reactor starts an HA resource (preferred-nodes). A
   // preference, not a fence; DRBD quorum is what prevents split brain.
   rpc SetHaPreferredNodes(SetHaPreferredNodesRequest) returns (SetHaPreferredNodesResponse) {
@@ -604,6 +619,13 @@ service HaifyController {
   }
   rpc PlanRebalance(PlanRebalanceRequest) returns (PlanRebalanceResponse) {
     option (google.api.http) = { post: "/v1/rebalance"; body: "*"; };
+  }
+  // GetSelfHealStatus reports what self-healing is doing and waiting for:
+  // auto-evict's offline nodes, the replica moves under way, and for
+  // auto-diskful every client it watches, why one is passed over, the swaps
+  // in progress and the resources in their cooldown.
+  rpc GetSelfHealStatus(GetSelfHealStatusRequest) returns (GetSelfHealStatusResponse) {
+    option (google.api.http) = { get: "/v1/self-heal/status" };
   }
   rpc MarkNodeLost(MarkNodeLostRequest) returns (MarkNodeLostResponse) {
     option (google.api.http) = { post: "/v1/nodes/{node}/lost"; body: "*"; };
@@ -1277,6 +1299,11 @@ message NodeInfo {
   // local_agent: the controller does not reach this node over SSH; its CSI
   // node plugin applies DRBD changes there (see RegisterNodeRequest).
   bool local_agent = 11;
+  // For a node in maintenance: who put it there ("admin", "kubernetes
+  // drain"), why, and when (Unix seconds). Empty and 0 otherwise.
+  string maintenance_by = 12;
+  string maintenance_reason = 13;
+  int64 maintenance_since = 14;
 }
 
 // Health check messages
@@ -1574,6 +1601,16 @@ message ListResourceSnapshotsResponse {
   bool success = 1;
   string message = 2;
   repeated string names = 3;
+  // snapshots carries the same snapshots as names, in the same order, with
+  // what is known about each.
+  repeated ResourceSnapshotInfo snapshots = 4;
+}
+message ResourceSnapshotInfo {
+  string name = 1;
+  // consistency is "filesystem" when the guest using the resource was frozen
+  // while the snapshot was taken, "crash" when it could not be, and empty for
+  // a resource that belongs to no guest.
+  string consistency = 2;
 }
 message RollbackResourceSnapshotRequest {
   string resource = 1;
@@ -1637,6 +1674,101 @@ message PlanRebalanceResponse {
   repeated RebalanceMove moves = 3;
   repeated string notes = 4;    // what was left out, and why
 }
+message GetSelfHealStatusRequest {}
+message GetSelfHealStatusResponse {
+  bool success = 1;
+  string message = 2;
+  AutoEvictStatus auto_evict = 3;
+  AutoDiskfulStatus auto_diskful = 4;
+  // moves are the replica moves under way (move-replica, rebalance).
+  repeated ReplicaMoveStatus moves = 5;
+  int64 observed_unix = 6;
+}
+message AutoEvictStatus {
+  string mode = 1;                 // off, dry-run or on
+  uint32 after_minutes = 2;
+  uint32 max_offline_percent = 3;
+  // gate says why nothing is evicted now although a node is due; empty when
+  // the gate is open.
+  string gate = 4;
+  // syncing is the resource whose replacement replica is still syncing; the
+  // next replacement waits for it.
+  string syncing = 5;
+  repeated AutoEvictNode nodes = 6;
+}
+// AutoEvictNode is one node that does not answer.
+message AutoEvictNode {
+  string node = 1;
+  int64 offline_since = 2;         // Unix seconds
+  // remaining_seconds until its replicas are replaced; 0 when that is due.
+  int64 remaining_seconds = 3;
+  // state is "waiting", "due", "exempt" (in maintenance or opted out) or
+  // "evicted".
+  string state = 4;
+  string reason = 5;
+  // replicas is how many resources still hold a replica on it.
+  uint32 replicas = 6;
+}
+message ReplicaMoveStatus {
+  string resource = 1;
+  string from = 2;
+  string to = 3;
+  // sync_percent of the new replica; unset when DRBD did not report it.
+  optional double sync_percent = 4;
+  string state = 5;                // disk state of the new replica
+}
+message AutoDiskfulStatus {
+  string mode = 1;                 // off, dry-run or on
+  uint32 after_minutes = 2;
+  uint32 cooldown_hours = 3;
+  repeated AutoDiskfulClient clients = 4;
+  repeated AutoDiskfulSwap swaps = 5;
+  repeated AutoDiskfulCooldown cooldowns = 6;
+}
+// AutoDiskfulClient is a diskless client in use that auto-diskful watches.
+message AutoDiskfulClient {
+  string resource = 1;
+  string node = 2;
+  int64 in_use_since = 3;          // Unix seconds
+  int64 in_use_seconds = 4;
+  // remaining_seconds of uninterrupted use until it is due a replica of its
+  // own; 0 when it is due.
+  int64 remaining_seconds = 5;
+  // state is "counting" (not in use long enough yet), "due" (next in line),
+  // "skipped" (gets no replica, see reason), "waiting" (another self-healing
+  // sync runs first), "planned" (dry run: it would get one) or "failed" (the
+  // last attempt failed; retried at retry_at).
+  string state = 6;
+  // skip names the kind of reason ("pinned", "cooldown", "pool", ...).
+  string skip = 7;
+  string reason = 8;
+  int64 retry_at = 9;              // Unix seconds, 0 when not waiting to retry
+}
+// AutoDiskfulSwap is a client that was given a replica, and the removal of
+// an old replica that follows.
+message AutoDiskfulSwap {
+  string resource = 1;
+  string node = 2;                 // the former client, now a replica
+  int64 started_at = 3;            // Unix seconds
+  // phase is "syncing" (the new replica is not UpToDate yet), "removing" (it
+  // is, and an old replica is to go) or "tiebreaker" (the old replica is
+  // gone and its node is being kept as the third vote).
+  string phase = 4;
+  // sync_percent of the new replica while syncing; unset when DRBD did not
+  // report it.
+  optional double sync_percent = 5;
+  uint32 replicas_now = 6;
+  uint32 replicas_target = 7;
+  string removed = 8;              // the replica that was removed, once it was
+  uint32 attempts = 9;             // failed tries of the current step
+  int64 next_try = 10;             // Unix seconds, 0 when none is scheduled
+  string detail = 11;              // why the current step waits, when known
+}
+message AutoDiskfulCooldown {
+  string resource = 1;
+  int64 moved_at = 2;              // Unix seconds
+  int64 until = 3;                 // Unix seconds
+}
 message MarkNodeLostRequest {
   string node = 1;
 }
@@ -1677,11 +1809,22 @@ message ResizeVolumeRequest {
   // size_bytes grows the device to exactly this many bytes; size_gb is then
   // ignored.
   uint64 size_bytes = 5;
+  // grow_filesystem also grows, online, the filesystem mounted from the
+  // volume on the node where the resource is Primary. It is implied for a
+  // resource with an NFS or SMB gateway, whose filesystem the gateway mounts
+  // on a storage node. When the filesystem is not mounted at that moment (a
+  // failover is under way, the gateway is stopped) the reply has success
+  // false and retryable true.
+  bool grow_filesystem = 6;
 }
 
 message ResizeVolumeResponse {
   bool success = 1;
   string message = 2;
+  // retryable: the volume itself is grown, and a step after it (growing the
+  // filesystem) could not run now. Sending the same request again finishes
+  // it.
+  bool retryable = 3;
 }
 
 message ResourceStatusRequest {
@@ -1862,6 +2005,10 @@ message MakeHaRequest {
   // 2/3/5/6 above are then used only for provisioning side effects (mount unit
   // generation, VIP service-ip precondition) and NOT for start[] ordering.
   repeated HaStartItem start_items = 7;
+  // vm_definition_node names the node to take a libvirt guest's definition
+  // from when the start list runs a VirtualDomain agent. Empty takes it from
+  // the node the guest runs on, or from the replicas when they agree.
+  string vm_definition_node = 8;
 }
 
 message ResourceAgentInfo {
@@ -1928,6 +2075,87 @@ message MakeHaResponse {
 
 message EvictHaRequest {
   string resource = 1;
+  // live moves the libvirt guest of an `ha create --vm` resource to another
+  // replica without stopping it. The call returns once the move has started;
+  // GetHaMigration follows it. Refused for a resource that runs no guest.
+  bool live = 2;
+  // target_node is where a live move goes. Empty picks a replica that is
+  // UpToDate, connected and has the guest's definition.
+  string target_node = 3;
+  // timeout_seconds bounds the memory copy of a live move; past it the move
+  // is aborted and the guest stays where it was. 0 means 30 minutes.
+  uint32 timeout_seconds = 4;
+}
+
+message GetHaMigrationRequest {
+  string resource = 1;
+}
+
+// HaMigration is one live move of an HA guest.
+message HaMigration {
+  string resource = 1;
+  string domain = 2;
+  string source_node = 3;
+  string target_node = 4;
+  // checking, releasing, window, migrating, settling, done.
+  string phase = 5;
+  // What the current phase is doing, or how the move ended.
+  string message = 6;
+  bool done = 7;
+  // moved, stayed (the guest runs on where it was, untouched), restarted
+  // (the guest was found stopped and HA started it again), attention (the
+  // controller could not put everything back; message says what is left).
+  string outcome = 8;
+  // The node the guest runs on once the move is done.
+  string active_node = 9;
+  // Memory copied so far, 0-100, while phase is migrating.
+  uint32 progress_percent = 10;
+  int64 started_unix = 11;
+  int64 updated_unix = 12;
+  // Each step taken, in order.
+  repeated string steps = 13;
+}
+
+message GetHaMigrationResponse {
+  bool success = 1;
+  string message = 2;
+  HaMigration migration = 3;
+}
+
+message GetVmDefinitionRequest {
+  string resource = 1;
+}
+
+message SyncVmDefinitionRequest {
+  string resource = 1;
+  // from_node names the node whose definition is the one to keep. Empty
+  // takes the one node whose copy changed, or repairs the others from the
+  // copy the controller keeps.
+  string from_node = 2;
+}
+
+// VmDefinitionNode is one replica's copy of a guest's definition.
+message VmDefinitionNode {
+  string node = 1;
+  // ok, missing, changed (edited on this node since the last sync),
+  // uuid_mismatch, unreachable.
+  string state = 2;
+  string uuid = 3;
+  bool running = 4;
+  string detail = 5;
+}
+
+message VmDefinitionResponse {
+  bool success = 1;
+  string message = 2;
+  string resource = 3;
+  string domain = 4;
+  string uuid = 5;
+  // The node the kept definition was taken from.
+  string source_node = 6;
+  int64 updated_unix = 7;
+  bool consistent = 8;
+  repeated VmDefinitionNode nodes = 9;
 }
 
 // SetTiebreakerRequest moves a resource's diskless quorum tiebreaker to
@@ -2001,6 +2229,10 @@ message AddReplicaResponse {
 message EvictHaResponse {
   bool success = 1;
   string message = 2;
+  // Set for a live move: it runs on after this response.
+  bool started = 3;
+  string source_node = 4;
+  string target_node = 5;
 }
 
 // Controller self-HA messages
@@ -2273,6 +2505,16 @@ message ResourceInfo {
   // "PVC db/data-postgres-0"; used_by is that system ("pvc", "proxmox", ...).
   string owner = 18;
   string used_by = 19;
+  // joining_nodes are the nodes whose replica was added to the resource and
+  // is still in its first sync: a copy on top of the ones the resource
+  // already had, not one of them that fell behind. A node leaves the list for
+  // good the first time its replica is seen UpToDate.
+  repeated string joining_nodes = 20;
+  // committed_replicas is how many UpToDate replicas the resource has to keep
+  // while joining_nodes is not empty: the number it had before the first of
+  // them was added, or the number it is being brought back to. 0 when no
+  // replica is joining.
+  uint32 committed_replicas = 21;
 }
 
 // ResourceHealth is one resource's state from the controller's last health
@@ -2429,6 +2671,10 @@ message NodeResourceState {
   // connection came up, summed over volumes. Set on peer entries only.
   optional uint64 sent_kib = 10;
   optional uint64 received_kib = 11;
+  // joining: this replica was added to the resource and is still in its
+  // first sync (see ResourceInfo.joining_nodes). Its sync is a copy being
+  // added, not one that fell behind.
+  bool joining = 12;
 }
 
 message VolumeInfo {
@@ -2562,6 +2808,10 @@ message SnapshotInfo {
   // of every resource on its node, and the snapshot name alone does not say
   // which one it belongs to.
   string origin = 5;
+  // consistency is "filesystem" when the guest using the volume was frozen
+  // while the snapshot was taken, "crash" when it could not be, and empty for
+  // a volume that belongs to no guest.
+  string consistency = 6;
 }
 
 // Snapshot schedule messages
@@ -2843,6 +3093,10 @@ message BackupInfo {
   // read_at (RFC3339) is the time its objects are read as of, for a backup
   // imported with as_of.
   string read_at = 18;
+  // consistency of the snapshots the backup was read from: "filesystem" when
+  // the guest using the resource was frozen while they were taken, "crash"
+  // when it could not be, and empty for a resource that belongs to no guest.
+  string consistency = 19;
 }
 
 message CreateBackupRequest {
@@ -3490,6 +3744,18 @@ message GetHaStatusResponse {
 
 message DrainNodeRequest {
   string name = 1;
+  // keep_in_use puts the node in maintenance, so it takes no new replicas,
+  // and moves only the resources whose Primary Haify itself decides: the
+  // gateways, HA services, apps and the controller's own metadata. A
+  // resource another system keeps Primary (Proxmox VE, the CSI driver,
+  // OpenStack Cinder, XCP-ng, OpenNebula) and a device that is open stay
+  // where they are and are listed in resources_left.
+  bool keep_in_use = 2;
+  // requested_by and reason say who put the node in maintenance and why, for
+  // NodeInfo (for example "kubernetes drain"). Empty requested_by is the
+  // caller's user name.
+  string requested_by = 3;
+  string reason = 4;
 }
 
 message ConvertPoolToThinRequest {
@@ -3541,6 +3807,14 @@ message DrainNodeResponse {
   string message = 2;
   // resources_moved lists the DRBD resources whose Primary was moved off the node.
   repeated string resources_moved = 3;
+  // resources_left lists, for a keep_in_use drain, the resources that are
+  // still Primary on the node and why each was not moved.
+  repeated DrainLeftResource resources_left = 4;
+}
+
+message DrainLeftResource {
+  string resource = 1;
+  string reason = 2;
 }
 
 message UndrainNodeRequest {

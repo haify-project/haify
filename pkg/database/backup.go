@@ -134,6 +134,11 @@ type Backup struct {
 	// the versions current then, whatever was written or deleted since. Set
 	// for a backup imported with --as-of.
 	ReadAt time.Time `json:",omitempty"`
+	// Consistency is what the snapshots the backup was read from hold:
+	// "filesystem" when the guest using the resource was frozen while they
+	// were taken, "crash" when it could not be, "" for a resource that
+	// belongs to no guest and for backups taken before this was recorded.
+	Consistency string `json:",omitempty"`
 }
 
 // ==================== BACKUP TARGET ====================

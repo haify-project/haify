@@ -105,6 +105,8 @@ function App() {
               <Route path="access" element={<AccessPage />} />
               <Route path="logs" element={<LogsPage />} />
               {AI_ENABLED && <Route path="settings" element={<SettingsPage />} />}
+              {/* An unknown path used to render a blank page, sidebar and all gone. */}
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Route>
           </Routes>
         </BrowserRouter>

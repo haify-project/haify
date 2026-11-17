@@ -12,9 +12,7 @@ import (
 // ocfAgents are appended, in order, to the promoter start[] list; pass nil to
 // keep the historical behavior.
 func (c *HaifyClient) MakeHa(ctx context.Context, resource string, services []string, mountPoint, fsType, vip string, ocfAgents []*haifypb.OcfAgent, startItems []*haifypb.HaStartItem) (string, error) {
-	log := zap.L()
-	log.Debug("HaifyClient.MakeHa: sending request", zap.String("resource", resource), zap.Strings("services", services), zap.String("mount_point", mountPoint), zap.String("fs_type", fsType), zap.String("vip", vip), zap.Int("ocf_agents_count", len(ocfAgents)), zap.Int("start_items_count", len(startItems)))
-	req := &haifypb.MakeHaRequest{
+	return c.MakeHaWith(ctx, &haifypb.MakeHaRequest{
 		Resource:   resource,
 		Services:   services,
 		MountPoint: mountPoint,
@@ -22,20 +20,30 @@ func (c *HaifyClient) MakeHa(ctx context.Context, resource string, services []st
 		Vip:        vip,
 		OcfAgents:  ocfAgents,
 		StartItems: startItems,
-	}
+	})
+}
 
+// MakeHaWith is MakeHa for a caller that sets the request itself, such as
+// the node to take a guest's definition from.
+func (c *HaifyClient) MakeHaWith(ctx context.Context, req *haifypb.MakeHaRequest) (string, error) {
+	log := zap.L()
+	// OCF agent params can carry passwords: only counts are traced.
+	log.Debug("HaifyClient.MakeHaWith: sending request", zap.String("resource", req.GetResource()), zap.Strings("services", req.GetServices()),
+		zap.String("mount_point", req.GetMountPoint()), zap.String("fs_type", req.GetFstype()), zap.String("vip", req.GetVip()),
+		zap.Int("ocf_agents_count", len(req.GetOcfAgents())), zap.Int("start_items_count", len(req.GetStartItems())),
+		zap.String("vm_definition_node", req.GetVmDefinitionNode()))
 	resp, err := c.client.MakeHa(ctx, req)
 	if err != nil {
-		log.Debug("HaifyClient.MakeHa: MakeHa failed", zap.Error(err))
+		log.Debug("HaifyClient.MakeHaWith: MakeHa failed", zap.Error(err))
 		return "", err
 	}
 
 	if !resp.Success {
-		log.Debug("HaifyClient.MakeHa: controller reported failure", zap.String("message", resp.Message))
+		log.Debug("HaifyClient.MakeHaWith: controller reported failure", zap.String("message", resp.Message))
 		return "", fmt.Errorf("%s", resp.Message)
 	}
 
-	log.Debug("HaifyClient.MakeHa: done")
+	log.Debug("HaifyClient.MakeHaWith: done")
 	return resp.ConfigPath, nil
 }
 

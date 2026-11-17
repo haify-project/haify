@@ -75,18 +75,31 @@ func (s *Server) UnregisterNode(ctx context.Context, req *haifypb.UnregisterNode
 
 func (s *Server) DrainNode(ctx context.Context, req *haifypb.DrainNodeRequest) (*haifypb.DrainNodeResponse, error) {
 	log := s.serverLog()
-	log.Debug("DrainNode: draining", zap.String("node", req.Name))
-	moved, err := s.resources.DrainNode(ctx, req.Name)
-	if err != nil {
-		log.Debug("DrainNode: failed", zap.String("node", req.Name), zap.Strings("moved", moved), zap.Error(err))
-		return &haifypb.DrainNodeResponse{Success: false, Message: err.Error(), ResourcesMoved: moved}, nil
+	// Who drained the node is whoever the request names, or else whoever
+	// made it; with authentication off that is nobody in particular.
+	by := strings.TrimSpace(req.RequestedBy)
+	if by == "" {
+		by = userFromContext(ctx)
 	}
-	log.Debug("DrainNode: drained", zap.String("node", req.Name), zap.Strings("moved", moved))
-	return &haifypb.DrainNodeResponse{
-		Success:        true,
-		Message:        fmt.Sprintf("node %q drained; %d resource(s) moved", req.Name, len(moved)),
-		ResourcesMoved: moved,
-	}, nil
+	log.Debug("DrainNode: draining", zap.String("node", req.Name), zap.Bool("keep_in_use", req.KeepInUse),
+		zap.String("requested_by", by), zap.String("reason", req.Reason))
+	moved, left, err := s.resources.DrainNodeWith(ctx, req.Name, DrainOptions{KeepInUse: req.KeepInUse, By: by, Reason: req.Reason})
+	resp := &haifypb.DrainNodeResponse{ResourcesMoved: moved}
+	for _, l := range left {
+		resp.ResourcesLeft = append(resp.ResourcesLeft, &haifypb.DrainLeftResource{Resource: l.Resource, Reason: l.Reason})
+	}
+	if err != nil {
+		log.Debug("DrainNode: failed", zap.String("node", req.Name), zap.Strings("moved", moved), zap.Int("left", len(left)), zap.Error(err))
+		resp.Message = err.Error()
+		return resp, nil
+	}
+	log.Debug("DrainNode: drained", zap.String("node", req.Name), zap.Strings("moved", moved), zap.Int("left", len(left)))
+	resp.Success = true
+	resp.Message = fmt.Sprintf("node %q drained; %d resource(s) moved", req.Name, len(moved))
+	if len(left) > 0 {
+		resp.Message += fmt.Sprintf("; %d still Primary on it and left where they are", len(left))
+	}
+	return resp, nil
 }
 
 func (s *Server) UndrainNode(ctx context.Context, req *haifypb.UndrainNodeRequest) (*haifypb.UndrainNodeResponse, error) {
@@ -262,7 +275,16 @@ func unixOrZero(t time.Time) int64 {
 
 // nodeInfoPB is the API form of a node.
 func nodeInfoPB(n *NodeInfo) *haifypb.NodeInfo {
+	// Who drained a node is reported only while it is drained.
+	var by, reason string
+	var since int64
+	if n.State == NodeStateMaintenance {
+		by, reason, since = n.MaintenanceBy, n.MaintenanceReason, unixOrZero(n.MaintenanceSince)
+	}
 	return &haifypb.NodeInfo{
+		MaintenanceBy:      by,
+		MaintenanceReason:  reason,
+		MaintenanceSince:   since,
 		Name:               n.Name,
 		Address:            n.Address,
 		ReplicationAddress: n.ReplicationAddress,

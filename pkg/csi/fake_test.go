@@ -19,6 +19,9 @@ type fakeBackend struct {
 	listPoolsErr error
 	profileErr   error
 	requestCalls []*haifypb.CreateResourceRequest
+	// resizes records ResizeVolume calls; resizeErr fails them.
+	resizes   []string
+	resizeErr error
 
 	// promoteErr, when set, makes PromoteForNode fail (e.g. simulating a
 	// controller that refused to force-promote because the node lacks quorum).
@@ -47,6 +50,13 @@ type fakeBackend struct {
 	groupCalls [][]*haifypb.SnapshotGroupMember // members passed to CreateSnapshotGroup (fake_group_test.go)
 
 	createCalls []createCall
+
+	// NFS gateways, keyed by resource (fake_gateway_test.go).
+	gateways        map[string]*haifypb.GatewayInfo
+	gatewayErr      error // makes CreateNFSGateway fail
+	listGatewaysErr error
+	gatewayCreates  []*haifypb.CreateNFSGatewayRequest
+	gatewayDeletes  []string
 }
 
 // snapKey namespaces snapshots the way the backend does: per backing volume,
@@ -260,7 +270,8 @@ func (f *fakeBackend) DetachDisklessClient(_ context.Context, resource, node str
 }
 
 func (f *fakeBackend) ResizeVolume(_ context.Context, resource string, volumeID uint32, sizeGB uint32) error {
-	return nil
+	f.resizes = append(f.resizes, fmt.Sprintf("%s/%d=%dGi", resource, volumeID, sizeGB))
+	return f.resizeErr
 }
 
 var _ HaifyBackend = (*fakeBackend)(nil)

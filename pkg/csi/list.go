@@ -43,7 +43,7 @@ func (s *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 	s.log.Debug("controllerServer.GetCapacity: start", zap.String("pool", req.GetParameters()["pool"]),
 		zap.String("node", topoNode), zap.Int("capabilities", len(req.GetVolumeCapabilities())))
 	for _, c := range req.GetVolumeCapabilities() {
-		if unsupportedCapability(c) != "" {
+		if capabilityProblem(c, sharedRequested(req.GetParameters())) != "" {
 			s.log.Debug("controllerServer.GetCapacity: unsupported capability, reporting 0")
 			return &csi.GetCapacityResponse{AvailableCapacity: 0}, nil
 		}
@@ -132,6 +132,11 @@ func (s *controllerServer) GetCapacity(ctx context.Context, req *csi.GetCapacity
 		}, nil
 	}
 
+	if term := zoneOnlySegments(req.GetAccessibleTopology()); term != nil {
+		s.log.Debug("controllerServer.GetCapacity: zone in topology", zap.String("pool", params.Pool),
+			zap.String("zone", zoneTermString(term)))
+		return zoneCapacity(nodes, capacity, unknown, term, params)
+	}
 	s.log.Debug("controllerServer.GetCapacity: no node in topology, reporting pool-wide", zap.String("pool", params.Pool),
 		zap.Int("nodes_known", len(capacity)), zap.Int("nodes_unknown", len(unknown)))
 	return poolWide(capacity, params.Replicas), nil

@@ -123,6 +123,13 @@ spec:
             # --ha-failover=false turns it off.
             - "--ha-failover-interval=5s"
             - "--ha-failover-grace=10s"
+            # The drain controller drains a node in Haify when Kubernetes takes
+            # it down for maintenance: a node annotated haify.csi/drain=true,
+            # or carrying one of these taints (see README "Draining a node").
+            # --node-drain-on-cordon acts on every cordoned node;
+            # --node-drain=false turns it off.
+            - "--node-drain-taints=medik8s.io/drain,kubevirt.io/drain"
+            - "--node-drain-delay=30s"
           env:
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }

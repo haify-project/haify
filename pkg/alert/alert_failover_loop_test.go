@@ -159,6 +159,62 @@ func TestExternallyManagedMovesAreNotCountedAsALoop(t *testing.T) {
 		"live migration is a scheduler's everyday business, not a failure")
 }
 
+func TestLiveMovesAreNotFailovers(t *testing.T) {
+	l := pairResource("web1")
+	mon, drain, clock := loopHarness(t, l, 10*time.Minute)
+	ctx := context.Background()
+	step := func(primaries ...string) {
+		for node := range l.list[0].NodeStates {
+			l.list[0].NodeStates[node] = healthy("Secondary")
+		}
+		for _, node := range primaries {
+			l.list[0].NodeStates[node] = healthy("Primary")
+		}
+		*clock = clock.Add(30 * time.Second)
+		mon.Poll(ctx)
+	}
+
+	// `haify ha evict --live`: the target is promoted beside the source, then
+	// one of them is demoted. Two that stayed and one that moved, as measured.
+	l.list[0].LiveMove = true
+	step("n1", "n2")
+	step("n1")
+	step("n1", "n2")
+	step("n1")
+	step("n1", "n2")
+	for _, e := range drain() {
+		assert.NotEqual(t, event.TypeResourceFailover, e.Type, "a live move is not a failover: %s", e.Message)
+		assert.NotEqual(t, event.TypeResourceFailoverLoop, e.Type, "live moves are not a loop: %s", e.Message)
+	}
+
+	// The third move has ended on n2, and the monitor sees its last step only
+	// now. A Primary that lands on n2 is still the move.
+	l.list[0].LiveMoveEndedOn = "n2"
+	step("n2")
+	for _, e := range drain() {
+		assert.NotEqual(t, event.TypeResourceFailover, e.Type, "the end of the move is not a failover: %s", e.Message)
+	}
+
+	// n2 loses power a minute after the move and n1 takes over: a failover,
+	// even inside the window (measured 2026-11-17: reported as a move).
+	step("n1")
+	failovers := func() int {
+		n := 0
+		for _, e := range drain() {
+			if e.Type == event.TypeResourceFailover {
+				n++
+			}
+		}
+		return n
+	}
+	assert.Equal(t, 1, failovers(), "a takeover elsewhere after a live move is a failover")
+
+	// Once the move is forgotten, every move is a failover again.
+	l.list[0].LiveMove, l.list[0].LiveMoveEndedOn = false, ""
+	step("n2")
+	assert.Equal(t, 1, failovers())
+}
+
 func TestFailoverLoopClearsWhenTheResourceIsDeleted(t *testing.T) {
 	l := pairResource("gw")
 	mon, drain, clock := loopHarness(t, l, 10*time.Minute)

@@ -33,8 +33,8 @@ func (m *mockExtraClient) EvictHa(_ context.Context, resource string) error {
 	return nil
 }
 
-func (m *mockExtraClient) CreateLvmSnapshot(_ context.Context, _, _, _, _, _ string) error {
-	return nil
+func (m *mockExtraClient) CreateLvmSnapshotNoted(_ context.Context, _, _, _, _, _ string) (string, error) {
+	return "LVM snapshot created successfully (crash-consistent: guest web1 has no guest agent)", nil
 }
 
 func (m *mockExtraClient) DeleteLvmSnapshot(_ context.Context, _, _, _ string) error {
@@ -300,8 +300,8 @@ func (m *mockExtraClient) ResourceStatus(_ context.Context, name string) (*haify
 }
 func (m *mockExtraClient) AddVolume(_ context.Context, _, _, _ string, _ uint32) error { return nil }
 func (m *mockExtraClient) RemoveVolume(_ context.Context, _ string, _ uint32) error    { return nil }
-func (m *mockExtraClient) ResizeVolume(_ context.Context, _ string, _ uint32, _ uint32) error {
-	return nil
+func (m *mockExtraClient) ResizeVolumeWith(_ context.Context, _ *haifypb.ResizeVolumeRequest) (string, error) {
+	return "Volume resized successfully; guest web1 on n1 now sees the new size on vdb", nil
 }
 func (m *mockExtraClient) CreateFilesystem(_ context.Context, _ string, _ uint32, _, _ string) error {
 	return nil

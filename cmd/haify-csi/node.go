@@ -27,6 +27,11 @@ func runNode(args []string) int {
 		"how often to re-read the I/O limits of published volumes (changed through a VolumeAttributesClass) and rewrite io.max; 0 applies them only at publish")
 	qosStateDir := fs.String("qos-state-dir", "/csi/qos",
 		"where the published volumes whose I/O limits are kept current are recorded, so a restarted plugin still knows them; empty keeps them in memory")
+	zoneTopology := fs.Bool("zone-topology", true,
+		"publish this node's Kubernetes zone and region ("+csi.TopologyKeyZone+", "+csi.TopologyKeyRegion+
+			") as topology and copy them onto the Haify node as labels; a node with neither label is unaffected")
+	zoneSyncInterval := fs.Duration("zone-sync-interval", 5*time.Minute,
+		"how often the Haify node's zone and region labels are brought in line with the Kubernetes node's; 0 syncs once at start")
 	localAgent := fs.Bool("local-agent", os.Getenv("HAIFY_LOCAL_AGENT") == "true",
 		"act as this node's agent: for nodes the controller cannot SSH into (RHCOS); DRBD is configured and promoted from this plugin")
 	drbdConfDir := fs.String("drbd-conf-dir", "/etc/drbd.d", "the host's DRBD configuration directory, mounted into the plugin (local agent only)")
@@ -77,6 +82,11 @@ func runNode(args []string) int {
 	}
 	if ns == nil {
 		return 1
+	}
+	if *zoneTopology {
+		startZoneTopology(ctx, ns, haify, *nodeName, *zoneSyncInterval, log)
+	} else {
+		log.Debug("runNode: zone topology disabled by --zone-topology=false")
 	}
 	d := csi.NewDriver(*endpoint, log,
 		csi.NewIdentityServer(),

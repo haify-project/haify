@@ -126,6 +126,12 @@ export function NodeDetail({
                 <Fact label="State" value={node.state} tone={toneOf(node.state)} />
                 <Fact label="Version" value={node.version || (node.localAgent ? 'Local agent' : '-')} />
                 <Fact label="Last seen" value={formatLastSeen(node.lastSeen)} />
+                {node.state === 'maintenance' && (node.maintenanceBy || node.maintenanceReason) ? (
+                  <Fact
+                    label="Drained by"
+                    value={[node.maintenanceBy, node.maintenanceReason].filter(Boolean).join(': ')}
+                  />
+                ) : null}
               </div>
 
               <div className="flex flex-col gap-1.5">
@@ -214,7 +220,10 @@ function Fact({
   return (
     <div className="min-w-0">
       <div className="eyebrow">{label}</div>
-      <div className="mt-1.5 flex items-center gap-1.5 truncate font-mono text-[13px] tabular-nums">
+      <div
+        className="mt-1.5 flex items-center gap-1.5 truncate font-mono text-[13px] tabular-nums"
+        title={value}
+      >
         {tone ? <span className={cn('size-1.5 rounded-full', TONE_BG[tone])} /> : null}
         {value}
       </div>

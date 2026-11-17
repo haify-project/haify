@@ -46,25 +46,56 @@ func volumeHealthDetail(r *haifypb.ResourceInfo) (abnormal bool, message string,
 		expectedDiskless[n] = true
 	}
 
-	var problems []string
+	var problems, joining []string
 	onlyResync = true
+	upToDate := 0
 	for host, st := range r.GetNodeStates() {
 		name := st.GetNode()
 		if name == "" {
 			name = host
 		}
-		p := replicaProblem(st, expectedDiskless[name] || expectedDiskless[host])
+		diskless := expectedDiskless[name] || expectedDiskless[host]
+		p := replicaProblem(st, diskless)
 		log.Debug("volumeHealthDetail: replica", zap.String("resource", r.GetName()), zap.String("node", name),
 			zap.String("connection", st.GetConnection()), zap.String("disk_state", st.GetDiskState()),
-			zap.String("replication_state", st.GetReplicationState()), zap.String("problem", p))
-		if p != "" {
+			zap.String("replication_state", st.GetReplicationState()), zap.Bool("joining", st.GetJoining()), zap.String("problem", p))
+		switch {
+		case p == "" && !diskless && !st.GetJoining() && st.GetDiskState() == "UpToDate":
+			upToDate++
+		case p != "" && st.GetJoining() && strings.HasPrefix(p, "resyncing"):
+			// Set aside until every replica has been looked at: whether
+			// this is news depends on the others.
+			joining = append(joining, fmt.Sprintf("%s: %s", name, p))
+		case p != "":
 			problems = append(problems, fmt.Sprintf("%s: %s", name, p))
 			if !strings.HasPrefix(p, "resyncing") {
 				onlyResync = false
 			}
 		}
 	}
+	// A replica that was added to the volume and is still in its first sync
+	// is a copy the volume is gaining, not one it lost: a replica moving to
+	// where the volume is used, a rebalance, a VolumeAttributesClass that
+	// raises the replica count. It is not reported, but only while nothing
+	// else is wrong and as many replicas are UpToDate and connected as the
+	// volume is committed to. Short of that the volume is running on fewer
+	// copies than promised whatever else is on its way, and the joining
+	// replica is reported with the rest.
+	committed := int(r.GetCommittedReplicas())
+	if len(joining) > 0 && (len(problems) > 0 || committed <= 0 || upToDate < committed) {
+		log.Debug("volumeHealthDetail: joining replicas reported, the committed copies are not all there",
+			zap.String("resource", r.GetName()), zap.Int("up_to_date", upToDate), zap.Int("committed", committed),
+			zap.Int("other_problems", len(problems)))
+		problems = append(problems, joining...)
+		joining = nil
+	}
 	if len(problems) == 0 {
+		if len(joining) > 0 {
+			sort.Strings(joining)
+			log.Debug("volumeHealthDetail: healthy, a replica is joining", zap.String("resource", r.GetName()),
+				zap.Int("up_to_date", upToDate), zap.Int("committed", committed), zap.Int("joining", len(joining)))
+			return false, fmt.Sprintf("all %d replicas up to date; a replica being added is syncing (%s)", upToDate, strings.Join(joining, "; ")), false
+		}
 		log.Debug("volumeHealthDetail: healthy", zap.String("resource", r.GetName()), zap.Int("replicas", len(r.GetNodeStates())))
 		return false, "all replicas up to date", false
 	}

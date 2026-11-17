@@ -213,7 +213,7 @@ func (bm *BackupManager) ship(ctx context.Context, j *database.StorageJob, p shi
 	defer func() { _ = target.Close() }()
 
 	bm.shipProgress(ctx, j, "taking snapshots")
-	snaps, err := bm.snapshotVolumes(ctx, p.host, p.info, time.Now())
+	snaps, _, err := bm.snapshotVolumes(ctx, p.host, p.info, time.Now())
 	defer bm.removeSnapshots(context.WithoutCancel(ctx), p.host, p.info, snaps)
 	if err != nil {
 		log.Debug("ship: snapshots failed", zap.String("host", p.host), zap.Error(err))

@@ -181,6 +181,9 @@ func (s *controllerServer) ControllerModifyVolume(ctx context.Context, req *csi.
 	if err != nil {
 		return nil, lookupError(id, err)
 	}
+	if err := sharedModifyProblem(r, change); err != nil {
+		return nil, err
+	}
 	if change.empty() {
 		s.log.Debug("controllerServer.ControllerModifyVolume: nothing to change", zap.String("resource", id))
 		return &csi.ControllerModifyVolumeResponse{}, nil

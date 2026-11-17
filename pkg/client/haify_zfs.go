@@ -189,6 +189,14 @@ func (c *HaifyClient) ResizeZFSVolume(ctx context.Context, volumePath, newSize, 
 
 // CreateZFSSnapshot creates a ZFS snapshot
 func (c *HaifyClient) CreateZFSSnapshot(ctx context.Context, dataset, snapshotName, node string) error {
+	_, err := c.CreateZFSSnapshotNoted(ctx, dataset, snapshotName, node)
+	return err
+}
+
+// CreateZFSSnapshotNoted is CreateZFSSnapshot, and returns what the
+// controller said about the snapshot: for a guest's volume, its consistency
+// and why.
+func (c *HaifyClient) CreateZFSSnapshotNoted(ctx context.Context, dataset, snapshotName, node string) (string, error) {
 	log := zap.L()
 	log.Debug("HaifyClient.CreateZFSSnapshot: sending request", zap.String("dataset", dataset), zap.String("snapshot_name", snapshotName), zap.String("node", node))
 	req := &haifypb.CreateZFSSnapshotRequest{
@@ -200,16 +208,16 @@ func (c *HaifyClient) CreateZFSSnapshot(ctx context.Context, dataset, snapshotNa
 	resp, err := c.client.CreateZFSSnapshot(ctx, req)
 	if err != nil {
 		log.Debug("HaifyClient.CreateZFSSnapshot: CreateZFSSnapshot failed", zap.Error(err))
-		return err
+		return "", err
 	}
 
 	if !resp.Success {
 		log.Debug("HaifyClient.CreateZFSSnapshot: controller reported failure", zap.String("message", resp.Message))
-		return fmt.Errorf("%s", resp.Message)
+		return "", fmt.Errorf("%s", resp.Message)
 	}
 
-	log.Debug("HaifyClient.CreateZFSSnapshot: done")
-	return nil
+	log.Debug("HaifyClient.CreateZFSSnapshot: done", zap.String("message", resp.Message))
+	return resp.Message, nil
 }
 
 // DeleteZFSSnapshot deletes a ZFS snapshot

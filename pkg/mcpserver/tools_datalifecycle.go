@@ -75,6 +75,8 @@ type backupOut struct {
 	Changed    uint64 `json:"changed_bytes,omitempty" jsonschema:"for an incremental, how much it carries"`
 	StartedAt  string `json:"started_at,omitempty"`
 	FinishedAt string `json:"finished_at,omitempty"`
+	// Consistency is set for a backup of a guest's resource only.
+	Consistency string `json:"consistency,omitempty" jsonschema:"filesystem (the guest using the resource was frozen while the snapshots were taken) or crash (it could not be); absent for a resource that belongs to no guest"`
 }
 
 type backupListIn struct {
@@ -106,6 +108,7 @@ func backupToOut(b *haifypb.BackupInfo) backupOut {
 		ID: b.Id, Resource: b.Resource, Target: b.Target, Node: b.Node,
 		Backend: b.Backend, State: b.State, Error: b.Error, Kind: b.Kind, Parent: b.Parent,
 		TotalBytes: b.TotalBytes, StartedAt: b.StartedAt, FinishedAt: b.FinishedAt,
+		Consistency: b.Consistency,
 	}
 	for _, v := range b.Volumes {
 		out.Changed += v.ChangedBytes

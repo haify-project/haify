@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	haifypb "github.com/haify-project/haify/api/proto/v1"
 	"github.com/haify-project/haify/pkg/util"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -136,15 +137,26 @@ func resourceRemoveVolume() *cobra.Command {
 
 func resourceResizeVolume() *cobra.Command {
 	var size string
-	var ignoreFreeSpace bool
+	var ignoreFreeSpace, growFS bool
 
 	cmd := &cobra.Command{
 		Use:   "resize-volume <resource> <volume-id> <size>",
 		Short: "Resize a volume",
-		Args:  cobra.ExactArgs(3),
+		Long: `Grow a volume on every replica.
+
+The filesystem of an NFS or SMB gateway on the resource is grown with it, on
+the node serving the gateway. While the gateway is failing over or stopped
+that cannot be done: the command then fails saying so, and running it again
+later finishes the resize. --grow-fs does the same for a filesystem mounted
+from the volume on the Primary of any other resource.
+
+A running libvirt guest is shown the new size of its disk; when that fails
+the command says what to run instead.`,
+		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log := zap.L()
-			log.Debug("resourceResizeVolume: running command", zap.Strings("args", args), zap.Bool("ignore_free_space", ignoreFreeSpace))
+			log.Debug("resourceResizeVolume: running command", zap.Strings("args", args), zap.Bool("ignore_free_space", ignoreFreeSpace),
+				zap.Bool("grow_fs", growFS))
 			resource := args[0]
 			var volumeID uint32
 			_, err := fmt.Sscanf(args[1], "%d", &volumeID)
@@ -176,24 +188,26 @@ func resourceResizeVolume() *cobra.Command {
 			}
 			defer closeClient(haifyClient)
 
-			resize := haifyClient.ResizeVolume
-			if ignoreFreeSpace {
-				log.Debug("resourceResizeVolume: ignoring free space on the replicas")
-				resize = haifyClient.ResizeVolumeIgnoringFreeSpace
-			}
-			err = resize(ctx, resource, volumeID, uint32(sizeGiB))
+			note, err := haifyClient.ResizeVolumeWith(ctx, &haifypb.ResizeVolumeRequest{
+				Resource: resource, VolumeId: volumeID, SizeGb: uint32(sizeGiB),
+				IgnoreFreeSpace: ignoreFreeSpace, GrowFilesystem: growFS,
+			})
 			if err != nil {
 				log.Debug("resourceResizeVolume: resize failed", zap.Error(err))
 				return fmt.Errorf("failed to resize volume: %w", err)
 			}
 
 			fmt.Printf("Volume %d resized to %s\n", volumeID, util.FormatBytes(sizeBytes))
+			// What happened to a running guest or a mounted filesystem.
+			printNote(note, "Volume resized successfully")
 			log.Debug("resourceResizeVolume: done", zap.String("resource", resource), zap.Uint32("volume_id", volumeID), zap.Uint64("size_bytes", sizeBytes))
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&ignoreFreeSpace, "ignore-free-space", false,
 		"Grow it although a replica's pool has less free space than the growth (the new area is written to every replica; a full pool drops the disk)")
+	cmd.Flags().BoolVar(&growFS, "grow-fs", false,
+		"Also grow the filesystem mounted from the volume on the Primary (always done for an NFS or SMB gateway)")
 
 	return cmd
 }

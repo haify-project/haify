@@ -53,6 +53,25 @@ const (
 	// resolves when the unit has run steadily again. DRBD reports nothing of it:
 	// every replica is UpToDate and a Primary exists while nothing is served.
 	TypeHAServiceFailing Type = "ha.service_failing"
+	// TypeHAGuestMoved fires when `ha evict --live` has moved an HA guest to
+	// another replica without stopping it.
+	TypeHAGuestMoved Type = "ha.guest_moved"
+	// TypeHAGuestMoveFailed fires when a live move did not happen: the guest
+	// stayed where it was (warning), or the controller could not put the
+	// promoter and DRBD roles back by itself (critical; the message names
+	// what is left to do).
+	TypeHAGuestMoveFailed Type = "ha.guest_move_failed"
+	// TypeGuestResizeFailed and TypeGuestThawFailed are about the libvirt
+	// guest that uses a resource. They are raised only when someone has to
+	// act: the storage operation itself succeeded, and its reply already says
+	// what happened to the guest.
+	//
+	// TypeGuestResizeFailed: a volume was grown and its running guest was
+	// not shown the new size; the message says what to run.
+	TypeGuestResizeFailed Type = "resource.guest_resize_failed"
+	// TypeGuestThawFailed: a guest frozen for a snapshot did not thaw when
+	// asked, and is left to the node's watchdog.
+	TypeGuestThawFailed Type = "resource.guest_thaw_failed"
 	// TypeResourceNoPrimary fires when a resource that had a Primary no longer
 	// has one anywhere. Nothing is serving I/O for it.
 	TypeResourceNoPrimary Type = "resource.no_primary"

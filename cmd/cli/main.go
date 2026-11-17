@@ -62,6 +62,7 @@ func main() {
 	rootCmd.AddCommand(rbacCommand())
 	rootCmd.AddCommand(approvalCommand())
 	rootCmd.AddCommand(rebalanceCommand())
+	rootCmd.AddCommand(selfHealCommand())
 	rootCmd.AddCommand(eventCommand())
 	rootCmd.AddCommand(inspectCommand())
 	rootCmd.AddCommand(notifyCommand())

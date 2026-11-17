@@ -22,9 +22,17 @@ func (rm *ResourceManager) EvictHa(ctx context.Context, resource string) error {
 		zap.String("resource", resource))
 
 	log := rm.resourcesLog()
+	if m := rm.liveMigrationRunning(resource); m != "" {
+		log.Debug("EvictHa: live move in progress", zap.String("resource", resource))
+		return fmt.Errorf("%s", m)
+	}
 	hosts, err := rm.resourceHosts(ctx, resource)
 	if err != nil {
 		log.Debug("EvictHa: no hosts", zap.String("resource", resource), zap.Error(err))
+		return err
+	}
+	if err := rm.checkGuestBeforeEvict(ctx, resource); err != nil {
+		log.Debug("EvictHa: guest definition check failed", zap.String("resource", resource), zap.Error(err))
 		return err
 	}
 
@@ -162,6 +170,10 @@ func (rm *ResourceManager) RemoveHa(ctx context.Context, resource string) error 
 	rm.controller.logger.Info("Removing HA configuration", zap.String("resource", resource))
 
 	log := rm.resourcesLog()
+	if m := rm.liveMigrationRunning(resource); m != "" {
+		log.Debug("RemoveHa: live move in progress", zap.String("resource", resource))
+		return fmt.Errorf("%s", m)
+	}
 	if rm.deployment == nil {
 		log.Debug("RemoveHa: no deployment client", zap.String("resource", resource))
 		return fmt.Errorf("deployment client not set")
@@ -244,6 +256,11 @@ func (rm *ResourceManager) RemoveHa(ctx context.Context, resource string) error 
 				zap.String("vip", haCfg.VIP), zap.Strings("failed_hosts", result.FailedHosts()))
 		}
 	}
+
+	// 3c. A libvirt guest's definition was spread to the replicas for the
+	// promoter's sake; the copies Haify placed go with it. The guest itself
+	// is not stopped, and the node it runs on keeps its definition.
+	rm.removeVMDefinition(ctx, resource)
 
 	// 4. Remove from database
 	err = rm.controller.db.DeleteHaConfig(ctx, resource)

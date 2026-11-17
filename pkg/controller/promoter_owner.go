@@ -18,7 +18,8 @@ import (
 //   - a Proxmox VM disk is made Primary by the storage plugin on the node PVE
 //     starts the VM on, and moved by PVE live migration and PVE HA;
 //   - a CSI volume is made Primary by the CSI node plugin on the node the pod
-//     is scheduled to;
+//     is scheduled to (a shared one is the exception: the driver puts an NFS
+//     gateway on it, and that gateway's promoter is what decides);
 //   - a Cinder volume is made Primary by the OpenStack driver on the compute
 //     host Nova runs the instance on, and moved by Nova live migration;
 //   - an XCP-ng virtual disk is made Primary by the SR driver on the host the
@@ -38,6 +39,10 @@ const (
 	pveManagedByLabel = "haify.pve/managed-by"
 	// csiManagedByLabel marks a resource the CSI driver created.
 	csiManagedByLabel = "haify.csi/managed-by"
+	// csiSharedLabel marks a CSI volume served to its pods over NFS
+	// (ReadWriteMany). Its Primary belongs to the NFS gateway's promoter: no
+	// node plugin promotes it, the pods mount the export instead.
+	csiSharedLabel = "haify.csi/shared"
 	// csiPVCLabel names the claim a CSI volume was provisioned for.
 	csiPVCLabel = "haify.csi/pvc"
 	// cinderManagedByLabel marks a resource the OpenStack Cinder driver created.
@@ -60,7 +65,7 @@ func externallyPromoted(name string, labels map[string]string) string {
 	switch {
 	case labels[pveManagedByLabel] == "pve", labels[pveManagedByLabel] == "" && pveDefaultNameRe.MatchString(name):
 		owner = "Proxmox VE"
-	case labels[csiManagedByLabel] == "csi":
+	case labels[csiManagedByLabel] == "csi" && labels[csiSharedLabel] == "":
 		owner = "the CSI driver"
 	case labels[cinderManagedByLabel] == "cinder":
 		owner = "OpenStack Cinder"

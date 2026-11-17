@@ -29,10 +29,11 @@ RUN ./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var \
     mkdir -p /out && cp user/v9/drbdadm user/v9/drbdsetup user/v9/drbdmeta /out/
 
 # Node plugin needs mount/umount/mkfs from the host PATH; use a small base that
-# has util-linux + e2fsprogs + xfsprogs.
+# has util-linux + e2fsprogs + xfsprogs. nfs-common brings mount.nfs, which
+# mounts shared (ReadWriteMany) volumes from their NFS gateway.
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        util-linux e2fsprogs xfsprogs libkeyutils1 && rm -rf /var/lib/apt/lists/*
+        util-linux e2fsprogs xfsprogs libkeyutils1 nfs-common && rm -rf /var/lib/apt/lists/*
 COPY --from=drbd-utils /out/ /usr/sbin/
 # The agent writes only *.res files to the host's /etc/drbd.d, mounted here.
 RUN printf 'global { usage-count no; udev-always-use-vnr; }\ninclude "/etc/drbd.d/*.res";\n' > /etc/drbd.conf && \

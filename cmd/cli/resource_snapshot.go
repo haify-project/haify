@@ -159,12 +159,13 @@ func resourceSnapshotCreate() *cobra.Command {
 				// ZFS snapshot: pool/resource_data@snapshot
 				dataset := fmt.Sprintf("%s/%s_data", pool, resource)
 				log.Debug("resourceSnapshotCreate: creating ZFS snapshot", zap.String("dataset", dataset), zap.String("snapshot", snapshotName), zap.String("node", node))
-				err = haifyClient.CreateZFSSnapshot(ctx, dataset, snapshotName, node)
+				note, err := haifyClient.CreateZFSSnapshotNoted(ctx, dataset, snapshotName, node)
 				if err != nil {
 					log.Debug("resourceSnapshotCreate: CreateZFSSnapshot failed", zap.Error(err))
 					return fmt.Errorf("failed to create ZFS snapshot: %w", err)
 				}
 				fmt.Printf("ZFS snapshot '%s' created for resource '%s' on node '%s'\n", snapshotName, resource, node)
+				printNote(note, "ZFS snapshot created successfully")
 			} else {
 				// LVM snapshot (default)
 				if size == "" {
@@ -175,12 +176,13 @@ func resourceSnapshotCreate() *cobra.Command {
 				log.Debug("resourceSnapshotCreate: creating LVM snapshot", zap.String("pool", pool), zap.String("lv", lvName),
 					zap.String("snapshot", snapshotName), zap.String("node", node), zap.String("size", size))
 				// Pass pool as the VG name (first argument)
-				err = haifyClient.CreateLvmSnapshot(ctx, pool, lvName, snapshotName, node, size)
+				note, err := haifyClient.CreateLvmSnapshotNoted(ctx, pool, lvName, snapshotName, node, size)
 				if err != nil {
 					log.Debug("resourceSnapshotCreate: CreateLvmSnapshot failed", zap.Error(err))
 					return fmt.Errorf("failed to create LVM snapshot: %w", err)
 				}
 				fmt.Printf("LVM snapshot '%s' created for resource '%s' on node '%s'\n", snapshotName, resource, node)
+				printNote(note, "LVM snapshot created successfully")
 			}
 
 			log.Debug("resourceSnapshotCreate: done")
@@ -255,6 +257,12 @@ func resourceSnapshotList() *cobra.Command {
 
 				fmt.Printf("ZFS snapshots for resource '%s':\n", resource)
 				for _, snap := range snapshots {
+					// Only a guest's snapshot records a consistency; the
+					// others say nothing rather than "crash".
+					if snap.Consistency != "" {
+						fmt.Printf("  - %s (created: %s, %s-consistent)\n", snap.Name, snap.CreatedAt, snap.Consistency)
+						continue
+					}
 					fmt.Printf("  - %s (created: %s)\n", snap.Name, snap.CreatedAt)
 				}
 			} else {
@@ -274,15 +282,18 @@ func resourceSnapshotList() *cobra.Command {
 				log.Debug("resourceSnapshotList: LVM snapshots", zap.String("pool", pool), zap.String("node", node), zap.Int("count", len(snapshots)))
 
 				fmt.Printf("LVM snapshots for resource '%s':\n", resource)
-				fmt.Printf("  %-45s %-8s %-14s %s\n", "Name", "Size", "Origin", "Created")
-				fmt.Printf("  %-45s %-8s %-14s %s\n",
+				// Consistency is filled for a guest's snapshots only, and left
+				// empty for the rest rather than shown as "crash".
+				fmt.Printf("  %-45s %-8s %-14s %-11s %s\n", "Name", "Size", "Origin", "Consistency", "Created")
+				fmt.Printf("  %-45s %-8s %-14s %-11s %s\n",
 					strings.Repeat("-", 45), strings.Repeat("-", 8),
-					strings.Repeat("-", 14), strings.Repeat("-", 25))
+					strings.Repeat("-", 14), strings.Repeat("-", 11), strings.Repeat("-", 25))
 				for _, snap := range snapshots {
-					fmt.Printf("  %-45s %-8s %-14s %s\n",
+					fmt.Printf("  %-45s %-8s %-14s %-11s %s\n",
 						snap.Name,
 						fmt.Sprintf("%d GB", snap.SizeGb),
 						snap.Origin,
+						snap.Consistency,
 						snap.CreatedAt)
 				}
 			}

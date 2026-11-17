@@ -379,28 +379,13 @@ func (c *HaifyClient) ResizeVolumeIgnoringFreeSpace(ctx context.Context, resourc
 }
 
 func (c *HaifyClient) resizeVolume(ctx context.Context, resource string, volumeID uint32, sizeGB uint32, ignoreFreeSpace bool) error {
-	log := zap.L()
-	log.Debug("HaifyClient.resizeVolume: sending request", zap.String("resource", resource), zap.Uint32("volume_id", volumeID), zap.Uint32("size_gb", sizeGB), zap.Bool("ignore_free_space", ignoreFreeSpace))
-	req := &haifypb.ResizeVolumeRequest{
+	_, err := c.ResizeVolumeWith(ctx, &haifypb.ResizeVolumeRequest{
 		Resource:        resource,
 		VolumeId:        volumeID,
 		SizeGb:          sizeGB,
 		IgnoreFreeSpace: ignoreFreeSpace,
-	}
-
-	resp, err := c.client.ResizeVolume(ctx, req)
-	if err != nil {
-		log.Debug("HaifyClient.resizeVolume: ResizeVolume failed", zap.Error(err))
-		return err
-	}
-
-	if !resp.Success {
-		log.Debug("HaifyClient.resizeVolume: controller reported failure", zap.String("message", resp.Message))
-		return fmt.Errorf("%s", resp.Message)
-	}
-
-	log.Debug("HaifyClient.resizeVolume: done")
-	return nil
+	})
+	return err
 }
 
 // ResourceStatus gets resource detailed status

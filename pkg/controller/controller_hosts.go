@@ -204,6 +204,9 @@ func (c *Controller) loadFromDatabase(ctx context.Context) error {
 			Labels:             labels,
 			OfflineSince:       dbNode.OfflineSince,
 			LocalAgent:         dbNode.LocalAgent,
+			MaintenanceBy:      dbNode.MaintenanceBy,
+			MaintenanceReason:  dbNode.MaintenanceReason,
+			MaintenanceSince:   dbNode.MaintenanceSince,
 		}
 		loaded := c.nodes.nodes[dbNode.Address]
 		c.nodes.mu.Unlock()

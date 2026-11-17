@@ -196,9 +196,67 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ---
 {{- end }}
+{{- if .Values.nodeDrain.enabled }}
+# The plugin's drain controller: watches nodes for maintenance, checks which
+# Pods on such a node still use this driver's volumes, records on the node
+# that it drained it in Haify, and posts events saying what it did.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: haify-csi-node-drain }
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: haify-csi-node-drain }
+subjects:
+  - kind: ServiceAccount
+    name: haify-csi-controller
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: haify-csi-node-drain
+  apiGroup: rbac.authorization.k8s.io
+---
+{{- end }}
+{{- if .Values.nodePlugin.zoneTopology }}
+# The node plugin reads its own Node to publish the node's zone and region
+# (topology.kubernetes.io/zone, topology.kubernetes.io/region).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: haify-csi-node }
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: haify-csi-node }
+subjects:
+  - kind: ServiceAccount
+    name: haify-csi-node
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: haify-csi-node
+  apiGroup: rbac.authorization.k8s.io
+---
+{{- end }}
 # Leader election: the provisioner, resizer, snapshotter and the plugin's
-# health reporter and HA controller each keep a Lease here, so only one replica
-# acts at a time.
+# health reporter, HA controller and drain controller each keep a Lease here,
+# so only one replica acts at a time.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata: { name: haify-csi-leader-election, namespace: {{ .Release.Namespace }} }

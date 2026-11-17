@@ -1,4 +1,4 @@
-import { type Resource } from '../../services/api';
+import { type HaConfig, type Resource } from '../../services/api';
 import { type Guest } from './placement';
 
 // libvirt guests on Haify volumes. The libvirt hook (deploy/libvirt) labels
@@ -24,8 +24,16 @@ export function libvirtGuestsOf(resources: Resource[], ha: Set<string>): Guest[]
       title: domain,
       template: false,
       ha: rs.some((r) => ha.has(r.name)),
+      haResource: rs.find((r) => ha.has(r.name))?.name,
       disks: rs
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
         .map((resource) => ({ resource, label: resource.name, data: true })),
     }));
+}
+
+/** The libvirt guest an HA config runs, when it runs one. */
+export function guestOfHaConfig(config: HaConfig): string | undefined {
+  const agents = [...(config.ocfAgents ?? []), ...(config.startItems ?? []).flatMap((i) => (i.ocf ? [i.ocf] : []))];
+  const path = agents.find((a) => a.name === 'VirtualDomain')?.params?.config ?? '';
+  return /^\/etc\/libvirt\/qemu\/(.+)\.xml$/.exec(path)?.[1];
 }

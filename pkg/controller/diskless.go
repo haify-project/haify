@@ -263,6 +263,17 @@ func (rm *ResourceManager) DetachDisklessClient(ctx context.Context, resource, n
 		return fmt.Errorf("resource %q not found", resource)
 	}
 
+	// A client that was given a disk of its own (add-replica on it, or
+	// [self_heal] auto_diskful) is a replica now. Its former user may still
+	// ask for the detach it had planned — a CSI node plugin decides before it
+	// calls — and going on would take a replica down and cut it out of the
+	// config as if it held nothing.
+	if contains(splitCSV(dbRes.Nodes), node) {
+		log.Debug("ResourceManager.DetachDisklessClient: node holds a replica now, nothing to detach",
+			zap.String("resource", resource), zap.String("node", node))
+		return nil
+	}
+
 	rm.controller.logger.Info("Detaching diskless client from resource",
 		zap.String("resource", resource), zap.String("node", node))
 

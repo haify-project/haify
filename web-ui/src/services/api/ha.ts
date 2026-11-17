@@ -6,6 +6,8 @@ export interface HaConfig {
   mountPoint: string;
   fsType: string;
   services: string[];
+  ocfAgents?: OcfAgentSpec[];
+  startItems?: HaStartItem[];
 }
 
 // A configured OCF resource agent appended to an HA config's promoter
@@ -141,6 +143,45 @@ export interface HaTomlResponse {
   content: string;
 }
 
+// A live move of an HA guest, from GET /resources/{resource}/ha/migration.
+export interface HaMigration {
+  resource: string;
+  domain: string;
+  sourceNode: string;
+  targetNode: string;
+  /** checking, releasing, window, migrating, settling or done. */
+  phase: string;
+  message: string;
+  done?: boolean;
+  /** moved, stayed, restarted or attention; set once done. */
+  outcome?: string;
+  /** The node the guest runs on once the move is done. */
+  activeNode?: string;
+  progressPercent?: number;
+  /** Seconds since the epoch; a 64-bit number, so it arrives as a string. */
+  startedUnix?: string;
+  steps?: string[];
+}
+
+/** One replica's copy of an HA guest's definition. */
+export interface VmDefinitionNode {
+  node: string;
+  /** ok, missing, changed, uuid_mismatch or unreachable. */
+  state: string;
+  uuid?: string;
+  running?: boolean;
+  detail?: string;
+}
+
+export interface VmDefinition extends ApiResponse {
+  resource: string;
+  domain: string;
+  uuid: string;
+  sourceNode?: string;
+  consistent?: boolean;
+  nodes?: VmDefinitionNode[];
+}
+
 export interface HaConfigsResponse extends ApiResponse {
   configs: HaConfig[];
 }
@@ -177,6 +218,29 @@ export const haApi = (request: RequestFn) => ({
     request<ApiResponse>(`/resources/${resource}/ha/evict`, {
       method: 'POST',
       body: JSON.stringify({}),
+    }),
+
+  // Move an HA guest to another replica without stopping it. Returns once the
+  // move has started; getHaMigration follows it.
+  evictHaLive: (resource: string, targetNode?: string) =>
+    request<ApiResponse & { started?: boolean; sourceNode?: string; targetNode?: string }>(
+      `/resources/${encodeURIComponent(resource)}/ha/evict`,
+      { method: 'POST', body: JSON.stringify({ live: true, targetNode: targetNode ?? '' }) },
+    ),
+
+  getHaMigration: (resource: string) =>
+    request<ApiResponse & { migration?: HaMigration }>(
+      `/resources/${encodeURIComponent(resource)}/ha/migration`,
+    ),
+
+  // An HA guest's definition on each replica that may run it.
+  getVmDefinition: (resource: string) =>
+    request<VmDefinition>(`/resources/${encodeURIComponent(resource)}/ha/vm-definition`),
+
+  syncVmDefinition: (resource: string, fromNode?: string) =>
+    request<VmDefinition>(`/resources/${encodeURIComponent(resource)}/ha/vm-definition/sync`, {
+      method: 'POST',
+      body: JSON.stringify({ fromNode: fromNode ?? '' }),
     }),
 
   // ==================== HA OCF agents + promoter TOML ====================

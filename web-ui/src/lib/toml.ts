@@ -160,6 +160,23 @@ export function vipUnitFor(vip: string): string {
 }
 
 /**
+ * The unit drbd-reactor runs an OCF agent in: ocf.rs@<instance>_<resource>,
+ * escaped the way systemd escapes an instance name (reactorEscape in the
+ * controller).
+ */
+export function ocfUnitFor(instance: string, resource: string): string {
+  const name = `${instance}_${resource}`;
+  let out = '';
+  for (let i = 0; i < name.length; i++) {
+    const c = name[i];
+    if (c === '/') out += '-';
+    else if (/[:_0-9a-zA-Z]/.test(c) || (c === '.' && i > 0)) out += c;
+    else out += `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`;
+  }
+  return `ocf.rs@${out}.service`;
+}
+
+/**
  * Build the promoter TOML from an ORDERED start list where systemd/mount units
  * and OCF agents are peers — byte-identical to the backend
  * generatePromoterConfigOrdered (every entry indented two spaces, emitted in

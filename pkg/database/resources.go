@@ -14,6 +14,22 @@ import (
 // ==================== RESOURCE ====================
 
 // Resource represents a DRBD resource
+// JoiningReplica is a replica added to a resource that already held data,
+// until the first time it is seen UpToDate.
+type JoiningReplica struct {
+	Node  string
+	Since time.Time
+	// Committed is how many UpToDate replicas the resource has to keep while
+	// this one syncs: the number it had before the replica was added, or the
+	// number it is being brought back to.
+	Committed int
+	// Pending marks a record written before the add began, when the node is
+	// not yet listed as a replica. A replica can start syncing while the add
+	// is still running, so the record has to be there first; it is confirmed
+	// or withdrawn when the add returns.
+	Pending bool
+}
+
 type Resource struct {
 	Name     string
 	Port     int
@@ -45,6 +61,9 @@ type Resource struct {
 	// once the new one, on MoveTo, is UpToDate (pkg/controller/self_heal_move.go).
 	MoveFrom string `json:",omitempty"`
 	MoveTo   string `json:",omitempty"`
+	// Joining lists the replicas that were added to the resource and have
+	// not finished their first sync (pkg/controller/resource_joining.go).
+	Joining []JoiningReplica `json:",omitempty"`
 	// WAN replication (opt-in). All zero-valued for an ordinary LAN resource, so
 	// existing records deserialize as LAN and every WAN code path stays gated
 	// behind WANMode. See docs/design/wan-replication.md.
@@ -213,6 +232,46 @@ func (db *DB) SaveResource(ctx context.Context, resource *Resource) error {
 	})
 	db.log().Debug("DB.SaveResource: put", zap.String("bucket", resourcesBucket), zap.String("key", resource.Name),
 		zap.Int("size_bytes", len(data)), zap.Duration("took", time.Since(start)), zap.Error(err))
+	return err
+}
+
+// UpdateResourceJoining changes the record of a resource's joining replicas
+// in one transaction: change gets the resource as it is stored and returns
+// the list to store, and whether it differs. Reading and writing the whole
+// record around such a change, as SaveResource's callers do, would let it
+// overwrite whatever else was written to the resource in between; this
+// touches Joining and nothing else.
+func (db *DB) UpdateResourceJoining(ctx context.Context, name string, change func(r *Resource) ([]JoiningReplica, bool)) error {
+	db.log().Debug("DB.UpdateResourceJoining: updating", zap.String("resource", name))
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	changed, joining := false, 0
+	start := time.Now()
+	err := db.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(resourcesBucket))
+		data := b.Get([]byte(name))
+		if data == nil {
+			return fmt.Errorf("resource not found")
+		}
+		var resource Resource
+		if err := json.Unmarshal(data, &resource); err != nil {
+			return err
+		}
+		list, differs := change(&resource)
+		if !differs {
+			return nil
+		}
+		resource.Joining, resource.UpdatedAt = list, time.Now()
+		changed, joining = true, len(list)
+		out, err := json.Marshal(&resource)
+		if err != nil {
+			return fmt.Errorf("failed to marshal resource: %w", err)
+		}
+		return b.Put([]byte(name), out)
+	})
+	db.log().Debug("DB.UpdateResourceJoining: done", zap.String("bucket", resourcesBucket), zap.String("key", name),
+		zap.Bool("changed", changed), zap.Int("joining", joining), zap.Duration("took", time.Since(start)), zap.Error(err))
 	return err
 }
 

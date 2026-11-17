@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { ExternalLink, Play, TriangleAlert } from 'lucide-react';
 import { replicationSummary, TONE_TEXT } from '../resources/replication';
 import { Badge } from '@/components/ui/badge';
+import { LiveMoveButton } from './LiveMove';
 import {
   diskBytes,
   formatGiB,
@@ -87,6 +88,9 @@ function GuestRows({
               </Badge>
             ) : null}
             <GuestState guest={guest} node={node} local={local} />
+            {guest.haResource ? (
+              <LiveMoveButton resource={guest.haResource} guest={guest.title} runsOn={node} className="h-6 sm:hidden" />
+            ) : null}
             {href ? (
               <a
                 className="text-primary sm:hidden"
@@ -108,6 +112,9 @@ function GuestRows({
           </td>
         ))}
         <td className="hidden px-4 pt-3.5 pb-1.5 text-right sm:table-cell">
+          {guest.haResource ? (
+            <LiveMoveButton resource={guest.haResource} guest={guest.title} runsOn={node} className="h-7" />
+          ) : null}
           {href ? (
             <a
               className="inline-flex items-center gap-1 text-xs whitespace-nowrap text-primary hover:underline"

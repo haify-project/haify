@@ -21,8 +21,8 @@ import (
 )
 
 // runController runs the CSI controller plugin: provisioning, snapshots,
-// expansion, ModifyVolume, the volume health reporter and the HA failover
-// controller.
+// expansion, ModifyVolume, the volume health reporter, the HA failover
+// controller and the node drain controller.
 func runController(args []string) int {
 	fs := flag.NewFlagSet("controller", flag.ExitOnError)
 	endpoint := fs.String("endpoint", "unix:///csi/csi.sock", "CSI gRPC endpoint")
@@ -30,11 +30,13 @@ func runController(args []string) int {
 	healthInterval := fs.Duration("health-interval", time.Minute,
 		"how often to check each volume's replicas and post VolumeDegraded/VolumeRecovered events on its PVC and the Pods using it; 0 disables")
 	leaderElection := fs.Bool("leader-election", false,
-		"run the health reporter only on the replica holding the "+healthLeaseName+" Lease, and the HA controller on the one holding "+
-			haFailoverLeaseName+"; set it when the Deployment has more than one replica")
+		"run the health reporter only on the replica holding the "+healthLeaseName+" Lease, the HA controller on the one holding "+
+			haFailoverLeaseName+" and the drain controller on the one holding "+nodeDrainLeaseName+
+			"; set it when the Deployment has more than one replica")
 	leaderElectionNamespace := fs.String("leader-election-namespace", "",
 		"namespace of the Lease (default: the pod's own namespace)")
 	haFailover := registerHAFailoverFlags(fs)
+	nodeDrain := registerNodeDrainFlags(fs)
 	_ = fs.Parse(args)
 
 	log := logging.Production()
@@ -86,6 +88,16 @@ func runController(args []string) int {
 		startHAFailover(ctx, haify, haFailover, lease, log)
 	} else {
 		log.Debug("runController: HA failover disabled by --ha-failover=false")
+	}
+
+	if *nodeDrain.enabled {
+		lease := ""
+		if *leaderElection {
+			lease = leaseNamespace(*leaderElectionNamespace)
+		}
+		startNodeDrain(ctx, haify, nodeDrain, lease, log)
+	} else {
+		log.Debug("runController: node drain disabled by --node-drain=false")
 	}
 
 	if err := d.Run(ctx); err != nil {

@@ -46,6 +46,9 @@ type VolumeParams struct {
 	// kernel TLS (encryption on the wire). See encryption.go.
 	Encryption     bool
 	ReplicationTLS bool
+	// Shared makes the volume a ReadWriteMany filesystem served by an NFS
+	// gateway (shared.go).
+	Shared SharedParams
 }
 
 // ParseVolumeParams validates and defaults the StorageClass parameters.
@@ -116,9 +119,24 @@ func ParseVolumeParams(p map[string]string) (VolumeParams, error) {
 		return out, err
 	}
 	out.QoS = qos
+	if out.Shared, err = parseSharedParams(p); err != nil {
+		log.Debug("ParseVolumeParams: invalid shared volume parameters", zap.Error(err))
+		return out, err
+	}
+	if err := sharedParamConflict(out); err != nil {
+		log.Debug("ParseVolumeParams: parameter cannot be combined with a shared volume", zap.Error(err))
+		return out, err
+	}
+	if out.Shared.Enabled {
+		// Reached over NFS from any node, so nothing ties its Pods to the
+		// nodes holding the replicas: no topology, and capacity is the pool's.
+		log.Debug("ParseVolumeParams: shared volume, usable from every node")
+		out.AllowRemoteVolumeAccess = true
+	}
 	log.Debug("ParseVolumeParams: parsed", zap.String("pool", out.Pool), zap.Int("replicas", out.Replicas),
 		zap.String("storage_type", out.StorageType), zap.Bool("allow_remote", out.AllowRemoteVolumeAccess),
 		zap.Int("labels", len(out.ResourceLabels)), zap.Int("qos", len(out.QoS)), zap.String("pvc", out.PVC),
-		zap.Bool("encryption", out.Encryption), zap.Bool("replication_tls", out.ReplicationTLS))
+		zap.Bool("encryption", out.Encryption), zap.Bool("replication_tls", out.ReplicationTLS),
+		zap.Bool("shared", out.Shared.Enabled))
 	return out, nil
 }

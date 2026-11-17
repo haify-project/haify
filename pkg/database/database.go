@@ -229,8 +229,14 @@ type Node struct {
 	// Haify CSI node plugin running there applies its DRBD configuration
 	// locally and reports in over the API instead.
 	LocalAgent bool `json:",omitempty"`
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// MaintenanceBy, MaintenanceReason and MaintenanceSince say who put the
+	// node in maintenance, why and when ("admin", "kubernetes drain"). Empty
+	// for a node that is not in maintenance.
+	MaintenanceBy     string    `json:",omitempty"`
+	MaintenanceReason string    `json:",omitempty"`
+	MaintenanceSince  time.Time `json:",omitempty"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // SaveNode saves or updates a node

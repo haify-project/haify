@@ -332,9 +332,11 @@ func (c *Client) LVRemoveSnapshot(ctx context.Context, hosts []string, vgName, s
 //
 // origin names the volume each snapshot was taken from, which is what lets a
 // caller attribute snapshots to a resource rather than to a whole pool.
+// lv_tags comes last, after every column a caller already reads by position:
+// it carries the consistency mark of a guest's snapshot.
 func (c *Client) LVListSnapshots(ctx context.Context, hosts []string, vgName string) (*ExecResult, error) {
 	c.log().Debug("LVListSnapshots: listing snapshots", zap.Strings("hosts", hosts), zap.String("vg", vgName))
-	cmd := fmt.Sprintf("sudo lvs -S lv_role=snapshot -o lv_name,lv_size,lv_time,origin "+
+	cmd := fmt.Sprintf("sudo lvs -S lv_role=snapshot -o lv_name,lv_size,lv_time,origin,lv_tags "+
 		"--noheadings --nosuffix --units b --separator='|' %s", vgName)
 	return c.Exec(ctx, hosts, cmd)
 }

@@ -25,6 +25,11 @@ type NodeStateInfo struct {
 	// un-clearable alerts is worse than no alerting: it trains people to
 	// ignore the ones that matter.
 	ExpectedDiskless bool
+	// Joining marks a replica that was added to the resource and is still in
+	// its first sync: a copy on top of the ones the resource had, not one of
+	// them that fell behind. See joiningSync for when that keeps its sync
+	// from being raised as a degraded replica.
+	Joining bool
 	// SyncPercent is resync completion for this replica in 0..100, or nil when
 	// the status source carried no completion figure at all.
 	//
@@ -94,9 +99,25 @@ type ResourceStatusInfo struct {
 	// as a critical and a move is not a failover; degrade, quorum and sync
 	// alerts still apply.
 	IdleWithoutPrimary bool
+	// LiveMove marks a resource whose libvirt guest is being moved live
+	// (`haify ha evict --live`), or was a few minutes ago. A live move makes
+	// the target Primary beside the source and then demotes one of them,
+	// whether the guest moved or stayed: the Primary changes because the
+	// operator asked, which is not a failover and must not count toward a
+	// failover loop.
+	LiveMove bool
+	// LiveMoveEndedOn is the node a finished live move left the guest on, or
+	// "" while the move runs. After the move only a change that ends with the
+	// Primary there is the move's own: a node failing a minute later moves
+	// the Primary somewhere else, and that is a failover.
+	LiveMoveEndedOn string
 	// Owner is what the resource is to the system that created it, such as
 	// "PVC db/data-postgres-0"; empty when nothing names it.
 	Owner string
+	// CommittedReplicas is how many UpToDate replicas the resource has to
+	// keep while a replica is joining: the number it had before, or the
+	// number it is being brought back to. 0 when none is joining.
+	CommittedReplicas int
 }
 
 // Title is how messages name the resource: with its owner when it has one,

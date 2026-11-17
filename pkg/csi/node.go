@@ -32,6 +32,14 @@ type nodeServer struct {
 	// agent is set on a local-agent node, one the controller cannot SSH into:
 	// DRBD is then brought up and its role changed here (node_agent.go).
 	agent *LocalAgent
+
+	// nfsClient reports why this node cannot mount NFS, which a shared
+	// volume needs; nil looks for mount.nfs (node_shared.go).
+	nfsClient func() error
+
+	// topology adds this node's zone and region to what NodeGetInfo
+	// publishes; nil publishes the node alone (node_topology.go).
+	topology *NodeTopology
 }
 
 // NewNodeServer returns the CSI Node service for this node.
@@ -40,11 +48,13 @@ func NewNodeServer(b HaifyBackend, m Mounter, nodeName string, log *zap.Logger) 
 		singleWriter: map[string]string{}, qos: newQoSTracker(log)}
 }
 
-func (s *nodeServer) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
-	s.log.Debug("nodeServer.NodeGetInfo: reporting node", zap.String("node", s.nodeName))
+func (s *nodeServer) NodeGetInfo(ctx context.Context, _ *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
+	segments := s.nodeSegments(ctx)
+	s.log.Debug("nodeServer.NodeGetInfo: reporting node", zap.String("node", s.nodeName),
+		zap.String("zone", segments[TopologyKeyZone]), zap.String("region", segments[TopologyKeyRegion]))
 	return &csi.NodeGetInfoResponse{
 		NodeId:             s.nodeName,
-		AccessibleTopology: &csi.Topology{Segments: map[string]string{TopologyKeyNode: s.nodeName}},
+		AccessibleTopology: &csi.Topology{Segments: segments},
 	}, nil
 }
 
@@ -77,6 +87,11 @@ func (s *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolu
 	if req.GetVolumeCapability() == nil {
 		s.log.Debug("nodeServer.NodeStageVolume: rejected, no capability", zap.String("resource", res))
 		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
+	}
+	// A shared volume is mounted from its NFS gateway; DRBD is not touched
+	// on this node (node_shared.go).
+	if isSharedContext(req.GetVolumeContext()) {
+		return s.stageShared(ctx, req)
 	}
 
 	// If this node holds no local replica, the volume cannot be promoted here
@@ -189,6 +204,12 @@ func (s *nodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstage
 	if res == "" || staging == "" {
 		s.log.Debug("nodeServer.NodeUnstageVolume: rejected, missing volume id or staging path")
 		return nil, status.Error(codes.InvalidArgument, "volume id and staging path are required")
+	}
+	if shared, err := s.unstageShared(ctx, res, staging); shared {
+		if err != nil {
+			return nil, err
+		}
+		return &csi.NodeUnstageVolumeResponse{}, nil
 	}
 	if err := s.mounter.Unmount(staging); err != nil {
 		s.log.Debug("nodeServer.NodeUnstageVolume: unmount failed", zap.String("staging", staging), zap.Error(err))
@@ -329,44 +350,6 @@ func (s *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpubli
 		return nil, status.Errorf(codes.Internal, "remove target: %v", err)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
-}
-
-// NodeExpandVolume resizes the filesystem at the staging path to fill the
-// expanded block device. Called by kubelet after ControllerExpandVolume
-// succeeds and the volume is re-staged on this node.
-func (s *nodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
-	s.log.Debug("nodeServer.NodeExpandVolume: start", zap.String("resource", req.GetVolumeId()),
-		zap.String("path", req.GetVolumePath()), zap.Int64("required_bytes", req.GetCapacityRange().GetRequiredBytes()))
-	if req.GetVolumeId() == "" || req.GetVolumePath() == "" {
-		s.log.Debug("nodeServer.NodeExpandVolume: rejected, missing volume id or path")
-		return nil, status.Error(codes.InvalidArgument, "volume id and volume path are required")
-	}
-
-	// A raw block volume has no filesystem to grow: the device itself got
-	// bigger in ControllerExpandVolume, and what the Pod sees is that device.
-	if req.GetVolumeCapability().GetBlock() != nil {
-		s.log.Debug("nodeServer.NodeExpandVolume: raw block, no filesystem to grow", zap.String("resource", req.GetVolumeId()))
-		return &csi.NodeExpandVolumeResponse{CapacityBytes: req.GetCapacityRange().GetRequiredBytes()}, nil
-	}
-
-	// Resolve the block device for this resource so resize2fs / xfs_growfs
-	// knows which device backs the mount.
-	devicePath, err := s.deviceFor(ctx, req.GetVolumeId())
-	if err != nil {
-		s.log.Debug("nodeServer.NodeExpandVolume: no device", zap.String("resource", req.GetVolumeId()), zap.Error(err))
-		return nil, err
-	}
-
-	start := time.Now()
-	err = s.mounter.ResizeFS(devicePath, req.GetVolumePath())
-	s.log.Debug("nodeServer.NodeExpandVolume: filesystem resize returned", zap.String("device", devicePath),
-		zap.String("path", req.GetVolumePath()), zap.Duration("took", time.Since(start)), zap.Error(err))
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "resize filesystem: %v", err)
-	}
-
-	newSize := req.GetCapacityRange().GetRequiredBytes()
-	return &csi.NodeExpandVolumeResponse{CapacityBytes: newSize}, nil
 }
 
 // deviceFor returns the /dev/drbdX path of a resource's first volume.

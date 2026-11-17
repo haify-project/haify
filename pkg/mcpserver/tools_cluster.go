@@ -19,6 +19,10 @@ type nodeOut struct {
 	Hostname string `json:"hostname,omitempty"`
 	State    string `json:"state"`
 	Version  string `json:"version,omitempty"`
+	// Set for a node in maintenance.
+	MaintenanceBy     string `json:"maintenance_by,omitempty" jsonschema:"who drained the node, e.g. a user name or kubernetes drain"`
+	MaintenanceReason string `json:"maintenance_reason,omitempty"`
+	MaintenanceSince  string `json:"maintenance_since,omitempty" jsonschema:"RFC3339"`
 }
 
 type nodeListOut struct {
@@ -132,6 +136,10 @@ func (s *Server) registerClusterTools(srv *mcp.Server) {
 					Hostname: n.Hostname,
 					State:    n.State,
 					Version:  n.Version,
+
+					MaintenanceBy:     n.GetMaintenanceBy(),
+					MaintenanceReason: n.GetMaintenanceReason(),
+					MaintenanceSince:  unixRFC3339(n.GetMaintenanceSince()),
 				})
 			}
 			s.logger.Debug("haify_node_list: listed", zap.Int("count", len(out.Nodes)))

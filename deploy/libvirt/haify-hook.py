@@ -28,6 +28,11 @@ own quorum still guards; a migration then needs the controller.
 
 A resource that a drbd-reactor promoter manages on this node (haify ha create,
 and so `haify ha create --vm`) is left alone: drbd-reactor owns its role.
+So is a resource whose HA guest the controller is moving live
+(`haify ha evict --live`): for that time the promoter is disabled and the
+controller itself opens the dual-primary window, promotes and demotes. It
+says so with a marker in /run/haify-libvirt/controlled/ that names when the
+move must be over, and a marker past that time is ignored.
 
 Configuration: /etc/haify/libvirt.conf, KEY=VALUE lines:
   CONTROLLER  REST addresses of haify-controller, comma-separated,
@@ -134,6 +139,21 @@ def reactor_managed(resource, reactor_dir=None):
         except OSError:
             continue
     return False
+
+
+def controller_driven(resource, state_dir=None, now=None):
+    """True while the controller is moving the HA guest on resource itself.
+
+    The marker holds the time (seconds since the epoch) the move must be over
+    by. One that is past it, or unreadable, counts for nothing: a marker left
+    behind must not keep the hook away from the resource for good."""
+    path = os.path.join(state_dir or STATE_DIR, "controlled", resource)
+    try:
+        with open(path) as f:
+            deadline = float(f.read().strip())
+    except (OSError, ValueError):
+        return False
+    return (now if now is not None else time.time()) < deadline
 
 
 # The controller is on the storage network, so it is reached directly: a host
@@ -342,7 +362,7 @@ def demote(ctl, node, domain, resource):
 
 
 def handle(domain, op, sub, domain_xml, cfg, ctl):
-    resources = [r for r in haify_disks(domain_xml) if not reactor_managed(r)]
+    resources = [r for r in haify_disks(domain_xml) if not reactor_managed(r) and not controller_driven(r)]
     if not resources:
         return
     node = cfg["NODE"]

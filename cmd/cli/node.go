@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -85,6 +84,10 @@ func nodeList() *cobra.Command {
 				if node.OfflineSince > 0 {
 					state += " since " + formatLastSeen(node.OfflineSince)
 				}
+				// A drained node says whose doing it is.
+				if by := maintenanceOrigin(node); by != "" {
+					state += " (" + by + ")"
+				}
 				version := node.Version
 				if node.LocalAgent && version == "" {
 					version = "local agent"
@@ -151,6 +154,12 @@ func nodeGet() *cobra.Command {
 			fmt.Printf("Last Seen: %s\n", formatLastSeen(foundNode.LastSeen))
 			if foundNode.OfflineSince > 0 {
 				fmt.Printf("Offline since: %s\n", formatLastSeen(foundNode.OfflineSince))
+			}
+			if by := maintenanceOrigin(foundNode); by != "" {
+				fmt.Printf("Drained by: %s\n", by)
+			}
+			if foundNode.MaintenanceSince > 0 {
+				fmt.Printf("Drained since: %s\n", formatLastSeen(foundNode.MaintenanceSince))
 			}
 			if len(foundNode.Labels) > 0 {
 				fmt.Printf("Labels:    %s\n", formatLabels(foundNode.Labels))
@@ -358,81 +367,6 @@ role so you can move or remove them first.`,
 	cmd.Flags().StringVar(&address, "address", "", "Node address (same as passing it as the argument)")
 
 	return cmd
-}
-
-func nodeDrain() *cobra.Command {
-	return &cobra.Command{
-		Use:   "drain <node>",
-		Short: "Mark a node maintenance and move every Primary resource off it",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			log := zap.L()
-			log.Debug("nodeDrain: running command", zap.Strings("args", args))
-			node := args[0]
-			ctx, cancel := context.WithTimeout(context.Background(), nodeOpTimeout)
-			defer cancel()
-
-			haifyClient, err := newHaifyClient()
-			if err != nil {
-				log.Debug("nodeDrain: newHaifyClient failed", zap.Error(err))
-				return fmt.Errorf("failed to connect to controller: %w", err)
-			}
-			defer closeClient(haifyClient)
-
-			moved, err := haifyClient.DrainNode(ctx, node)
-			if err != nil {
-				log.Debug("nodeDrain: DrainNode failed", zap.String("node", node), zap.Strings("moved", moved), zap.Error(err))
-				for _, r := range moved {
-					fmt.Printf("  moved: %s\n", r)
-				}
-				return fmt.Errorf("drain incomplete: %w", err)
-			}
-
-			log.Debug("nodeDrain: node drained", zap.String("node", node), zap.Strings("moved", moved))
-			if len(moved) == 0 {
-				fmt.Printf("✓ Node %q drained (no active primaries to move)\n", node)
-			} else {
-				fmt.Printf("✓ Node %q drained — %d resource(s) moved:\n", node, len(moved))
-				for _, r := range moved {
-					fmt.Printf("  - %s\n", r)
-				}
-			}
-			fmt.Printf("  Node is now in maintenance mode. Run \"haify node undrain %s\" when ready.\n", node)
-			log.Debug("nodeDrain: done")
-			return nil
-		},
-	}
-}
-
-func nodeUndrain() *cobra.Command {
-	return &cobra.Command{
-		Use:   "undrain <node>",
-		Short: "Return a drained node to active service",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			log := zap.L()
-			log.Debug("nodeUndrain: running command", zap.Strings("args", args))
-			node := args[0]
-			ctx, cancel := context.WithTimeout(context.Background(), nodeOpTimeout)
-			defer cancel()
-
-			haifyClient, err := newHaifyClient()
-			if err != nil {
-				log.Debug("nodeUndrain: newHaifyClient failed", zap.Error(err))
-				return fmt.Errorf("failed to connect to controller: %w", err)
-			}
-			defer closeClient(haifyClient)
-
-			if err := haifyClient.UndrainNode(ctx, node); err != nil {
-				log.Debug("nodeUndrain: UndrainNode failed", zap.Error(err))
-				return fmt.Errorf("undrain failed: %w", err)
-			}
-
-			fmt.Printf("✓ Node %q returned to service\n", node)
-			log.Debug("nodeUndrain: done")
-			return nil
-		},
-	}
 }
 
 // formatLastSeen renders a node's last-contact Unix time for a person: the

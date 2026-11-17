@@ -226,7 +226,7 @@ func backupFromManifest(text, dir, target string, sizes map[string]uint64) (*dat
 		ID: m.ID, Resource: m.Resource, Target: target, Node: m.Node, Backend: m.Backend,
 		State: database.BackupStateCompleted, Prefix: dir, Kind: kind, Parent: m.Parent, Schedule: m.Schedule,
 		TotalBytes: m.TotalBytes, StartedAt: started, FinishedAt: finished,
-		LockMode: m.LockMode,
+		LockMode: m.LockMode, Consistency: knownConsistency(m.Consistency),
 	}
 	if m.RetainUntil != "" {
 		if t, err := time.Parse(time.RFC3339, m.RetainUntil); err == nil {

@@ -237,7 +237,7 @@ halfway if you use another order. The runbooks are built into the binary from
 
 | Area | read | operate adds | admin adds |
 | ---- | ---- | ------------ | ---------- |
-| Cluster, nodes | `haify_node_list`, `haify_node_health_check`, `haify_diagnose`, `haify_inspect_report`, `haify_inspect_run`, `haify_event_list`, `haify_log_list`, `haify_audit_list`, `haify_ocf_agent_list`, `haify_ocf_agent_metadata`, `haify_notify_channel_list`, `haify_replication_tls_status`, `haify_runbook` | `haify_node_register`, `haify_node_set_labels`, `haify_node_set_replication_paths`, `haify_node_undrain`, `haify_notify_channel_test` | `haify_node_drain`, `haify_node_unregister`, `haify_node_set_address` |
+| Cluster, nodes | `haify_node_list`, `haify_node_health_check`, `haify_diagnose`, `haify_inspect_report`, `haify_inspect_run`, `haify_event_list`, `haify_log_list`, `haify_audit_list`, `haify_self_heal_status`, `haify_ocf_agent_list`, `haify_ocf_agent_metadata`, `haify_notify_channel_list`, `haify_replication_tls_status`, `haify_runbook` | `haify_node_register`, `haify_node_set_labels`, `haify_node_set_replication_paths`, `haify_node_undrain`, `haify_notify_channel_test` | `haify_node_drain`, `haify_node_unregister`, `haify_node_set_address` |
 | LVM pools | `haify_pool_list`, `haify_node_disks`, `haify_pool_disks`, `haify_storage_jobs` | `haify_pool_create`, `haify_pool_add_disk`, `haify_pool_add_cache`, `haify_pool_remove_disk`, `haify_pool_replace_disk`, `haify_pool_trim` | `haify_pool_delete`, `haify_pool_remove_cache`, `haify_pool_convert_thin` |
 | ZFS | `haify_zfs_pool_list` | `haify_zfs_volume_create`, `haify_zfs_volume_resize`, `haify_zfs_dataset_create`, `haify_zfs_snapshot_clone` | `haify_zfs_pool_delete`, `haify_zfs_dataset_delete` |
 | Resources, volumes | `haify_resource_list`, `haify_resource_status`, `haify_resource_get_options` | `haify_resource_create`, `haify_resource_adopt`, `haify_resource_add_volume`, `haify_resource_resize_volume`, `haify_resource_set_options`, `haify_resource_mount`, `haify_resource_dual_primary`, `haify_resource_repair`, `haify_resource_verify`, `haify_resource_tls`, `haify_resource_set_labels` | `haify_resource_delete`, `haify_resource_remove_volume`, `haify_resource_move_volume`, `haify_resource_create_filesystem`, `haify_resource_set_role`, `haify_resource_unmount` |
@@ -247,7 +247,7 @@ halfway if you use another order. The runbooks are built into the binary from
 | Backups | `haify_backup_list`, `haify_backup_target_list`, `haify_backup_schedule_list` | `haify_backup_create`, `haify_backup_import`, `haify_backup_schedule_create`, `haify_resource_ship` | `haify_backup_delete`, `haify_backup_restore`, `haify_backup_target_delete`, `haify_backup_schedule_delete` |
 | Gateways | `haify_gateway_list`, `haify_gateway_get`, `haify_nfs_export_list`, `haify_iscsi_lun_list`, `haify_iscsi_initiator_list`, `haify_iscsi_chap_get`, `haify_nvme_namespace_list`, `haify_nvme_host_list`, `haify_gateway_smb_users` | `haify_gateway_create_nfs`, `haify_gateway_create_iscsi`, `haify_gateway_create_nvme`, `haify_gateway_create_smb`, `haify_gateway_start`, `haify_iscsi_chap` | `haify_gateway_stop`, `haify_gateway_delete`, `haify_nfs_exports`, `haify_iscsi_luns`, `haify_iscsi_initiators`, `haify_nvme_namespaces`, `haify_nvme_hosts`, `haify_gateway_smb_shares` |
 | Database apps | `haify_app_list`, `haify_app_status` | `haify_app_create`, `haify_app_snapshot` | `haify_app_failover`, `haify_app_delete` |
-| HA, Self-HA | `haify_ha_list`, `haify_ha_status`, `haify_ha_promoter_status`, `haify_ha_get_toml`, `haify_self_ha_status` | `haify_ha_create` | `haify_ha_evict`, `haify_ha_delete`, `haify_ha_sync_toml`, `haify_self_ha_enable`, `haify_self_ha_disable` |
+| HA, Self-HA | `haify_ha_list`, `haify_ha_status`, `haify_ha_promoter_status`, `haify_ha_get_toml`, `haify_ha_migration_status`, `haify_vm_definition_status`, `haify_self_ha_status` | `haify_ha_create`, `haify_vm_definition_sync` | `haify_ha_evict`, `haify_ha_delete`, `haify_ha_sync_toml`, `haify_self_ha_enable`, `haify_self_ha_disable` |
 
 `haify_nfs_exports`, `haify_iscsi_luns`, `haify_iscsi_initiators`,
 `haify_nvme_namespaces` and `haify_nvme_hosts` add and remove entries, so they
@@ -257,6 +257,33 @@ the same answer at `read`.
 `haify_iscsi_chap` sets one-way CHAP and needs `operate`. Mutual CHAP is
 refused. It still accepts `get`, which `haify_iscsi_chap_get` also answers at
 `read`. Neither tool returns the password.
+
+`haify_event_list` filters by `types`. The types are the ones the user guide
+lists under [Alerts and notifications](user-guide.md#16-alerts-and-notifications).
+Two of them are about the libvirt guest that uses a resource and are raised
+only when someone has to act: `resource.guest_resize_failed` (a volume was
+grown and its running guest still sees the old size; the message says what to
+run) and `resource.guest_thaw_failed` (a guest frozen for a snapshot did not
+thaw when asked and is thawed by the node's watchdog).
+
+What a tool did beyond its one-line result is in the result too.
+`haify_resource_resize_volume` says whether a gateway's filesystem was grown
+and whether a running guest was shown the new size, and
+`haify_snapshot_create` says whether a guest's snapshot is filesystem- or
+crash-consistent and why. `haify_snapshot_list` and `haify_backup_list` carry
+`consistency` for the snapshots and backups of a guest's volumes, and leave
+it out for every other volume.
+
+`haify_self_heal_status` answers what self-healing is waiting for: how long
+until an offline node's replicas are replaced, how long a diskless client has
+been in use and how long until it gets a replica of its own, why one is
+passed over, and how far a swap or a replica move has got.
+
+`haify_node_drain` takes `keep_in_use` for a node that still runs workloads:
+the node stops taking replicas, what Haify itself keeps Primary moves, and
+the volumes a hypervisor or Kubernetes holds for a running VM or Pod are
+returned in `left` with the reason. `haify_node_list` shows who drained a
+node and why.
 
 ### What has no tool
 

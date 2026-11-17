@@ -79,6 +79,9 @@ const (
 	HaifyController_UnmountResource_FullMethodName           = "/v1.HaifyController/UnmountResource"
 	HaifyController_MakeHa_FullMethodName                    = "/v1.HaifyController/MakeHa"
 	HaifyController_EvictHa_FullMethodName                   = "/v1.HaifyController/EvictHa"
+	HaifyController_GetHaMigration_FullMethodName            = "/v1.HaifyController/GetHaMigration"
+	HaifyController_GetVmDefinition_FullMethodName           = "/v1.HaifyController/GetVmDefinition"
+	HaifyController_SyncVmDefinition_FullMethodName          = "/v1.HaifyController/SyncVmDefinition"
 	HaifyController_SetHaPreferredNodes_FullMethodName       = "/v1.HaifyController/SetHaPreferredNodes"
 	HaifyController_SetTiebreaker_FullMethodName             = "/v1.HaifyController/SetTiebreaker"
 	HaifyController_SetupReplicationTLS_FullMethodName       = "/v1.HaifyController/SetupReplicationTLS"
@@ -172,6 +175,7 @@ const (
 	HaifyController_SetNFSExportQuota_FullMethodName         = "/v1.HaifyController/SetNFSExportQuota"
 	HaifyController_MoveReplica_FullMethodName               = "/v1.HaifyController/MoveReplica"
 	HaifyController_PlanRebalance_FullMethodName             = "/v1.HaifyController/PlanRebalance"
+	HaifyController_GetSelfHealStatus_FullMethodName         = "/v1.HaifyController/GetSelfHealStatus"
 	HaifyController_MarkNodeLost_FullMethodName              = "/v1.HaifyController/MarkNodeLost"
 	HaifyController_RestoreNode_FullMethodName               = "/v1.HaifyController/RestoreNode"
 	HaifyController_DrainNode_FullMethodName                 = "/v1.HaifyController/DrainNode"
@@ -312,6 +316,15 @@ type HaifyControllerClient interface {
 	UnmountResource(ctx context.Context, in *UnmountResourceRequest, opts ...grpc.CallOption) (*UnmountResourceResponse, error)
 	MakeHa(ctx context.Context, in *MakeHaRequest, opts ...grpc.CallOption) (*MakeHaResponse, error)
 	EvictHa(ctx context.Context, in *EvictHaRequest, opts ...grpc.CallOption) (*EvictHaResponse, error)
+	// The live migration of an HA guest that EvictHa started with live set:
+	// the one running, or the last one that ran.
+	GetHaMigration(ctx context.Context, in *GetHaMigrationRequest, opts ...grpc.CallOption) (*GetHaMigrationResponse, error)
+	// The libvirt definition of an HA guest: what the controller keeps and how
+	// each replica's own copy compares with it.
+	GetVmDefinition(ctx context.Context, in *GetVmDefinitionRequest, opts ...grpc.CallOption) (*VmDefinitionResponse, error)
+	// Takes the guest's definition from one node and defines it on every
+	// other replica.
+	SyncVmDefinition(ctx context.Context, in *SyncVmDefinitionRequest, opts ...grpc.CallOption) (*VmDefinitionResponse, error)
 	// Orders where drbd-reactor starts an HA resource (preferred-nodes). A
 	// preference, not a fence; DRBD quorum is what prevents split brain.
 	SetHaPreferredNodes(ctx context.Context, in *SetHaPreferredNodesRequest, opts ...grpc.CallOption) (*SetHaPreferredNodesResponse, error)
@@ -467,6 +480,11 @@ type HaifyControllerClient interface {
 	SetNFSExportQuota(ctx context.Context, in *SetNFSExportQuotaRequest, opts ...grpc.CallOption) (*SetNFSExportQuotaResponse, error)
 	MoveReplica(ctx context.Context, in *MoveReplicaRequest, opts ...grpc.CallOption) (*MoveReplicaResponse, error)
 	PlanRebalance(ctx context.Context, in *PlanRebalanceRequest, opts ...grpc.CallOption) (*PlanRebalanceResponse, error)
+	// GetSelfHealStatus reports what self-healing is doing and waiting for:
+	// auto-evict's offline nodes, the replica moves under way, and for
+	// auto-diskful every client it watches, why one is passed over, the swaps
+	// in progress and the resources in their cooldown.
+	GetSelfHealStatus(ctx context.Context, in *GetSelfHealStatusRequest, opts ...grpc.CallOption) (*GetSelfHealStatusResponse, error)
 	MarkNodeLost(ctx context.Context, in *MarkNodeLostRequest, opts ...grpc.CallOption) (*MarkNodeLostResponse, error)
 	RestoreNode(ctx context.Context, in *RestoreNodeRequest, opts ...grpc.CallOption) (*RestoreNodeResponse, error)
 	DrainNode(ctx context.Context, in *DrainNodeRequest, opts ...grpc.CallOption) (*DrainNodeResponse, error)
@@ -1208,6 +1226,36 @@ func (c *haifyControllerClient) EvictHa(ctx context.Context, in *EvictHaRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EvictHaResponse)
 	err := c.cc.Invoke(ctx, HaifyController_EvictHa_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) GetHaMigration(ctx context.Context, in *GetHaMigrationRequest, opts ...grpc.CallOption) (*GetHaMigrationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetHaMigrationResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetHaMigration_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) GetVmDefinition(ctx context.Context, in *GetVmDefinitionRequest, opts ...grpc.CallOption) (*VmDefinitionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VmDefinitionResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetVmDefinition_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *haifyControllerClient) SyncVmDefinition(ctx context.Context, in *SyncVmDefinitionRequest, opts ...grpc.CallOption) (*VmDefinitionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VmDefinitionResponse)
+	err := c.cc.Invoke(ctx, HaifyController_SyncVmDefinition_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2144,6 +2192,16 @@ func (c *haifyControllerClient) PlanRebalance(ctx context.Context, in *PlanRebal
 	return out, nil
 }
 
+func (c *haifyControllerClient) GetSelfHealStatus(ctx context.Context, in *GetSelfHealStatusRequest, opts ...grpc.CallOption) (*GetSelfHealStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSelfHealStatusResponse)
+	err := c.cc.Invoke(ctx, HaifyController_GetSelfHealStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *haifyControllerClient) MarkNodeLost(ctx context.Context, in *MarkNodeLostRequest, opts ...grpc.CallOption) (*MarkNodeLostResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MarkNodeLostResponse)
@@ -2669,6 +2727,15 @@ type HaifyControllerServer interface {
 	UnmountResource(context.Context, *UnmountResourceRequest) (*UnmountResourceResponse, error)
 	MakeHa(context.Context, *MakeHaRequest) (*MakeHaResponse, error)
 	EvictHa(context.Context, *EvictHaRequest) (*EvictHaResponse, error)
+	// The live migration of an HA guest that EvictHa started with live set:
+	// the one running, or the last one that ran.
+	GetHaMigration(context.Context, *GetHaMigrationRequest) (*GetHaMigrationResponse, error)
+	// The libvirt definition of an HA guest: what the controller keeps and how
+	// each replica's own copy compares with it.
+	GetVmDefinition(context.Context, *GetVmDefinitionRequest) (*VmDefinitionResponse, error)
+	// Takes the guest's definition from one node and defines it on every
+	// other replica.
+	SyncVmDefinition(context.Context, *SyncVmDefinitionRequest) (*VmDefinitionResponse, error)
 	// Orders where drbd-reactor starts an HA resource (preferred-nodes). A
 	// preference, not a fence; DRBD quorum is what prevents split brain.
 	SetHaPreferredNodes(context.Context, *SetHaPreferredNodesRequest) (*SetHaPreferredNodesResponse, error)
@@ -2824,6 +2891,11 @@ type HaifyControllerServer interface {
 	SetNFSExportQuota(context.Context, *SetNFSExportQuotaRequest) (*SetNFSExportQuotaResponse, error)
 	MoveReplica(context.Context, *MoveReplicaRequest) (*MoveReplicaResponse, error)
 	PlanRebalance(context.Context, *PlanRebalanceRequest) (*PlanRebalanceResponse, error)
+	// GetSelfHealStatus reports what self-healing is doing and waiting for:
+	// auto-evict's offline nodes, the replica moves under way, and for
+	// auto-diskful every client it watches, why one is passed over, the swaps
+	// in progress and the resources in their cooldown.
+	GetSelfHealStatus(context.Context, *GetSelfHealStatusRequest) (*GetSelfHealStatusResponse, error)
 	MarkNodeLost(context.Context, *MarkNodeLostRequest) (*MarkNodeLostResponse, error)
 	RestoreNode(context.Context, *RestoreNodeRequest) (*RestoreNodeResponse, error)
 	DrainNode(context.Context, *DrainNodeRequest) (*DrainNodeResponse, error)
@@ -3151,6 +3223,15 @@ func (UnimplementedHaifyControllerServer) MakeHa(context.Context, *MakeHaRequest
 func (UnimplementedHaifyControllerServer) EvictHa(context.Context, *EvictHaRequest) (*EvictHaResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method EvictHa not implemented")
 }
+func (UnimplementedHaifyControllerServer) GetHaMigration(context.Context, *GetHaMigrationRequest) (*GetHaMigrationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetHaMigration not implemented")
+}
+func (UnimplementedHaifyControllerServer) GetVmDefinition(context.Context, *GetVmDefinitionRequest) (*VmDefinitionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetVmDefinition not implemented")
+}
+func (UnimplementedHaifyControllerServer) SyncVmDefinition(context.Context, *SyncVmDefinitionRequest) (*VmDefinitionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SyncVmDefinition not implemented")
+}
 func (UnimplementedHaifyControllerServer) SetHaPreferredNodes(context.Context, *SetHaPreferredNodesRequest) (*SetHaPreferredNodesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetHaPreferredNodes not implemented")
 }
@@ -3429,6 +3510,9 @@ func (UnimplementedHaifyControllerServer) MoveReplica(context.Context, *MoveRepl
 }
 func (UnimplementedHaifyControllerServer) PlanRebalance(context.Context, *PlanRebalanceRequest) (*PlanRebalanceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PlanRebalance not implemented")
+}
+func (UnimplementedHaifyControllerServer) GetSelfHealStatus(context.Context, *GetSelfHealStatusRequest) (*GetSelfHealStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSelfHealStatus not implemented")
 }
 func (UnimplementedHaifyControllerServer) MarkNodeLost(context.Context, *MarkNodeLostRequest) (*MarkNodeLostResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method MarkNodeLost not implemented")
@@ -4653,6 +4737,60 @@ func _HaifyController_EvictHa_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HaifyControllerServer).EvictHa(ctx, req.(*EvictHaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_GetHaMigration_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetHaMigrationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetHaMigration(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetHaMigration_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetHaMigration(ctx, req.(*GetHaMigrationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_GetVmDefinition_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetVmDefinitionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetVmDefinition(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetVmDefinition_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetVmDefinition(ctx, req.(*GetVmDefinitionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HaifyController_SyncVmDefinition_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SyncVmDefinitionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).SyncVmDefinition(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_SyncVmDefinition_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).SyncVmDefinition(ctx, req.(*SyncVmDefinitionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6331,6 +6469,24 @@ func _HaifyController_PlanRebalance_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HaifyController_GetSelfHealStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSelfHealStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HaifyControllerServer).GetSelfHealStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HaifyController_GetSelfHealStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HaifyControllerServer).GetSelfHealStatus(ctx, req.(*GetSelfHealStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _HaifyController_MarkNodeLost_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(MarkNodeLostRequest)
 	if err := dec(in); err != nil {
@@ -7328,6 +7484,18 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _HaifyController_EvictHa_Handler,
 		},
 		{
+			MethodName: "GetHaMigration",
+			Handler:    _HaifyController_GetHaMigration_Handler,
+		},
+		{
+			MethodName: "GetVmDefinition",
+			Handler:    _HaifyController_GetVmDefinition_Handler,
+		},
+		{
+			MethodName: "SyncVmDefinition",
+			Handler:    _HaifyController_SyncVmDefinition_Handler,
+		},
+		{
 			MethodName: "SetHaPreferredNodes",
 			Handler:    _HaifyController_SetHaPreferredNodes_Handler,
 		},
@@ -7698,6 +7866,10 @@ var HaifyController_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PlanRebalance",
 			Handler:    _HaifyController_PlanRebalance_Handler,
+		},
+		{
+			MethodName: "GetSelfHealStatus",
+			Handler:    _HaifyController_GetSelfHealStatus_Handler,
 		},
 		{
 			MethodName: "MarkNodeLost",

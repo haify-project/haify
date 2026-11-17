@@ -180,6 +180,12 @@ func (t *qosTracker) apply(device, target string, limits map[string]string) {
 // fails the publish: a missing limit is no reason to keep a Pod from its data.
 func (s *nodeServer) publishQoS(ctx context.Context, req *csi.NodePublishVolumeRequest, device string) {
 	id, target := req.GetVolumeId(), req.GetTargetPath()
+	if isSharedContext(req.GetVolumeContext()) {
+		// Mounted over NFS: there is no block device of the volume on this
+		// node to limit, and a shared volume carries no limits.
+		s.log.Debug("nodeServer.publishQoS: shared volume, no I/O limits", zap.String("resource", id), zap.String("target", target))
+		return
+	}
 	rec := qosRecord{VolumeID: id, Target: target, Context: qosContext(req.GetVolumeContext())}
 	start := time.Now()
 	r, err := s.backend.GetResource(ctx, id)

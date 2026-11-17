@@ -65,6 +65,11 @@ the target has confirmed it holds exactly as many bytes as were sent. A run that
 fails part-way is recorded as failed and its objects are removed; it is never
 offered for restore.
 
+A backup is crash-consistent: it holds what a power cut at that instant would
+have left. When a libvirt guest uses the resource, the guest's filesystems are
+frozen while the snapshots are taken and the backup is filesystem-consistent;
+the output and ` + "`haify backup list`" + ` say which a guest's backup is.
+
 ` + backupLimits,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log := zap.L()
@@ -108,6 +113,9 @@ offered for restore.
 				_, _ = fmt.Fprintf(out, "  kind:     incremental on %s, %s changed\n", info.Parent, humanBytes(changedBytes(info)))
 			} else {
 				_, _ = fmt.Fprintf(out, "  kind:     full\n")
+			}
+			if info.Consistency != "" {
+				_, _ = fmt.Fprintf(out, "  consistency: %s\n", backupConsistency(info.Consistency))
 			}
 			log.Debug("backupCreateCommand: done")
 			return nil
@@ -163,6 +171,9 @@ func backupListCommand() *cobra.Command {
 				}
 				if b.Schedule != "" {
 					_, _ = fmt.Fprintf(out, "  schedule=%s\n", b.Schedule)
+				}
+				if b.Consistency != "" {
+					_, _ = fmt.Fprintf(out, "  consistency=%s\n", b.Consistency)
 				}
 				if b.LockMode != "" {
 					_, _ = fmt.Fprintf(out, "  locked (%s) until %s\n", b.LockMode, b.RetainUntil)
@@ -293,4 +304,16 @@ func changedBytes(b *haifypb.BackupInfo) uint64 {
 	}
 	zap.L().Debug("changedBytes: summed", zap.String("backup_id", b.Id), zap.Int("volumes", len(b.Volumes)), zap.Uint64("changed_bytes", n))
 	return n
+}
+
+// backupConsistency says what a guest's backup holds. A backup of a resource
+// that belongs to no guest records nothing and is not described.
+func backupConsistency(c string) string {
+	switch c {
+	case "filesystem":
+		return "filesystem (the guest was frozen while the snapshots were taken)"
+	case "crash":
+		return "crash (the guest could not be frozen; the controller's log says why)"
+	}
+	return c
 }

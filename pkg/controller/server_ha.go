@@ -58,9 +58,16 @@ func (s *Server) MakeHa(ctx context.Context, req *haifypb.MakeHaRequest) (*haify
 			log.Debug("MakeHa: start item has neither agent nor unit, skipped")
 		}
 	}
+	// A chain that runs a libvirt guest needs the guest defined on every
+	// replica before a promoter there could try to start it.
+	if err := s.resources.PrepareVMDefinition(ctx, req.Resource, ocfAgents, startItems, req.VmDefinitionNode); err != nil {
+		log.Debug("MakeHa: guest definition not in place", zap.String("resource", req.Resource), zap.Error(err))
+		return &haifypb.MakeHaResponse{Success: false, Message: err.Error()}, nil
+	}
 	configPath, err := s.resources.MakeHa(ctx, req.Resource, req.Services, req.MountPoint, req.Fstype, req.Vip, ocfAgents, startItems)
 	if err != nil {
 		log.Debug("MakeHa: failed", zap.String("resource", req.Resource), zap.Error(err))
+		s.resources.dropUnusedVMDefinition(ctx, req.Resource)
 		return &haifypb.MakeHaResponse{
 			Success: false,
 			Message: err.Error(),
@@ -227,7 +234,16 @@ func (s *Server) GetSelfHaStatus(ctx context.Context, req *haifypb.GetSelfHaStat
 
 func (s *Server) EvictHa(ctx context.Context, req *haifypb.EvictHaRequest) (*haifypb.EvictHaResponse, error) {
 	log := s.serverLog()
-	log.Debug("EvictHa: evicting", zap.String("resource", req.Resource))
+	log.Debug("EvictHa: evicting", zap.String("resource", req.Resource), zap.Bool("live", req.Live),
+		zap.String("target_node", req.TargetNode), zap.Uint32("timeout_seconds", req.TimeoutSeconds))
+	if req.Live {
+		return s.evictHaLive(ctx, req), nil
+	}
+	if req.TargetNode != "" {
+		log.Debug("EvictHa: target named without live", zap.String("resource", req.Resource))
+		return &haifypb.EvictHaResponse{Success: false,
+			Message: "a target node can only be named for a live move; without --live drbd-reactor decides which replica takes over"}, nil
+	}
 	err := s.resources.EvictHa(ctx, req.Resource)
 	if err != nil {
 		log.Debug("EvictHa: failed", zap.String("resource", req.Resource), zap.Error(err))

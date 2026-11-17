@@ -5,7 +5,7 @@ import {
   type HaPromoterStatus,
   type HaUnit,
 } from '@/services/api';
-import { mountUnitFor, vipUnitFor } from '@/lib/toml';
+import { mountUnitFor, ocfUnitFor, vipUnitFor } from '@/lib/toml';
 
 /** One HA config joined to the two payloads that describe it: the cluster-wide
  * resource record and its live per-resource status. Assembled once in the page
@@ -82,11 +82,15 @@ export function hiddenFailure(promoter?: HaPromoterStatus): HaUnit | undefined {
  *  Naming them is the point: this is the gap between what the console can
  *  manage and what a failover will actually carry. */
 export function unmanagedUnits(config: HaConfig, units: StartUnit[]): string[] {
+  const items = config.startItems ?? [];
+  const ocf = [...(config.ocfAgents ?? []), ...items.flatMap((i) => (i.ocf ? [i.ocf] : []))];
   const known = new Set(
     [
       config.mountPoint ? mountUnitFor(config.mountPoint) : '',
       config.vip ? vipUnitFor(config.vip) : '',
       ...(config.services ?? []),
+      ...items.flatMap((i) => (i.systemdUnit ? [i.systemdUnit] : [])),
+      ...ocf.map((a) => ocfUnitFor(a.instance, config.resource)),
     ].filter((u) => u !== ''),
   );
   return units.map((u) => u.name).filter((n) => !known.has(n));
