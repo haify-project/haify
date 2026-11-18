@@ -6,7 +6,8 @@
 # — goes into that cluster's own knowledge base, never into this one.
 #
 # Contents:
-#   - Haify documentation (docs/, README) and the operations runbooks
+#   - Haify documentation (docs/, README), the platform guides in deploy/ and
+#     the operations runbooks
 #   - the Haify code graph (.understand-anything/knowledge-graph.json, not in the
 #     repository: generate it with Understand-Anything first, or the step is
 #     skipped) and source
@@ -165,6 +166,13 @@ step "Haify documentation"
 docs=$(flatten "$root/docs" haify-docs -name '*.md')
 cp "$root/README.md" "$docs/haify-docs__README.md"
 ingest_each "$docs"
+
+# Each platform's guide lives beside its manifests in deploy/: the Kubernetes
+# CSI driver (RWX volumes, topology, the drain annotation), Proxmox VE,
+# libvirt, OpenStack and the rest. Without these the Copilot refused questions
+# about features docs/ only names.
+step "Haify platform guides"
+ingest_each "$(flatten "$root/deploy" haify-deploy -name '*.md')"
 
 # The operations runbooks the MCP server serves to agents: the same text, so
 # the Copilot answers a procedure question with the procedure it would be given.
